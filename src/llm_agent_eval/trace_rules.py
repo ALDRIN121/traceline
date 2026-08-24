@@ -454,8 +454,10 @@ def _immediate_predecessors(
     by_id: dict[str, TraceEvent],
 ) -> list[TraceEvent]:
     """§9A.3/§9A.4: prefer the direct causal edge (anchor's parent_event_id ==
-    matched event_id); absent a parent chain, the immediately preceding event
-    by (timestamp, sequence) in the same attempt."""
+    matched event_id). When the anchor names a parent that is absent from the
+    candidate set, [] is returned — a predecessor is never fabricated. Only
+    when the anchor has no parent_event_id does the immediately preceding
+    event by (timestamp, sequence) in the same attempt win."""
     if anchor.parent_event_id is not None:
         return [e for e in candidates if e.event_id == anchor.parent_event_id]
     best: TraceEvent | None = None

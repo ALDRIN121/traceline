@@ -652,6 +652,77 @@ class TestResume:
         assert attempt.status == AttemptStatus.ERRORED.value
         assert "runner crashed" in attempt.error
 
+    def test_incomplete_run_resumes_to_complete(self, engine, monkeypatch):
+        # §11B.8: INCOMPLETE is a marker, never a final state — the explicit
+        # resume requeues the run, re-runs the interrupted case fresh, and
+        # lands COMPLETE with a score for every case.
+        project = make_evaluable_project(engine)
+        run = create_run(engine, project)
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated engine crash")
+
+        monkeypatch.setattr(engine_module, "invoke_agent", boom)
+        with pytest.raises(RuntimeError):
+            engine.run(run.run_id, WORKSPACE)
+        run = engine.storage.get_run(run.run_id, WORKSPACE)
+        assert run.status == RunStatus.INCOMPLETE.value
+
+        monkeypatch.undo()  # the crash is over; the resumed run must execute
+        result = engine.run(run.run_id, WORKSPACE)
+        assert result.status == RunStatus.COMPLETE.value
+        assert len(result.case_results) == 2  # both cases executed in the resumed pass
+        metric = result.metric_results[0]
+        assert metric.value == 1.0
+        assert metric.aggregation_state == "COMPLETE"
+        assert metric.sample_n == 2  # a score for every case
+        # The interrupted case ran fresh: the crashed attempt remains as
+        # evidence (errored, never silently dropped) beside the completed one.
+        attempts = engine.storage.list_attempts(run.run_id, WORKSPACE, case_id="c0")
+        assert {a.status for a in attempts} == {
+            AttemptStatus.ERRORED.value, AttemptStatus.COMPLETED.value,
+        }
+
+    def test_incomplete_run_can_be_cancelled(self, engine, monkeypatch):
+        # The INCOMPLETE → CANCELLED arc (§11B.8): a crashed run with no live
+        # worker is cancelled directly — what /cancel dispatches.
+        project = make_evaluable_project(engine)
+        run = create_run(engine, project)
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated engine crash")
+
+        monkeypatch.setattr(engine_module, "invoke_agent", boom)
+        with pytest.raises(RuntimeError):
+            engine.run(run.run_id, WORKSPACE)
+        run = engine.storage.get_run(run.run_id, WORKSPACE)
+        assert run.status == RunStatus.INCOMPLETE.value
+
+        run = engine.storage.set_run_status(run.run_id, WORKSPACE, RunStatus.CANCELLED)
+        assert run.status == RunStatus.CANCELLED.value
+
+    def test_resume_orphans_queued_attempts(self, engine):
+        # §11B.6 sweeper semantics: an attempt row a dead runner left QUEUED
+        # (hard kill between create_attempt and set RUNNING) is ORPHANED at
+        # resume — never an IllegalTransition crash — and the run proceeds
+        # to completion.
+        project = make_evaluable_project(engine)
+        run = create_run(engine, project)
+        attempt = engine.storage.create_attempt(run_id=run.run_id, case_id="c1",
+                                                workspace_id=WORKSPACE,
+                                                repeat_index=0, attempt=0)
+        # Simulate the hard kill: the run row left RUNNING, the attempt QUEUED
+        # (never advanced to RUNNING).
+        for status in (RunStatus.QUEUED, RunStatus.PROVISIONING, RunStatus.RUNNING):
+            engine.storage.set_run_status(run.run_id, WORKSPACE, status)
+        result = engine.run(run.run_id, WORKSPACE)
+        assert result.status == RunStatus.COMPLETE.value
+        orphan = engine.storage.get_attempt_by_id(attempt.attempt_id, WORKSPACE)
+        assert orphan.status == AttemptStatus.ORPHANED.value
+        metric = result.metric_results[0]
+        assert metric.value == 1.0
+        assert metric.sample_n == 2  # both cases scored
+
 
 class TestJudgeMetrics:
     def _judge_spec(self):

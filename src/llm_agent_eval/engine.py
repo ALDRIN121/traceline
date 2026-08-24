@@ -542,6 +542,21 @@ class Engine:
                         run_id, case.case_id, workspace_id, RunCaseStatus.QUEUED
                     )
             status = RunStatus.QUEUED
+        if status is RunStatus.INCOMPLETE:
+            # §11B.8 resume of a crashed run: INCOMPLETE is a marker, never a
+            # final state — the explicit resume verb requeues the run record
+            # so it flows through the normal resume path below (the reconciler
+            # orphans stale attempts, interrupted cases re-run fresh, finished
+            # cases re-score from stored traces at finalize). CANCELLED cases
+            # (evidence of the interruption) are requeued exactly as in the
+            # CANCELLED-resume arc above.
+            self.storage.set_run_status(run_id, workspace_id, RunStatus.QUEUED)
+            for case in self.storage.list_cases(run_id, workspace_id):
+                if case.status == RunCaseStatus.CANCELLED.value:
+                    self.storage.set_case_status(
+                        run_id, case.case_id, workspace_id, RunCaseStatus.QUEUED
+                    )
+            status = RunStatus.QUEUED
         if status in (RunStatus.DRAFT, RunStatus.QUEUED, RunStatus.PROVISIONING):
             if status is RunStatus.DRAFT:
                 self.storage.set_run_status(run_id, workspace_id, RunStatus.QUEUED)
@@ -557,7 +572,7 @@ class Engine:
         # (they re-score from stored traces at finalize).
         if status in (
             RunStatus.RUNNING, RunStatus.AGGREGATING, RunStatus.INCOMPLETE,
-        ) or run.status == RunStatus.CANCELLED.value:
+        ) or run.status in (RunStatus.CANCELLED.value, RunStatus.INCOMPLETE.value):
             for case in self.storage.list_cases(run_id, workspace_id):
                 if case.status == RunCaseStatus.FAILED.value:
                     requeue.add(case.case_id)

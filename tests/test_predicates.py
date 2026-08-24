@@ -407,3 +407,19 @@ def test_paths_off_non_containers_are_missing():
     check("payload.n.x == null", ev, True)  # int has no sub-fields → missing
     check("payload.s.len == null", ev, True)  # str has no sub-fields → missing
     check("payload.ts.year == 2026", ev, False)  # no datetime attribute access
+
+
+def test_nesting_depth_is_capped():
+    # Mirrors _MAX_RULE_DEPTH (spec / trace_rules): pathological nesting is a
+    # clean compile error, never a RecursionError.
+    deep_parens = "(" * 5000 + "true" + ")" * 5000
+    with pytest.raises(PredicateSyntaxError):
+        Predicate.compile(deep_parens)
+    with pytest.raises(PredicateError):
+        Predicate.compile(deep_parens)
+    deep_nots = "!" * 5000 + "true"
+    with pytest.raises(PredicateSyntaxError):
+        Predicate.compile(deep_nots)
+    # Normal nesting still compiles and evaluates.
+    ev = evt(payload={"amount": 100})
+    check("(" * 50 + "payload.amount >= 50" + ")" * 50, ev, True)

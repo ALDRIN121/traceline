@@ -96,8 +96,10 @@ class TestRunTransitions:
     def test_same_status_is_a_legal_noop(self):
         assert transition(RunStatus.RUNNING, "running", RUN_TRANSITIONS) is RunStatus.RUNNING
 
-    def test_incomplete_has_no_outgoing_edges(self):
-        # A marker: a resumed run is driven by the caller, not by re-entry.
+    def test_incomplete_to_running_is_illegal(self):
+        # §11B.8: INCOMPLETE is a marker, never a final state — the explicit
+        # resume verb requeues it (INCOMPLETE → QUEUED). Direct machine
+        # re-entry to RUNNING is deliberately illegal.
         with pytest.raises(IllegalTransition):
             transition(RunStatus.INCOMPLETE, RunStatus.RUNNING, RUN_TRANSITIONS)
 

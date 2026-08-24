@@ -205,7 +205,12 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     # the run record and re-runs the cases it left unscored. Never automatic
     # — the resume verb alone triggers it.
     RunStatus.CANCELLED: frozenset({RunStatus.QUEUED}),
-    RunStatus.INCOMPLETE: frozenset(),
+    # INCOMPLETE → QUEUED is §11B.8's resume arc: the marker ends without a
+    # final state, so an explicit resume requeues the run record and re-runs
+    # what it left unfinished. INCOMPLETE → CANCELLED is the no-worker cancel
+    # arc. INCOMPLETE → RUNNING is deliberately illegal — re-entry is driven
+    # by the caller, never by the state machine.
+    RunStatus.INCOMPLETE: frozenset({RunStatus.QUEUED, RunStatus.CANCELLED}),
 }
 
 #: run_cases.status (§18).
@@ -233,8 +238,11 @@ RUN_CASE_TRANSITIONS: dict[RunCaseStatus, frozenset[RunCaseStatus]] = {
 #: run_case_attempts.status (§13A.2: queued → running → completed, terminal
 #: timed_out | budget_exceeded | cancelled | orphaned | errored).
 ATTEMPT_TRANSITIONS: dict[AttemptStatus, frozenset[AttemptStatus]] = {
+    # QUEUED → ORPHANED is the §11B.6 sweeper arc: an attempt row a dead
+    # runner left queued (hard kill between create and RUNNING) is orphaned
+    # at resume, exactly like a RUNNING attempt.
     AttemptStatus.QUEUED: frozenset(
-        {AttemptStatus.RUNNING, AttemptStatus.CANCELLED}
+        {AttemptStatus.RUNNING, AttemptStatus.CANCELLED, AttemptStatus.ORPHANED}
     ),
     AttemptStatus.RUNNING: frozenset(
         {

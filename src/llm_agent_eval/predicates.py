@@ -523,12 +523,18 @@ def _bool_not(a: _Value) -> _Value:
 # Recursive-descent parser
 # ---------------------------------------------------------------------------
 
+#: Mirrors spec._MAX_RULE_DEPTH (and trace_rules._MAX_DEPTH): the recursive
+#: descent never descends past this many nesting levels — a clean compile
+#: error at the cap, never a RecursionError.
+_MAX_NESTING_DEPTH = 100
+
 
 class _Parser:
     def __init__(self, text: str, tokens: list[_Token]):
         self.text = text
         self.tokens = tokens
         self.pos = 0
+        self._depth = 0
 
     def peek(self) -> _Token:
         return self.tokens[self.pos]
@@ -540,6 +546,16 @@ class _Parser:
 
     def _error(self, tok: _Token, message: str) -> PredicateSyntaxError:
         return PredicateSyntaxError(self.text, tok.pos, message)
+
+    def _enter_nesting(self, tok: _Token) -> None:
+        """Guard the recursion points (parens, ``!``) against pathological
+        nesting: a clean compile error at ``_MAX_NESTING_DEPTH``, never a
+        RecursionError."""
+        if self._depth >= _MAX_NESTING_DEPTH:
+            raise self._error(
+                tok, f"predicate nesting exceeds {_MAX_NESTING_DEPTH} levels"
+            )
+        self._depth += 1
 
     def parse(self) -> Node:
         node = self._parse_or()
@@ -564,8 +580,11 @@ class _Parser:
 
     def _parse_not(self) -> Node:
         if self.peek().kind == "op" and self.peek().value == "!":
-            self.advance()
-            return NotNode(self._parse_not())
+            tok = self.advance()
+            self._enter_nesting(tok)
+            node = self._parse_not()
+            self._depth -= 1
+            return NotNode(node)
         return self._parse_comparison()
 
     def _parse_comparison(self) -> Node:
@@ -598,7 +617,9 @@ class _Parser:
             return self._parse_path()
         if tok.kind == "lparen":
             self.advance()
+            self._enter_nesting(tok)
             node = self._parse_or()
+            self._depth -= 1
             close = self.peek()
             if close.kind != "rparen":
                 raise self._error(close, "expected ')' to close the parenthesized expression")
