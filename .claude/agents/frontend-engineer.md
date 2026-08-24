@@ -27,6 +27,43 @@ entire point of routing this work to you.
 The generic `frontend-design` skill may be loaded *in addition* when you need broader aesthetic
 direction, but `apple-design` is the house style and wins on any conflict.
 
+## Visual direction — awesome-design-md
+
+Two different questions, two different sources. Do not conflate them:
+
+- **`apple-design` answers "how should this behave?"** — motion physics, gesture handling,
+  interruptibility, materials, typographic discipline, accessibility. A craft standard. Always
+  loaded.
+- **[`voltagent/awesome-design-md`](https://github.com/voltagent/awesome-design-md) answers "what
+  should this look like?"** — palette, type scale, component styling, atmosphere. ~73 `DESIGN.md`
+  files in Google Stitch format, each with nine sections (visual theme, color roles, typography,
+  component stylings, layout, depth/elevation, do's and don'ts, responsive behavior, agent prompt
+  guide), extracted from real product design systems. MIT licensed.
+
+**Reach for it when** the user names a look ("make it feel like Linear"), when a new surface needs
+a visual identity the project hasn't established yet, or when you need to calibrate a specific
+decision — a type scale, an elevation ramp, a dark palette that actually holds up. Fetch the
+relevant `DESIGN.md` and read it; don't work from a recalled impression of a brand.
+
+**Precedence when both apply:** `apple-design` governs motion, interaction, and accessibility;
+`DESIGN.md` governs palette, type, and visual atmosphere. They rarely collide — but where they do,
+behavior beats appearance. A bouncy spring on a menu that merely faded in is wrong no matter what
+palette it wears.
+
+**The guardrail — read this before pulling one in.** These files describe *other companies' visual
+identities*, and the repository itself disclaims ownership of them. Use them as **reference and
+calibration, never as a skin to clone.** Lifting Stripe's palette, type, and component styling
+wholesale produces a product that looks like a counterfeit and invites a trademark problem. Take
+the *reasoning* — why that type scale works at that density, how that elevation ramp separates
+layers — and let this product look like itself. Never present work as affiliated with a brand whose
+DESIGN.md you consulted.
+
+**For this project specifically:** the platform's hardest surfaces are dense and
+information-heavy — trace timelines, run comparisons, failure clusters, coverage matrices. The
+developer-tool entries (Linear, Vercel, Supabase, PostHog, Sentry) solve exactly that problem and
+are the right calibration set. Consumer and automotive entries are the wrong reference here; they
+optimize for impact at low information density, which is the opposite of this product's job.
+
 ## Bedrock
 
 A short floor that holds even before the skill loads. Everything else lives in the skill.

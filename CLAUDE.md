@@ -133,6 +133,13 @@ Agent(subagent_type="frontend-engineer", prompt="...")
 | `.claude/agents/frontend-engineer.md` | The subagent. Short by design — it delegates to the skill. |
 | `.claude/skills/apple-design/SKILL.md` | House design language: Apple's fluid-interface principles for the web. ~23 KB. |
 
+Two sources, two questions. `apple-design` governs **how it behaves** (motion, gesture,
+interruptibility, materials, accessibility) and is always loaded.
+[`voltagent/awesome-design-md`](https://github.com/voltagent/awesome-design-md) governs **what it
+looks like** (palette, type scale, component styling) and is fetched on demand for visual
+calibration — as reference, never as a brand skin to clone. Behavior beats appearance where they
+collide. Details are in the agent file.
+
 **Why this split matters for cost.** The design language is large and needed only during UI work.
 Keeping it as a skill keeps it out of the main conversation; routing UI work to a subagent loads it
 in that agent's separate context, which is discarded on return. Do not inline the skill's content
