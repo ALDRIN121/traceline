@@ -2,9 +2,10 @@
  * Evaluation Engine — dashboard renderer (web/app.js)
  *
  * A declarative renderer: the page fetches a server-resolved dashboard
- * definition (/api/dashboards/default), the component registry
- * (/api/dashboards/components), and the run list (/runs) — and renders only
- * the blocks the definition declares, instantiating registry components.
+ * definition (/api/dashboards/default) and the run list (/runs) — and
+ * renders only the blocks the definition declares, instantiating registry
+ * components from a closed, fixed map (the component vocabulary mirrors the
+ * backend's registry; unknown components degrade to an unavailable card).
  * Nothing here builds layout from arbitrary API data, and nothing here ever
  * ships a definition's payload to innerHTML unescaped.
  *
@@ -25,9 +26,6 @@
  * ------------------------------------------------------------------------ */
 
 const $ = (sel, root = document) => root.querySelector(sel);
-const esc = (v) =>
-  String(v == null ? "" : v).replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -68,13 +66,6 @@ const fmtUsd = (usd) => {
 };
 
 const fmtTokens = (n) => (n == null ? "—" : Number(n).toLocaleString());
-
-const fmtDate = (iso) => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-};
 
 /* A run id, shortened for tight cells. */
 const shortId = (id) => (id && id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id);
@@ -208,7 +199,6 @@ function badgeChips(badges) {
 
 const state = {
   definition: null,   // resolved dashboard payload (GET /api/dashboards/default)
-  registry: null,     // component registry (GET /api/dashboards/components)
   runs: [],           // run summaries (GET /runs)
   filterRun: "latest",// the run filter's current value
   selection: { case: null },
@@ -218,18 +208,14 @@ const state = {
   polling: false,
   pollTimer: null,
   pollSeq: 0,
+  selectionRetryTimer: null, // trace-evidence fetch retry (transient errors)
+  activeCase: null,   // case row holding keyboard focus when the grid rebuilt
   lastPhase: null,    // announced run phase (aria-live)
 };
 
 /* ---------------------------------------------------------------------------
  * Data loading
  * ------------------------------------------------------------------------ */
-
-async function loadRegistry() {
-  const body = await api("/api/dashboards/components");
-  state.registry = {};
-  for (const c of body.components || []) state.registry[c.name] = c;
-}
 
 async function loadRuns() {
   /* Keyset pagination: walk pages until exhausted (capped defensively). */
@@ -343,17 +329,19 @@ function assembleEvidencePayload() {
     }
   }
   const caseName = caseNameFromDefn(caseId);
+  /* Only attach the event stream when it belongs to this run/case pair — a
+   * failed fetch leaves the previous pair cached, which must not leak. */
+  const traces = state.traces && state.traces.pair === `${run.run_id}/${caseId}` ? state.traces : null;
   return {
     component: "trace_evidence",
     run,
     case_id: caseId,
     case_name: caseName,
-    trace_url: `/runs/${run.run_id}/traces/${caseId}`,
     metrics,
     placeholder: false,
     metrics_complete: defn.metrics_complete,
     render_final: defn.render_final,
-    events: (state.traces && state.traces.events) || [],
+    events: (traces && traces.events) || [],
   };
 }
 
@@ -369,8 +357,16 @@ function caseNameFromDefn(caseId) {
 
 function selectCase(caseId) {
   if (caseId === state.selection.case) return;
+  clearSelectionRetry();
   state.selection.case = caseId;
   refreshSelectionBlocks();
+}
+
+function clearSelectionRetry() {
+  if (state.selectionRetryTimer) {
+    clearTimeout(state.selectionRetryTimer);
+    state.selectionRetryTimer = null;
+  }
 }
 
 async function refreshSelectionBlocks() {
@@ -390,7 +386,16 @@ async function refreshSelectionBlocks() {
   try {
     await resolveSelectionData();
   } catch (err) {
-    showFatal(err);
+    /* Transient network error — keep the last rendered payload in place and
+     * retry on the poll loop's backoff cadence; a hiccup mid-selection must
+     * not take the whole dashboard down (same policy as polling). */
+    console.warn("trace evidence fetch failed — retrying:", err);
+    render();
+    if (state.selectionRetryTimer != null) return;
+    state.selectionRetryTimer = setTimeout(() => {
+      state.selectionRetryTimer = null;
+      if (state.selection.case) refreshSelectionBlocks();
+    }, 4000);
     return;
   }
   render();
@@ -599,12 +604,6 @@ function renderCaseTable(payload) {
 
   const metricIds = new Set();
   for (const c of cases) for (const m of c.metrics || []) metricIds.add(m.metric_id);
-  const metricNames = {};
-  for (const c of cases) {
-    for (const m of c.metrics || []) {
-      if (!metricNames[m.metric_id]) metricNames[m.metric_id] = m.metric_id;
-    }
-  }
 
   const wrap = el("div", { class: "table-wrap" });
   const t = el("table", { class: "data" });
@@ -709,13 +708,15 @@ function renderTraceEvidence(payload) {
 
   /* Per-metric evidence summary. */
   const summary = el("div", { class: "evidence-summary" });
-  const headChips = el("span", { class: "chips" });
   for (const m of payload.metrics || []) {
     const parts = [statusChip(METRIC_STATUS, m.status)];
     parts.push(el("span", { class: "mono-cell muted", text: `${m.metric_id} · ${fmtScore(m)} · ${m.evidence_count} evidence event${m.evidence_count === 1 ? "" : "s"}` }));
-    for (const flag of ["retry", "non_authoritative", "overridden"]) {
-      if (m[flag]) parts.push(chip(BADGES[flag].label, BADGES[flag].tone, { dot: false }));
-    }
+    /* Flags ride the resolved metric rows as on_retry_override /
+     * is_authoritative / overridden (dashboard.py::_resolve_trace_evidence);
+     * is_authoritative:false alone reads as non-authoritative. */
+    if (m.on_retry_override) parts.push(chip(BADGES.retry.label, BADGES.retry.tone, { dot: false }));
+    if (m.is_authoritative === false) parts.push(chip(BADGES.non_authoritative.label, BADGES.non_authoritative.tone, { dot: false }));
+    if (m.overridden) parts.push(chip(BADGES.overridden.label, BADGES.overridden.tone, { dot: false }));
     if (m.provisional) parts.push(chip("UNCALIBRATED", TONES.amber, { dot: false }));
     if (m.judge_binding) parts.push(chip("judge", TONES.violet, { dot: false }));
     const row = el("div", { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--hairline);" }, parts);
@@ -790,12 +791,14 @@ function renderTraceEvidence(payload) {
 
 /* ---- tiny inline icons (stroke, currentColor) ------------------------------ */
 
+/* Shape tags the icon parser instantiates (closed set — never free markup). */
+const SVG_TAGS = new Set(["path", "rect", "circle", "line", "polyline", "polygon"]);
+
 function svgIcon(name) {
-  const paths = {
+  const shapes = {
     table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
     cursor: '<path d="M4 3l6 16 2.4-5.6L18 11 4 3Z"/><path d="M12.4 13.4 18 18"/>',
     flask: '<path d="M9 3h6M10 3v5l-5.2 9.4A1.8 1.8 0 0 0 6.4 20h11.2a1.8 1.8 0 0 0 1.6-2.6L14 8V3"/><path d="M7.5 15h9"/>',
-    pulse: '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
   }[name] || '<circle cx="12" cy="12" r="8"/>';
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -807,10 +810,11 @@ function svgIcon(name) {
   svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("aria-hidden", "true");
   const g = document.createElementNS(ns, "g");
-  for (const d of paths.split("><").map((s) => s.replace("<", "").replace(">", ""))) {
-    if (!d.includes("path")) continue;
+  for (const d of shapes.split("><").map((s) => s.replace("<", "").replace(">", ""))) {
+    const tag = d.slice(0, d.indexOf(" "));
+    if (!SVG_TAGS.has(tag)) continue;
     const attrs = Object.fromEntries([...d.matchAll(/([a-z]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
-    const p = document.createElementNS(ns, "path");
+    const p = document.createElementNS(ns, tag);
     for (const [k, v] of Object.entries(attrs)) p.setAttribute(k, v);
     g.append(p);
   }
@@ -893,6 +897,11 @@ function renderBlock(block) {
 function renderGrid() {
   const grid = $("#grid");
   const defn = state.definition;
+  /* The rebuild replaces every row, which drops :focus with it. Remember which
+   * case row had keyboard focus so render() can put it back after the swap. */
+  const focused = document.activeElement;
+  const focusedRow = focused && focused.closest ? focused.closest("tr.case-row") : null;
+  state.activeCase = focusedRow ? focusedRow.dataset.case : null;
   grid.replaceChildren();
 
   if (!defn || !defn.blocks || !defn.blocks.length) {
@@ -962,6 +971,7 @@ function renderBanner() {
 
   if (!defn.run) {
     banner.hidden = true;
+    state.lastPhase = null; /* a later run must re-announce from scratch */
     return;
   }
 
@@ -986,16 +996,14 @@ function renderBanner() {
     text = `All ${run.case_count || "scheduled"} cases scored and every metric row is complete.`;
   }
 
-  const phase = `${run.run_id}:${run.status}:${terminal}:${defn.render_final}`;
-  if (phase !== state.lastPhase && banner.hidden === false) {
-    /* aria-live announcement only on real state changes. */
-    state.lastPhase = phase;
-  } else if (state.lastPhase !== phase) {
-    state.lastPhase = phase;
-  }
+  const phase = `${run.run_id}:${run.status}:${terminal}:${defn.render_final}:${defn.metrics_complete}`;
 
   banner.dataset.tone = tone;
   banner.hidden = false;
+  /* The banner is a live region: only replace its content on a real phase
+   * change, or the 2s poll would re-announce the same text endlessly. */
+  if (phase === state.lastPhase) return;
+  state.lastPhase = phase;
   banner.replaceChildren(
     el("span", { class: "dot", style: "margin-top:5px;flex:none;" }),
     el("div", { class: "banner-body" }, [
@@ -1151,13 +1159,19 @@ function render() {
     }
   }
 
+  /* First mount done — card-in animation runs once, never again on refresh. */
+  $("#grid").classList.add("settled");
+
   const meta = $("#footer-meta");
   meta.textContent = `${defn.name || "dashboard"} · definition v${defn.version} · registry v${defn.registry_version}`;
 
-  /* Restore keyboard focus on the row the user just activated. */
-  if (state.pendingFocus) {
-    const target = document.querySelector(`tr.case-row[data-case="${CSS.escape(state.pendingFocus)}"]`);
+  /* Restore keyboard focus on the row the user just activated, or on the row
+   * that held focus when the grid was rebuilt (renderGrid recorded it). */
+  const focusCase = state.pendingFocus || state.activeCase;
+  if (focusCase) {
+    const target = document.querySelector(`tr.case-row[data-case="${CSS.escape(focusCase)}"]`);
     state.pendingFocus = null;
+    state.activeCase = null;
     if (target) target.focus({ preventScroll: true });
   }
 }
@@ -1181,6 +1195,7 @@ async function init() {
     state.selection.case = null;
     state.runDetail = null;
     state.traces = null;
+    clearSelectionRetry();
     try {
       const url = new URL(location.href);
       if (state.filterRun === "latest") url.searchParams.delete("run_id");
@@ -1193,7 +1208,7 @@ async function init() {
   initTheme();
 
   try {
-    const [registry] = await Promise.all([loadRegistry(), loadRuns()]);
+    await loadRuns();
     renderRunSelector();
     await loadDashboard();
     loadHealth();

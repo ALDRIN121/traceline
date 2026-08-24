@@ -5878,6 +5878,19 @@ definition → validate (§37B.2) → server-side query plan over aggregation ta
 - The resolved context is per-request: filters and selections are parameters of the query plan,
   never client-side filtering of a full payload.
 
+> **MVP bridge note (implementation record, 2026-08-25):** the MVP API resolves the default
+> dashboard by `run_id` only (`GET /api/dashboards/default?run_id=`); `$selection.case` in a
+> definition cannot reach the server's query plan through the public surface, so the shipped
+> SPA resolves a selected case's evidence client-side — from the identical stored rows the
+> server resolver uses (`GET /runs/{id}` latest-revision-per-(case,metric) + `GET
+> /runs/{id}/traces/{case}` for the full stream) and mirrors `_resolve_trace_evidence`
+> key-for-key. This is a **bridge, not a violation**: the dashboard payload itself stays
+> aggregates-only, and the client assembly reads the same rows as the server, but two
+> implementations of the evidence payload now exist and can drift — the §13A.1.3 "one spec,
+> two implementers" failure mode. The clean end-state is a `?case=` parameter on the default
+> endpoint so the selection joins the query plan; until then this note is the authority the
+> client assembly must stay key-for-key with.
+
 ### 37B.4 Versioning and migration
 
 The registry is versioned (`registry_version`, per-component `component_version`). Saved
