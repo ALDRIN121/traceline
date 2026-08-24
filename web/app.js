@@ -139,6 +139,9 @@ const AGG_STATE = {
 const GATE_STATUS = {
   PASS: { label: "gate PASS", tone: TONES.green },
   FAIL: { label: "gate FAIL", tone: TONES.red },
+  /* Ungated metrics report NOT_APPLICABLE rather than a gate verdict —
+   * present it as informational, never as a pass/fail. */
+  NOT_APPLICABLE: { label: "not gated", tone: TONES.neutral },
 };
 
 /* Badge flags (closed set from the backend). provisional renders as
@@ -174,6 +177,8 @@ const REDACTION_STATUS = {
 };
 
 function statusChip(mapping, key, { strong = false, dot = true } = {}) {
+  /* null/undefined key → no chip at all; unknown key → neutral labeled chip. */
+  if (key == null) return null;
   const m = mapping[key] || { label: String(key), tone: TONES.neutral };
   const chip = el("span", { class: "chip", dataset: { tone: m.tone } });
   if (strong) chip.dataset.strong = "";
@@ -516,9 +521,9 @@ function renderCountsBar(counts) {
   }
 
   const legend = el("div", { class: "counts-legend" });
-  legend.append(el("span", { class: "counts-total" },
-    document.createTextNode(""),
-    [el("strong", { text: String(total) }), ` case${total === 1 ? "" : "s"}`]));
+  const totalSpan = el("span", { class: "counts-total" });
+  totalSpan.append(el("strong", { text: String(total) }), ` case${total === 1 ? "" : "s"}`);
+  legend.append(totalSpan);
   for (const key of CASE_COUNT_ORDER) {
     const n = counts[key] || 0;
     if (!n) continue;
@@ -620,6 +625,7 @@ function renderCaseTable(payload) {
       class: "case-row",
       tabindex: selectable ? "0" : undefined,
       role: "row",
+      dataset: { case: c.case_id },
       "aria-selected": selectable && c.case_id === state.selection.case ? "true" : "false",
       title: selectable ? "Select to view trace evidence" : undefined,
     }, [
@@ -661,6 +667,9 @@ function renderCaseTable(payload) {
       tr.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") {
           ev.preventDefault();
+          /* render() rebuilds the grid and would drop focus to the body —
+           * remember the row so focus is restored on the same case. */
+          state.pendingFocus = c.case_id;
           selectCase(c.selection.value);
         }
       });
@@ -825,7 +834,18 @@ function blockKey(block) {
 }
 
 function renderBlock(block) {
-  const payload = block.payload || {};
+  /* A block whose case binding is the live selection gets its payload
+   * assembled client-side (assembleEvidencePayload mirrors the server
+   * resolver — same keys, evidence ids from the run detail, full stream
+   * from the trace endpoint). The server placeholder payload stands in
+   * only while no selection is set. */
+  let payload = block.payload || {};
+  const selectionBound =
+    block.component === "trace_evidence" &&
+    selectionBoundBlocks(state.definition).includes(block);
+  if (selectionBound && state.selection.case) {
+    payload = assembleEvidencePayload();
+  }
   const title = COMPONENT_TITLES[block.component] || block.component;
   const card = el("section", {
     class: "card",
@@ -1133,6 +1153,13 @@ function render() {
 
   const meta = $("#footer-meta");
   meta.textContent = `${defn.name || "dashboard"} · definition v${defn.version} · registry v${defn.registry_version}`;
+
+  /* Restore keyboard focus on the row the user just activated. */
+  if (state.pendingFocus) {
+    const target = document.querySelector(`tr.case-row[data-case="${CSS.escape(state.pendingFocus)}"]`);
+    state.pendingFocus = null;
+    if (target) target.focus({ preventScroll: true });
+  }
 }
 
 function showFatal(err) {
@@ -1174,5 +1201,15 @@ async function init() {
     showFatal(err);
   }
 }
+
+/* Console-level debugging handle (no runtime cost, no network). Exposes
+ * the live state and the renderers for manual inspection in devtools. */
+window.__dashboard = {
+  get state() { return state; },
+  selectCase,
+  refreshAll,
+  assembleEvidencePayload,
+  renderers: { metric_summary: renderMetricSummary, run_table: renderRunTable, case_table: renderCaseTable, trace_evidence: renderTraceEvidence },
+};
 
 document.addEventListener("DOMContentLoaded", init);

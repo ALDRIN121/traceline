@@ -85,6 +85,21 @@ def create_run(client, spec=None, **kwargs):
     return client.post("/runs", json=body)
 
 
+def wait_case_running(client, run_id, timeout=15.0):
+    """Wait until at least one case is RUNNING — the cancel must land on an
+    in-flight attempt, never before the worker started (start->cancel with no
+    wait is a race the scheduler can lose under full-suite load)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/runs/{run_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        if any(case["status"] == "running" for case in data["cases"]):
+            return data
+        time.sleep(0.05)
+    pytest.fail(f"run {run_id} never entered a running case")
+
+
 def wait_terminal(client, run_id, timeout=30.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -492,6 +507,7 @@ class TestResume:
         created = create_run(c, entrypoint=AGENT, tier="quick", retry_max=0)
         run_id = created.json()["run"]["run_id"]
         assert c.post(f"/runs/{run_id}/start").status_code == 202
+        wait_case_running(c, run_id)  # cancel must hit an in-flight attempt
         assert c.post(f"/runs/{run_id}/cancel").status_code == 200
         final = wait_terminal(c, run_id, timeout=30.0)
         assert final["run"]["status"] == "cancelled"

@@ -60,8 +60,9 @@ TOOLS: dict[str, object] = {}
 #: attempt must observe a fresh list (§11A invariant, engine).
 _STATE: list[str] = []
 
-#: Live-mode defaults (the platform's ModelConfig defaults, config.py).
-DEFAULT_BASE_URL = "https://api.deepseek.com"
+#: Live-mode default model (the platform's ModelConfig default, config.py).
+#: Live mode is opt-in: a base URL must be set explicitly via
+#: LLM_AGENT_EVAL_LLM_BASE_URL — an exported key alone never triggers a call.
 DEFAULT_MODEL = "deepseek-v4-flash"
 
 #: Deterministic per-token prices in USD; the engine stamps its own
@@ -317,7 +318,22 @@ def main() -> int:
         ]
         cap.llm_call(model, messages_hint=[{"role": "user", "content": "summarize resolution"}])
         if client is not None:
-            content, input_tokens, output_tokens = client.chat(final_messages)
+            try:
+                content, input_tokens, output_tokens = client.chat(final_messages)
+            except LlmError as exc:
+                # Same honest failure as triage — a provider outage at compose
+                # is provider_unreachable, never invocation_failed (§11A).
+                _write_result(
+                    {
+                        "status": "error",
+                        "error": {
+                            "type": "provider_unreachable",
+                            "message": str(exc),
+                            "retryable": True,
+                        },
+                    }
+                )
+                return 0
         else:
             content = json.dumps(final)
             input_tokens = output_tokens = 0

@@ -11,6 +11,7 @@ import pytest
 
 from llm_agent_eval.config import settings
 from llm_agent_eval.gateway import DeepSeekGateway
+from llm_agent_eval.harness import author_spec
 
 pytestmark = [
     pytest.mark.live,
@@ -48,3 +49,22 @@ def test_live_chat_json_returns_object():
         gateway.close()
     assert isinstance(result, dict)
     assert result == {"ok": True}
+
+
+def test_live_author_spec_validates():
+    """The LLM layer's core job, live: natural-language intent → a
+    pydantic-validated EvaluationSpec, through the real DeepSeek API."""
+    gateway = DeepSeekGateway(settings.model)
+    try:
+        result = author_spec(
+            "Add a case where the refund amount is exactly 49.99 and the "
+            "order is already refunded.",
+            gateway,
+            repair_attempts=2,
+        )
+    finally:
+        gateway.close()
+    assert result.validated, f"authoring failed: {result.reason}"
+    assert result.spec is not None
+    assert result.spec.cases, "validated spec must contain cases"
+    assert result.inferred_share is not None

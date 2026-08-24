@@ -131,7 +131,9 @@ def make_spec(n_cases: int = 3) -> dict:
                 "rule": {"op": "count", "match": {"event": "llm_response"}},
             },
             "scoring": {
-                "type": "binary", "range": [0, 1], "condition": "raw_value <= 3",
+                # Exactly two LLM responses per case (triage + compose):
+                # a broken matcher (count 0) must FAIL, not pass vacuously.
+                "type": "binary", "range": [0, 1], "condition": "raw_value == 2",
             },
             "aggregation": {"method": "pass_rate", "on_error": "fail"},
             "provisional": False,
@@ -252,6 +254,9 @@ def test_end_to_end_run(engine: Engine, store: Storage, llm_server) -> None:
     rule_scores = [s for s in scores if s.metric_id == "search_follows_llm_response"]
     assert all(s.evidence_event_ids for s in rule_scores), \
         "trace-rule scores must carry evidence event ids"
+    count_scores = [s for s in scores if s.metric_id == "llm_call_count_bounded"]
+    assert all(s.evidence_event_ids for s in count_scores), \
+        "count-rule scores must carry evidence event ids (non-vacuous count)"
 
     # Run-level aggregation: COMPLETE; gates evaluated on the gated metrics.
     metric_rows = store.get_run_metric_results(run.run_id, WORKSPACE)

@@ -10,6 +10,10 @@ __pycache__/
 venv/
 *.egg-info/
 dist/
+
+# Fixture byproducts — a standalone sample-agent run writes result.json into
+# its own directory; only the DB copy is authoritative.
+fixtures/sample-agent/result.json
 build/
 
 # Local state
@@ -17,3 +21,6 @@ build/
 *.sqlite
 *.sqlite3
 .superpowers/
+
+# Playwright MCP scratch (browser verification artifacts)
+.playwright-mcp/
