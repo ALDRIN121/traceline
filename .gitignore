@@ -1,0 +1,49 @@
+# Secrets and local config — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+credentials*
+secrets/
+
+# The egress proxy's TLS-interception CA is generated per install.
+# Committing it would let anyone decrypt traffic from every deployment.
+infra/docker/ca/
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / web
+node_modules/
+.next/
+dist/
+build/
+*.tsbuildinfo
+
+# Local run artifacts
+/data/
+/artifacts/
+/cassettes/
+*.sqlite
+*.db
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Claude Code local settings (project skills/agents ARE tracked)
+.claude/settings.local.json
