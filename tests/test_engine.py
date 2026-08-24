@@ -683,6 +683,46 @@ class TestResume:
             AttemptStatus.ERRORED.value, AttemptStatus.COMPLETED.value,
         }
 
+    def test_incomplete_resume_requeues_failed_case(self, engine, monkeypatch):
+        # §35B.3: on resume, failed cases re-run fresh — they are never
+        # re-scored from the failed attempt. This exercises the INCOMPLETE
+        # clause of the FAILED-requeue condition: after the INCOMPLETE→QUEUED
+        # transition the run status is re-read from storage, so the clause
+        # must match INCOMPLETE or the failed case is silently re-scored from
+        # its rejected (empty) trace and stays failed.
+        project = make_evaluable_project(engine)
+        run = create_run(engine, project)
+
+        orig = engine_module.invoke_agent
+
+        def boom_on_c1(**kwargs):
+            if kwargs["case"].case_id == "c1":
+                raise RuntimeError("simulated engine crash on c1")
+            return orig(**kwargs)
+
+        monkeypatch.setattr(engine_module, "invoke_agent", boom_on_c1)
+        # c0 fails the redaction contract (attempt ERRORED → case FAILED), the
+        # engine proceeds to c1, and the crash aborts the run there.
+        with agent_env({"FAKE_AGENT_MODE": "no_redaction_state"}):
+            with pytest.raises(RuntimeError):
+                engine.run(run.run_id, WORKSPACE)
+        monkeypatch.undo()  # the crash is over; the resumed run must execute
+        run = engine.storage.get_run(run.run_id, WORKSPACE)
+        assert run.status == RunStatus.INCOMPLETE.value
+        case = engine.storage.get_case(run.run_id, "c0", WORKSPACE)
+        assert case.status == RunCaseStatus.FAILED.value  # failed before the crash
+
+        result = engine.run(run.run_id, WORKSPACE)  # resume, clean env
+        assert result.status == RunStatus.COMPLETE.value
+        assert all(c.status == "completed" for c in result.case_results)
+        metric = result.metric_results[0]
+        assert metric.value == 1.0
+        assert metric.sample_n == 2  # the failed case re-ran fresh, not re-scored
+        attempts = engine.storage.list_attempts(run.run_id, WORKSPACE, case_id="c0")
+        assert {a.status for a in attempts} == {
+            AttemptStatus.ERRORED.value, AttemptStatus.COMPLETED.value,
+        }
+
     def test_incomplete_run_can_be_cancelled(self, engine, monkeypatch):
         # The INCOMPLETE → CANCELLED arc (§11B.8): a crashed run with no live
         # worker is cancelled directly — what /cancel dispatches.
