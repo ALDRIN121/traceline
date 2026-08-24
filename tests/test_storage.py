@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -620,3 +622,54 @@ class TestScoreRevisions:
         )
         rows = storage.get_case_scores(run_id=run.run_id, workspace_id="ws1")
         assert rows[0].overridden is False
+
+
+def test_shared_connection_is_thread_safe(storage):
+    """One sqlite3 connection serves the API's request threads AND the
+    background run threads (§17). Locking only ``execute()`` leaves the lazy
+    fetch unguarded — observed under contention: torn JSON values (a progress
+    column reading back as the empty string), SELECTs returning no rows for an
+    existing record (the intermittent GET /runs/{id} 404), and plain-tuple
+    rows (the list_cases IndexError). Regression: the whole execute→fetch span
+    must be serialized."""
+    run = _make_run(storage)
+    spec = _spec()
+    storage.insert_cases(run.run_id, "ws1", spec.cases, repeat_count=1)
+    run_id = run.run_id
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def reader() -> None:
+        try:
+            while not stop.is_set():
+                rec = storage.get_run(run_id, "ws1")
+                assert rec is not None and rec.run_id == run_id
+                assert rec.spec is not None  # a torn progress JSON raises here
+                cases = storage.list_cases(run_id, "ws1")
+                assert len(cases) == 2
+                assert all(c.case_id in ("c1", "c2") for c in cases)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+            stop.set()
+
+    def writer() -> None:
+        try:
+            while not stop.is_set():
+                storage.set_run_progress(run_id, "ws1", {"case_id": "c1"})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+            stop.set()
+
+    threads = [threading.Thread(target=reader) for _ in range(4)] + [
+        threading.Thread(target=writer) for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not errors:
+        time.sleep(0.05)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in threads), "a worker thread hung"
+    assert not errors, [f"{type(e).__name__}: {e}" for e in errors]

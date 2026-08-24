@@ -69,7 +69,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .events import EVENT_TYPES, CostBlock, ErrorBlock, OtelContext, RedactionState, Source, TraceEvent
 from .evaluators import CaseScore, CaseStatus, RunAggregate
@@ -107,22 +107,140 @@ __all__ = [
 _CONNECTION_LOCK = threading.RLock()
 
 
+class _LockedCursor:
+    """A cursor that holds :data:`_CONNECTION_LOCK` from the statement's
+    execute until its result set is consumed.
+
+    pysqlite steps statements lazily: ``fetchone()``/``fetchall()``/iteration
+    walk the statement on the C side, and stepping is exactly what races when
+    another thread executes on the same connection. Locking only ``execute()``
+    leaves the fetch gap open — observed failure modes under contention: torn
+    row values (a JSON column coming back as the empty string), ``SELECT``s
+    returning no rows for an existing record, and rows materializing as plain
+    tuples. So the lock is acquired in ``execute()`` and released only when
+    the result is fully materialized (``fetchall()``, iterator exhaustion),
+    when the statement is exhausted (``fetchone()`` returning ``None``), when
+    the cursor is closed, or when it is discarded (``__del__``). Statements
+    with no result columns (DML/DDL) release immediately after executing."""
+
+    __slots__ = ("_cursor", "_lock", "_held")
+
+    def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock, held: bool):
+        self._cursor = cursor
+        self._lock = lock
+        self._held = held
+        if held and cursor.description is None:
+            self._release()
+
+    def _release(self) -> None:
+        if getattr(self, "_held", False):
+            self._held = False
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass  # interpreter shutdown may have torn the lock down
+
+    def execute(self, *args: Any, **kwargs: Any) -> "_LockedCursor":
+        if not self._held:
+            self._lock.acquire()
+            self._held = True
+        try:
+            self._cursor.execute(*args, **kwargs)
+        except BaseException:
+            self._release()
+            raise
+        if self._cursor.description is None:
+            self._release()
+        return self
+
+    def fetchone(self) -> Any:
+        try:
+            row = self._cursor.fetchone()
+        except BaseException:
+            self._release()
+            raise
+        if row is None:
+            # Statement exhausted — no further stepping can race.
+            self._release()
+        return row
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        try:
+            if size is None:
+                size = self._cursor.arraysize
+            return self._cursor.fetchmany(size)
+        except BaseException:
+            self._release()
+            raise
+
+    def fetchall(self) -> list[Any]:
+        try:
+            rows = self._cursor.fetchall()
+        except BaseException:
+            self._release()
+            raise
+        self._release()  # fully materialized — the lock's job is done
+        return rows
+
+    def __iter__(self) -> Iterator[Any]:
+        try:
+            for row in self._cursor:
+                yield row
+        finally:
+            self._release()
+
+    def close(self) -> None:
+        try:
+            self._cursor.close()
+        finally:
+            self._release()
+
+    def __del__(self) -> None:
+        self._release()
+
+    def __enter__(self) -> "_LockedCursor":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._release()
+
+    def __getattr__(self, name: str) -> Any:
+        # description, rowcount, lastrowid, arraysize, connection, ...
+        return getattr(self._cursor, name)
+
+
 class _LockedConnection(sqlite3.Connection):
-    """A :class:`sqlite3.Connection` whose every operation takes
-    :data:`_CONNECTION_LOCK` — the single shared connection the API's request
-    threads and background run threads both use."""
+    """A :class:`sqlite3.Connection` shared across the API's request threads
+    and background run threads. Every operation takes :data:`_CONNECTION_LOCK`;
+    ``execute``/``executemany``/``executescript`` transfer the lock to a
+    :class:`_LockedCursor` so the statement's lazy fetch is serialized too."""
 
-    def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        with _CONNECTION_LOCK:
-            return super().execute(*args, **kwargs)
+    def execute(self, *args: Any, **kwargs: Any) -> Any:  # _LockedCursor (duck-typed Cursor proxy)
+        _CONNECTION_LOCK.acquire()
+        try:
+            cur = super().execute(*args, **kwargs)
+        except BaseException:
+            _CONNECTION_LOCK.release()
+            raise
+        return _LockedCursor(cur, _CONNECTION_LOCK, held=True)
 
-    def executemany(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        with _CONNECTION_LOCK:
-            return super().executemany(*args, **kwargs)
+    def executemany(self, *args: Any, **kwargs: Any) -> Any:  # _LockedCursor (duck-typed Cursor proxy)
+        _CONNECTION_LOCK.acquire()
+        try:
+            cur = super().executemany(*args, **kwargs)
+        except BaseException:
+            _CONNECTION_LOCK.release()
+            raise
+        return _LockedCursor(cur, _CONNECTION_LOCK, held=True)
 
-    def executescript(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-        with _CONNECTION_LOCK:
-            return super().executescript(*args, **kwargs)
+    def executescript(self, *args: Any, **kwargs: Any) -> Any:  # _LockedCursor (duck-typed Cursor proxy)
+        _CONNECTION_LOCK.acquire()
+        try:
+            cur = super().executescript(*args, **kwargs)
+        except BaseException:
+            _CONNECTION_LOCK.release()
+            raise
+        return _LockedCursor(cur, _CONNECTION_LOCK, held=True)
 
     def commit(self) -> None:
         with _CONNECTION_LOCK:
@@ -539,12 +657,17 @@ class Storage:
 
     @contextmanager
     def _tx(self) -> Iterable[None]:
-        try:
-            yield
-            self._conn.commit()
-        except BaseException:
-            self._conn.rollback()
-            raise
+        # The lock spans the whole transaction, not just the DML: otherwise a
+        # second thread's statement can join this thread's implicit
+        # transaction, and a rollback here would silently destroy that
+        # thread's uncommitted write.
+        with _CONNECTION_LOCK:
+            try:
+                yield
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def create_schema(self) -> None:
         """Create all tables; idempotent (``CREATE TABLE IF NOT EXISTS``)."""
@@ -1114,7 +1237,7 @@ class Storage:
         """Write per-price-version cost totals. Rows are mappings with
         ``price_version``, ``input_tokens``, ``output_tokens``, ``usd_micros``.
         Idempotent (UPSERT on the primary key)."""
-        with self._conn:
+        with self._tx():
             self._conn.executemany(
                 "INSERT INTO cost_summaries "
                 "(run_id, workspace_id, price_version, input_tokens, output_tokens, usd_micros) "
