@@ -635,6 +635,58 @@ def create_app(
             "message": "cancelled before dispatch",
         }
 
+    @app.post("/runs/{run_id}/resume", status_code=202)
+    def resume_run(run_id: str, request: Request) -> Any:
+        """§17.4 / §35B.3 — resume an interrupted run.
+
+        MVP semantics (ledger R14): resume is an **in-place finish** of a
+        non-terminal run. The engine re-scores already-finished cases from
+        their stored traces (§13A.1.3 — no agent re-run for finished work,
+        fresh container for whatever does re-run) and executes only the cases
+        still queued or requeued by the reconciler. The §35B.3 continuation
+        run (``parent_run_id``, merged aggregation into a new record) is the
+        design's future mechanism; the in-place finish delivers the same user
+        outcome for worker-crash / infra-failure interruption.
+
+        Refusals: ``complete | failed`` runs never re-run (lifecycle §11B.8);
+        ``cancelled`` runs DO resume — cancellation is a terminal outcome,
+        the explicit resume verb requeues the run record (§35B.3, ledger
+        R14); drafts have nothing to resume, ``/start`` is the right verb."""
+        run = store().get_run(run_id, ws)
+        if run is None:
+            return _error(request, 404, "not_found", f"run {run_id!r} not found")
+        status = RunStatus(run.status)
+        if status in (RunStatus.COMPLETE, RunStatus.FAILED):
+            return _error(
+                request, 409, "state_conflict",
+                f"run {run_id!r} is already {status.value}; a terminal run does not re-run",
+            )
+        if status is RunStatus.DRAFT:
+            return _error(
+                request, 409, "state_conflict",
+                f"run {run_id!r} is {status.value}; resume is for interrupted runs — use /start",
+            )
+        with registry_lock:
+            if run_id in workers:
+                return _error(request, 409, "state_conflict", f"run {run_id!r} is already running")
+            cancel_event = threading.Event()
+            cancel_events[run_id] = cancel_event
+            worker = threading.Thread(
+                target=_run_worker,
+                args=(run_id, cancel_event),
+                daemon=True,
+                name=f"run-{run_id}",
+            )
+            workers[run_id] = worker
+        worker.start()
+        return {
+            "run_id": run_id,
+            "status": run.status,
+            "state": "resumed",
+            "message": "run dispatched to the background worker for in-place resume "
+            "(finished cases re-score from stored traces; interrupted cases re-run fresh)",
+        }
+
     def _metric_event(run_id: str, m: Any) -> dict[str, Any]:
         return {
             "run_id": run_id,

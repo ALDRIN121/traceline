@@ -473,6 +473,83 @@ class TestRetrySurface:
         assert attempts[1]["is_first_attempt"] is False
 
 
+class TestResume:
+    """§17.4/§35B.3 — in-place finish of an interrupted run (ledger R14).
+    The engine re-scores finished cases from stored traces and re-runs only
+    the cases the reconciler requeued; terminal runs refuse to re-run."""
+
+    def test_resume_finishes_interrupted_run(self, client, monkeypatch):
+        """Cancel a run mid-execution, then resume it: the run completes.
+        The in-flight case (whose sleep-mode attempt exits without writing
+        result.json) failed and the unrun case was cancelled — §35B.3 re-
+        enqueues failed AND unscored cases on resume, so both re-run fresh
+        (first-attempt authority) and aggregation lands COMPLETE. The engine
+        never fabricates success: the cancellation was real, the resume is
+        real work."""
+        monkeypatch.setenv("FAKE_AGENT_MODE", "sleep")
+        monkeypatch.setenv("FAKE_AGENT_SLEEP_SECONDS", "3")
+        c, _, _ = client
+        created = create_run(c, entrypoint=AGENT, tier="quick", retry_max=0)
+        run_id = created.json()["run"]["run_id"]
+        assert c.post(f"/runs/{run_id}/start").status_code == 202
+        assert c.post(f"/runs/{run_id}/cancel").status_code == 200
+        final = wait_terminal(c, run_id, timeout=30.0)
+        assert final["run"]["status"] == "cancelled"
+        assert final["metrics"][0]["aggregation_state"] == "PARTIAL"
+
+        # The resumed attempts spawn fresh processes — switch the fixture to
+        # the healthy path so the re-run genuinely completes.
+        monkeypatch.setenv("FAKE_AGENT_MODE", "ok")
+        resp = c.post(f"/runs/{run_id}/resume")
+        assert resp.status_code == 202
+        assert resp.json()["state"] == "resumed"
+        resumed = wait_terminal(c, run_id, timeout=30.0)
+        assert resumed["run"]["status"] == "complete"
+        # every case landed, nothing silently dropped
+        assert {case["status"] for case in resumed["cases"]} == {"completed"}
+        assert resumed["metrics"][0]["aggregation_state"] == "COMPLETE"
+        # both interrupted cases were re-attempted, none skipped as terminal
+        by_case = {case["case_id"]: case for case in resumed["cases"]}
+        assert len(by_case["c0"]["attempts"]) == 2  # errored + resumed fresh
+        assert len(by_case["c1"]["attempts"]) == 1  # cancelled (never ran) + resumed
+
+    def test_resume_refuses_completed_run(self, client):
+        """complete / failed runs never re-run (§11B.8) — a fresh run is the
+        restart, never a re-run of a terminal record."""
+        c, _, _ = client
+        run_id, _ = run_to_complete(c)
+        resp = c.post(f"/runs/{run_id}/resume")
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "state_conflict"
+        assert "terminal" in resp.json()["error"]["message"]
+
+    def test_resume_cancelled_before_start(self, client):
+        """A cancelled-but-never-started run resumes to completion: nothing
+        had executed, so every case runs fresh."""
+        c, _, _ = client
+        created = create_run(c)
+        run_id = created.json()["run"]["run_id"]
+        assert c.post(f"/runs/{run_id}/cancel").status_code == 200
+        resp = c.post(f"/runs/{run_id}/resume")
+        assert resp.status_code == 202
+        final = wait_terminal(c, run_id, timeout=30.0)
+        assert final["run"]["status"] == "complete"
+
+    def test_resume_refuses_draft(self, client):
+        c, _, _ = client
+        created = create_run(c)
+        run_id = created.json()["run"]["run_id"]
+        resp = c.post(f"/runs/{run_id}/resume")
+        assert resp.status_code == 409
+        assert "/start" in resp.json()["error"]["message"]
+
+    def test_resume_not_found(self, client):
+        c, _, _ = client
+        resp = c.post("/runs/ghost/resume")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "not_found"
+
+
 class TestDashboardApi:
     """§37B server-side surface: the registry and the resolved default
     definition are served as data over /api/dashboards/* — the UI renders

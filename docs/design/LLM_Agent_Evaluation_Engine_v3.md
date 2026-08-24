@@ -1085,7 +1085,9 @@ rule:
   match:            # required for all ops except and/or/not/implies
     event: <type>   # from the §12B closed event-type list (envelope field: `type`)
     tool: <name>    # optional; matches the envelope's typed `tool` column
-                    # (tool_call / tool_result / retrieval / guardrail_check)
+                    # (tool_call / tool_result only, §12B.2 — null otherwise;
+                    #  retrieval / guardrail_check match by name via `where`
+                    #  CEL over payload, e.g. retrieval.source)
     where: "<CEL>"  # optional; CEL over payload (scalar filter)
     source: proxy|adapter|runner  # optional; default: BOTH proxy+adapter — see 9A.6
   assert: <rule>    # for_all only; evaluated anchored on each matched event
@@ -4120,47 +4122,24 @@ LLMs are particularly valuable after deterministic evaluation has already identi
 
 # 25. Reference Implementation Structure
 
-> repo/  
-> ├── apps/  
-> │ ├── web/  
-> │ └── api/  
-> ├── packages/  
-> │ ├── evaluation-schema/  
-> │ ├── evaluator-sdk/  
-> │ ├── trace-schema/  
-> │ └── dashboard-schema/  
-> ├── services/  
-> │ ├── project-understanding/  
-> │ ├── run-orchestrator/  
-> │ ├── evaluator-runtime/  
-> │ └── worker/  
-> ├── skills/  
-> │ ├── code-analysis/  
-> │ ├── evaluation-design/  
-> │ ├── test-generation/  
-> │ ├── trace-analysis/  
-> │ └── dashboard/  
-> ├── migrations/  
-> ├── infra/  
-> │ ├── docker/  
-> │ └── compose/  
-> └── tests/
+> **v3 note.** v2's §25 is superseded verbatim: its service names
+> (`run-orchestrator`, `evaluator-runtime`) and its deployment topology were
+> rewritten by §11B.12 (repo layout) and §11B.13 (nine Compose services across
+> three networks). The heading number is kept so §26's references still land;
+> the content below is the canonical current layout, restated in brief.
 
-## MVP deployment topology
+The current repo layout and service topology are §11B.12/§11B.13:
+`apps/{api,web}`, `packages/` for the schema and evaluator SDKs,
+`services/{worker, sweeper, builder, proxy, project-understanding}`, and
+`infra/{docker, package-proxy, compose}`. Nine Compose services across
+`front`, `control`, and `build_net`, with dynamic per-case networks for
+per-run proxy instances (§12A.2). The MVP runs the whole stack locally with
+`docker compose up`; isolation is a single `AGENT_RUNTIME` knob, never an
+architectural fork (§1E).
 
-> Browser  
-> │  
-> ▼  
-> Next.js / React  
-> │  
-> ▼  
-> FastAPI API  
-> ├── PostgreSQL + pgvector  
-> ├── Redis / queue  
-> └── Worker(s)  
-> └── Docker evaluation containers
-
-Keep the initial deployment as a modular monolith plus worker tier. Introduce service boundaries only when scale, security, or operational ownership warrants them.
+Keep the initial deployment as a modular monolith plus worker tier. Introduce
+service boundaries only when scale, security, or operational ownership
+warrants them.
 
 # 26. Implementation Roadmap (REVISED)
 

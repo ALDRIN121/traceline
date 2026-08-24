@@ -65,7 +65,6 @@ from .lifecycle import (
     RunCaseStatus,
     RunStatus,
     SmokeState,
-    is_run_terminal,
 )
 from .runner import (
     INVOCATION_FAILED,
@@ -505,9 +504,11 @@ class Engine:
         queued case (repeats + retries + scoring), aggregate (§13A.4 write-time
         incremental), evaluate gates, and land in ``complete``. Unexpected
         engine errors land the run in ``incomplete`` (§11B.8: a marker, never a
-        final state) and propagate. Terminal runs refuse to re-run. A resumed
-        run (INCOMPLETE / RUNNING / AGGREGATING) re-scores previously-finished
-        cases from their stored traces (§13A.1.3 — no agent re-run).
+        final state) and propagate. ``complete`` / ``failed`` runs refuse to
+        re-run. A resumed run (INCOMPLETE / RUNNING / AGGREGATING, or CANCELLED
+        via the explicit §35B.3 resume path) re-scores previously-finished
+        cases from their stored traces (§13A.1.3 — no agent re-run) and
+        re-runs only the cases left queued or requeued.
 
         ``should_cancel`` — an optional polled cancellation signal (§17.7:
         cancellation is a request, never a promise; the API's background worker
@@ -522,10 +523,25 @@ class Engine:
         if run is None:
             raise KeyError(f"run {run_id!r} not found in workspace {workspace_id!r}")
         status = RunStatus(run.status)
-        if is_run_terminal(status):
+        if status in (RunStatus.COMPLETE, RunStatus.FAILED):
             raise RunAlreadyTerminalError(
                 f"run {run_id!r} is already {status.value}; a terminal run does not re-run"
             )
+        if status is RunStatus.CANCELLED:
+            # §35B.3 resume of a user-cancelled run: cancellation is a
+            # terminal *outcome*, not a terminal *record* — the explicit
+            # resume verb requeues the run. Unrun cases were left CANCELLED
+            # as evidence of the interruption (§17.7); requeue exactly those
+            # (case-level CANCELLED → QUEUED is the deliberate explicit act
+            # the transition table blesses). Finished cases keep their
+            # attempts and re-score from stored traces at finalize.
+            self.storage.set_run_status(run_id, workspace_id, RunStatus.QUEUED)
+            for case in self.storage.list_cases(run_id, workspace_id):
+                if case.status == RunCaseStatus.CANCELLED.value:
+                    self.storage.set_case_status(
+                        run_id, case.case_id, workspace_id, RunCaseStatus.QUEUED
+                    )
+            status = RunStatus.QUEUED
         if status in (RunStatus.DRAFT, RunStatus.QUEUED, RunStatus.PROVISIONING):
             if status is RunStatus.DRAFT:
                 self.storage.set_run_status(run_id, workspace_id, RunStatus.QUEUED)
@@ -535,7 +551,16 @@ class Engine:
         requeue = self._reconcile_stale(run_id, workspace_id)
         # CANCELLED → QUEUED (§11B.8 resume path): the reconciler left the
         # crashed case CANCELLED as evidence; requeue it so the loop re-runs
-        # it fresh. Cases cancelled by anything else stay terminal.
+        # it fresh. §35B.3: a resume also re-enqueues FAILED cases — a case
+        # whose attempts all failed has nothing to re-score, so it runs fresh
+        # with first-attempt authority (§11C). Finished cases are untouched
+        # (they re-score from stored traces at finalize).
+        if status in (
+            RunStatus.RUNNING, RunStatus.AGGREGATING, RunStatus.INCOMPLETE,
+        ) or run.status == RunStatus.CANCELLED.value:
+            for case in self.storage.list_cases(run_id, workspace_id):
+                if case.status == RunCaseStatus.FAILED.value:
+                    requeue.add(case.case_id)
         for case_id in requeue:
             self.storage.set_case_status(
                 run_id, case_id, workspace_id, RunCaseStatus.QUEUED

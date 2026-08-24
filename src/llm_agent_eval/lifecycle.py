@@ -200,7 +200,11 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     ),
     RunStatus.COMPLETE: frozenset(),
     RunStatus.FAILED: frozenset(),
-    RunStatus.CANCELLED: frozenset(),
+    # CANCELLED → QUEUED is the explicit resume path (§35B.3): user
+    # cancellation is a terminal *outcome*, but an explicit resume requeues
+    # the run record and re-runs the cases it left unscored. Never automatic
+    # — the resume verb alone triggers it.
+    RunStatus.CANCELLED: frozenset({RunStatus.QUEUED}),
     RunStatus.INCOMPLETE: frozenset(),
 }
 
@@ -213,7 +217,11 @@ RUN_CASE_TRANSITIONS: dict[RunCaseStatus, frozenset[RunCaseStatus]] = {
         {RunCaseStatus.COMPLETED, RunCaseStatus.FAILED, RunCaseStatus.CANCELLED}
     ),
     RunCaseStatus.COMPLETED: frozenset(),
-    RunCaseStatus.FAILED: frozenset(),
+    # FAILED → QUEUED is §35B.3's explicit resume act: a case whose attempts
+    # all failed has nothing to re-score, so a resume re-runs it fresh with
+    # first-attempt authority (§11C). Never automatic — the resume verb alone
+    # triggers it.
+    RunCaseStatus.FAILED: frozenset({RunCaseStatus.QUEUED}),
     # CANCELLED → QUEUED is the resume/requeue path (§11B.8): a runner crash
     # leaves the case CANCELLED as evidence; a later resume explicitly
     # requeues it (via Engine._reconcile_stale) to run fresh. Deliberate
