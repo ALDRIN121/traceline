@@ -4,16 +4,55 @@ Every value here has a safe default so the whole offline stack (engine, evaluato
 API, dashboard, tests) runs with no secrets present. The DeepSeek key is read only
 by live paths (harness authoring against a real provider, live demo runs) — the
 offline test suite never touches it.
+
+``.env`` handling (no third-party deps): if a ``.env`` file exists in the working
+directory or the repository root it is parsed into ``os.environ`` with
+``setdefault`` — a real exported variable always wins, and the placeholder value
+from ``.env.example`` never satisfies ``has_key``. Missing file, malformed lines,
+and absent variables are all no-ops: the app never fails because ``.env`` is
+missing.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+def _load_dotenv() -> None:
+    """Parse ``.env`` into ``os.environ`` (setdefault — real env wins).
+
+    A deliberately small, safe subset: ``KEY=VALUE`` lines, ``#`` comments and
+    blanks skipped, surrounding quotes stripped, nothing interpolated, nothing
+    exported, never raises. Only files under the repo root are ever read — the
+    repo never reads ``.env`` from anywhere else.
+    """
+    candidates = (Path.cwd() / ".env", Path(__file__).resolve().parents[2] / ".env")
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key:
+                    os.environ.setdefault(key, value)
+        except OSError:
+            continue  # unreadable .env is a no-op, never a crash
+
+
+_load_dotenv()
 
 
 @dataclass(frozen=True)
