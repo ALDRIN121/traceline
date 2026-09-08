@@ -21,6 +21,7 @@ build/
 *.sqlite
 *.sqlite3
 .superpowers/
+.worktrees/
 
 # Playwright MCP scratch (browser verification artifacts)
 .playwright-mcp/
