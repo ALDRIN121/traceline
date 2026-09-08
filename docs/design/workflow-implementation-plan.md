@@ -182,11 +182,11 @@ def test_stale_edit_is_conflict(platform):
 
 **Interface:** `ImportSource(kind, upload_id | repo_url/ref, credential_ref)` → import job → immutable SourceVersion/diagnostics. Expose master import/job routes and one upload route returning a scoped upload ID.
 
-- [ ] Stream uploads and reject master §12 limit violations before extraction growth. Reject traversal/drive/UNC paths, links, special files, duplicate/case/Unicode collisions, encrypted ZIPs and expansion bombs.
-- [ ] Fetch approved HTTPS Git source in an isolated acquisition worker; resolve ref to commit, cap checkout, disable hooks/submodule/LFS implicit execution and redact credential transport. Persist source digest and acquisition manifest.
-- [ ] Quarantine raw imports with restricted encrypted storage. Produce the approved sanitized snapshot, exclude credential files from analysis/build/export, scan allowed text before model context, and retain masked exclusion/provenance records. Test hardcoded-secret and `.env` sentinels never reach the model or readable report.
-- [ ] Parse supported syntax before dependency install. Preserve parse-failed source/reference report with blocked local readiness. Cleanup partial files on cancel and failure.
-- [ ] Add scenarios `valid_zip`, `missing_git_ref`, `reference_broken_zip`, `zip_traversal`, `zip_case_collision`, `zip_expansion_limit`; each yields upload/repo input and expected typed error where applicable.
+- [x] Stream uploads and reject master §12 limit violations before extraction growth. Reject traversal/drive/UNC paths, links, special files, duplicate/case/Unicode collisions, encrypted ZIPs and expansion bombs.
+- [x] Fetch approved HTTPS Git source in an isolated acquisition worker; resolve ref to commit, cap checkout, disable hooks/submodule/LFS implicit execution and redact credential transport. Persist source digest and acquisition manifest.
+- [x] Quarantine raw imports with restricted encrypted storage. Produce the approved sanitized snapshot, exclude credential files from analysis/build/export, scan allowed text before model context, and retain masked exclusion/provenance records. Test hardcoded-secret and `.env` sentinels never reach the model or readable report.
+- [x] Parse supported syntax before dependency install. Preserve parse-failed source/reference report with blocked local readiness. Cleanup partial files on cancel and failure.
+- [x] Add scenarios `valid_zip`, `missing_git_ref`, `reference_broken_zip`, `zip_traversal`, `zip_case_collision`, `zip_expansion_limit`; each yields upload/repo input and expected typed error where applicable.
 
 ```python
 def test_zip_traversal_rejected(platform):

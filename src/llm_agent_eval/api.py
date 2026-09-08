@@ -445,7 +445,10 @@ def create_app(
         return _error(request, exc.status, exc.code, str(exc), exc.details)
 
     from .workflow_api import workflow_router
-    app.include_router(workflow_router(store, artifact_root or Path(settings.artifact_root), settings.artifact_max_bytes))
+    router = workflow_router(store, artifact_root or Path(settings.artifact_root), settings.artifact_max_bytes)
+    app.state.import_service = router.import_service
+    app.state.workflow_actor = Actor("local-owner", ws, "owner")
+    app.include_router(router)
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:

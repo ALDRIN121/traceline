@@ -170,6 +170,26 @@ class JobQueue:
             self._outbox(conn, row["job_id"], "leased", now)
             return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, row["job_id"])).fetchone())
 
+    def claim_specific(self, job_id: str, worker_id: str) -> LeasedJob | None:
+        """Atomically lease this job only; never consume another queued job."""
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError("job_id is required")
+        if not isinstance(worker_id, str) or not worker_id:
+            raise ValueError("worker_id is required")
+        self.actor.require(write=True, workspace_id=self.workspace_id)
+        now = self.clock()
+        lease_until = (datetime.fromisoformat(now).astimezone(timezone.utc) + timedelta(seconds=self.lease_seconds)).isoformat()
+        with self.storage.workspace_transaction(self.workspace_id) as conn:
+            self._expire_and_cancel(conn, now)
+            updated = conn.execute(
+                "UPDATE jobs SET status='leased',attempts=attempts+1,fence=fence+1,lease_worker_id=?,lease_expires_at=?,updated_at=? WHERE workspace_id=? AND job_id=? AND status='queued' AND cancellation_requested=0",
+                (worker_id, lease_until, now, self.workspace_id, job_id),
+            )
+            if not updated.rowcount:
+                return None
+            self._outbox(conn, job_id, "leased", now)
+            return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, job_id)).fetchone())
+
     def heartbeat(self, job_id: str, fence: int) -> LeasedJob:
         self.actor.require(write=True, workspace_id=self.workspace_id)
         now = self.clock()
@@ -195,6 +215,23 @@ class JobQueue:
             if not updated.rowcount:
                 raise StaleLease()
             self._outbox(conn, job_id, "completed", now)
+            return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, job_id)).fetchone())
+
+    def fail(self, job_id: str, fence: int, error: dict[str, Any]) -> JobRecord:
+        """Land an observed worker failure without manufacturing a result."""
+        self.actor.require(write=True, workspace_id=self.workspace_id)
+        if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+            raise WorkflowError("A typed job error is required")
+        now = self.clock()
+        safe = redact(error)
+        with self.storage.workspace_transaction(self.workspace_id) as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET status='failed',error_json=?,result_redaction_json=?,lease_worker_id=NULL,lease_expires_at=NULL,updated_at=? WHERE workspace_id=? AND job_id=? AND status='leased' AND fence=? AND lease_expires_at>?",
+                (_canonical(safe.content), _canonical(self._redaction_data(safe)), now, self.workspace_id, job_id, fence, now),
+            )
+            if not updated.rowcount:
+                raise StaleLease()
+            self._outbox(conn, job_id, "failed", now)
             return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, job_id)).fetchone())
 
     def request_cancel(self, job_id: str) -> JobRecord:

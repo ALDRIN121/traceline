@@ -1,0 +1,2 @@
+-- Source imports are represented by immutable source versions and job evidence.
+-- This marker preserves forward-only migration ordering for the ingestion slice.

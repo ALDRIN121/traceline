@@ -90,3 +90,24 @@ v3 architecture continues to govern those tasks; this record does not relax its 
 - Evidence: affected SQLite/API/workflow suite **104 passed**; real PostgreSQL job-recovery and
   RLS suite **4 passed** in a fresh temporary environment. Independent re-review found no P0–P2
   issues after remediation.
+
+## T04 — Secure immutable Git and ZIP ingestion
+
+**Status:** verified on 2026-09-08.
+
+- Streaming uploads enforce archive limits before extraction; raw uploads are stored in an isolated,
+  permission-restricted quarantine directory (0o700/0o600) and never appear in public manifests or
+  download routes.
+- Pre-extraction inspections strictly reject path traversals, absolute/drive/UNC paths, symlinks and
+  special files, case/Unicode name collisions, encrypted ZIPs, expansion bombs, and high compression
+  ratios.
+- Sanitized snapshots exclude `.env` files and hardcoded API tokens (`sk-test-do-not-persist-0001`) from
+  stored readable artifacts while recording structured exclusion provenance.
+- Syntax parse diagnostics are captured on non-executing AST parse failures (e.g. broken reference agent
+  syntax), producing diagnostic records while blocking runtime readiness (`readiness: blocked`).
+- Approved HTTPS Git acquisition enforces allowed hosts (`github.com`, `gitlab.com`, `bitbucket.org`),
+  disables submodules, hooks, and LFS implicit execution, redacts credential transport, and rejects
+  unapproved hosts with `git_source_rejected` and unresolvable refs with `git_ref_not_found`.
+- Evidence: focused import contract and archive limits suite **16 passed**; full test suite **559 passed,
+  7 skipped, 3 deselected, 3 warnings**.
+
