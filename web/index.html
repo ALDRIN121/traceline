@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f46e5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 17.5 9 6l3.5 7 1.5-3 6 7.5'/%3E%3C/svg%3E">
-<title>Evaluation Engine — Run dashboard</title>
-<link rel="stylesheet" href="styles.css">
-<script src="app.js" defer></script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230D8A9A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 17.5 9 6l3.5 7 1.5-3 6 7.5'/%3E%3C/svg%3E">
+<title>Traceline — LLM Agent Evaluation Engine</title>
+<link rel="stylesheet" href="styles.css?v=7">
+<script src="app.js?v=7" defer></script>
 </head>
-<body>
+<body data-view="builder">
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="topbar">
@@ -19,48 +19,358 @@
         <path d="M4 17.5 9 6l3.5 7 1.5-3 6 7.5"/>
         <path d="M4 21h16"/>
       </svg>
-      <span class="brand-name">Evaluation Engine</span>
-      <span class="brand-sub">LLM agent evaluation</span>
+      <div class="brand-titles">
+        <span class="brand-name">Traceline</span>
+        <span class="brand-badge">Engine v0.1</span>
+      </div>
     </div>
+
+    <nav class="nav-segmented" role="tablist" aria-label="Main views">
+      <button class="nav-tab-btn is-active" id="tab-btn-builder" role="tab" aria-selected="true" aria-controls="view-builder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+        </svg>
+        <span>Eval Builder</span>
+      </button>
+      <button class="nav-tab-btn" id="tab-btn-dashboard" role="tab" aria-selected="false" aria-controls="view-dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="7" height="9" x="3" y="3" rx="1"/>
+          <rect width="7" height="5" x="14" y="3" rx="1"/>
+          <rect width="7" height="9" x="14" y="12" rx="1"/>
+          <rect width="7" height="5" x="3" y="16" rx="1"/>
+        </svg>
+        <span>Dashboards</span>
+      </button>
+    </nav>
+
     <div class="topbar-controls">
-      <div class="run-filter" id="run-filter">
+      <div class="run-filter" id="run-filter" hidden>
         <label for="run-select" class="filter-label">Run</label>
-        <select id="run-select" class="run-select" disabled aria-describedby="run-select-hint"></select>
+        <div class="select-wrapper">
+          <span id="run-status-indicator" class="run-dot dot-neutral" aria-hidden="true"></span>
+          <select id="run-select" class="run-select" disabled aria-describedby="run-select-hint"></select>
+        </div>
         <span id="run-select-hint" class="visually-hidden">Choose the run the dashboard shows. Latest resolves to the most recent run.</span>
       </div>
-      <button id="refresh-btn" class="btn btn-secondary" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
-          <path d="M21 3v6h-6"/>
-        </svg>
-        <span>Refresh</span>
-      </button>
-      <button id="theme-btn" class="btn btn-icon" type="button" aria-label="Switch theme">
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
-        </svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="4"/>
-          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
-        </svg>
-      </button>
+
+      <div class="utility-group">
+        <div id="live-indicator" class="live-pill" title="Live stream status" hidden>
+          <span class="live-pulse"></span>
+          <span id="live-text">Live</span>
+        </div>
+
+        <button id="refresh-btn" class="btn btn-icon" type="button" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+            <path d="M21 3v6h-6"/>
+          </svg>
+        </button>
+
+        <button id="theme-btn" class="btn btn-icon" type="button" aria-label="Switch theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
+          </svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </header>
 
 <main id="main" class="main">
-  <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
-  <div id="grid" class="grid"></div>
+  <section id="view-builder" class="builder-workspace" aria-label="Eval Builder" aria-labelledby="builder-heading">
+    <section class="architect-chat" aria-label="Harness conversation">
+      <header class="chat-header">
+        <div class="chat-title-group">
+          <h3 id="builder-heading">Eval Builder</h3>
+          <span class="chip" data-tone="green"><span class="dot"></span><span>Harness</span></span>
+        </div>
+      </header>
+
+      <div class="chat-thread">
+        <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 17.5 9 6l3.5 7 1.5-3 6 7.5"/>
+                <path d="M4 21h16"/>
+              </svg>
+            </div>
+            <p class="chat-empty-title">Welcome to Traceline</p>
+            <p class="chat-empty-lede">This is the evaluation harness — not the agent under test. Upload a ZIP, or paste a path such as <code class="mono">fixtures/sample-agent</code>. I’ll inspect what I find, confirm it with you, and author a dashboard you can keep refining here.</p>
+            <div class="chat-presets">
+              <button type="button" class="chip-btn chat-preset-btn" data-preset="Analyze fixtures/sample-agent">Analyze fixtures/sample-agent</button>
+            </div>
+            <p class="empty-quiet">
+              <button type="button" class="quiet-link" id="btn-sample-run">Run sample agent</button>
+              <span> — a built-in demo, not your connected agent.</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="chat-input-bar">
+          <div class="chat-input-wrapper">
+            <button type="button" id="btn-chat-upload" class="btn-attach" aria-label="Upload agent ZIP">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/>
+              </svg>
+            </button>
+            <input type="file" id="chat-zip-input" accept=".zip,application/zip" hidden>
+            <textarea id="chat-user-input" class="chat-textarea" rows="1" placeholder="Paste a path, or describe what this eval should prove…"></textarea>
+            <button type="button" id="btn-chat-send" class="btn-send" aria-label="Send message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="22" y1="2" x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+          <div class="chat-input-meta">
+            <span>ZIP or local path · <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline</span>
+            <span id="chat-status-hint">Ready</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="artifact-rail" id="artifact-rail" aria-hidden="true">
+      <aside class="artifact-panel" id="artifact-panel" aria-label="Authored dashboard preview">
+        <header class="artifact-head">
+          <div class="artifact-titles">
+            <p class="artifact-kicker">Preview</p>
+            <h3 id="artifact-title">Dashboard sample</h3>
+          </div>
+          <button type="button" class="btn btn-icon" id="btn-artifact-close" aria-label="Collapse artifact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 18l6-6-6-6"/>
+            </svg>
+          </button>
+        </header>
+        <div class="artifact-body" id="artifact-body"></div>
+        <footer class="artifact-foot">
+          <button type="button" class="btn btn-primary btn-block" id="btn-run-this-eval">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <span>Run this eval</span>
+          </button>
+          <p class="artifact-hint">Runs the connected agent against the authored spec — not the sample runner.</p>
+        </footer>
+      </aside>
+    </div>
+  </section>
+
+  <div id="view-dashboard" class="dashboard-view" hidden>
+    <div class="dashboards-shell">
+      <aside class="evals-pane" aria-label="Custom evaluations">
+        <div class="pane-header">
+          <div class="pane-title-row">
+            <h2 class="pane-title">Custom evals</h2>
+            <span id="evals-count-badge" class="badge">0</span>
+          </div>
+          <p class="evals-lede">Authored in Eval Builder. Selecting one shows its pipeline and dashboard.</p>
+        </div>
+        <div id="evals-list" class="evals-list" role="list"></div>
+      </aside>
+
+      <div class="dashboards-main">
+        <div id="pipeline-strip" class="pipeline-strip" hidden aria-label="Evaluation pipeline"></div>
+        <p id="dashboard-fill-hint" class="fill-hint" hidden>Run the agent to fill this dashboard</p>
+
+        <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+        <section id="kpi-strip" class="kpi-strip" aria-label="Run summary KPI metrics" hidden>
+          <div class="kpi-card" id="kpi-pass-rate">
+            <div class="kpi-label">Pass Rate</div>
+            <div class="kpi-val" id="kpi-pass-val">—</div>
+            <div class="kpi-sub" id="kpi-pass-sub">All test cases</div>
+            <div class="kpi-bar-wrap"><div class="kpi-bar" id="kpi-pass-bar"></div></div>
+          </div>
+          <div class="kpi-card" id="kpi-cases">
+            <div class="kpi-label">Test Cases</div>
+            <div class="kpi-val" id="kpi-cases-val">—</div>
+            <div class="kpi-sub" id="kpi-cases-sub">Scored</div>
+            <div class="kpi-chips" id="kpi-cases-breakdown"></div>
+          </div>
+          <div class="kpi-card" id="kpi-gate">
+            <div class="kpi-label">Run Gate</div>
+            <div class="kpi-val" id="kpi-gate-val">—</div>
+            <div class="kpi-sub" id="kpi-gate-sub">Threshold enforcement</div>
+          </div>
+          <div class="kpi-card" id="kpi-runtime">
+            <div class="kpi-label">Execution Time</div>
+            <div class="kpi-val" id="kpi-runtime-val">—</div>
+            <div class="kpi-sub" id="kpi-runtime-sub">Total elapsed</div>
+          </div>
+          <div class="kpi-card" id="kpi-cost">
+            <div class="kpi-label">Token Cost</div>
+            <div class="kpi-val" id="kpi-cost-val">—</div>
+            <div class="kpi-sub" id="kpi-cost-sub">Observed proxy metering</div>
+          </div>
+        </section>
+
+        <div id="preview-dashboard" class="preview-dashboard" hidden></div>
+
+        <div id="master-detail-workspace" class="master-detail" hidden>
+          <aside class="cases-pane">
+            <div class="pane-header">
+              <div class="pane-title-row">
+                <h2 class="pane-title">Test Cases</h2>
+                <span id="cases-count-badge" class="badge">0</span>
+              </div>
+              <div class="search-bar">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input type="text" id="case-search-input" class="search-input" placeholder="Search cases (name, id, tag)…" aria-label="Search test cases">
+              </div>
+              <div class="filter-pills" role="tablist" aria-label="Case status filters">
+                <button type="button" class="filter-pill is-active" data-filter="all" role="tab" aria-selected="true">All</button>
+                <button type="button" class="filter-pill" data-filter="fail" role="tab" aria-selected="false">Failing</button>
+                <button type="button" class="filter-pill" data-filter="pass" role="tab" aria-selected="false">Passing</button>
+                <button type="button" class="filter-pill" data-filter="error" role="tab" aria-selected="false">Errors</button>
+              </div>
+            </div>
+            <div id="cases-list-container" class="cases-list-wrap" role="list"></div>
+          </aside>
+
+          <section class="inspector-pane" id="case-inspector" aria-label="Test case details and trace evidence">
+            <div id="inspector-empty" class="inspector-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon" aria-hidden="true">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+              <p class="empty-title">Select a test case</p>
+              <p class="empty-sub">Choose any case on the left to inspect its trace events, tool calls, and metric evidence.</p>
+            </div>
+
+            <div id="inspector-content" class="inspector-content" hidden>
+              <div class="inspector-header">
+                <div class="inspector-title-block">
+                  <div class="title-with-chip">
+                    <h3 id="insp-case-name" class="insp-title">—</h3>
+                    <span id="insp-case-status-chip"></span>
+                  </div>
+                  <div class="insp-meta" id="insp-case-meta">—</div>
+                </div>
+                <div class="inspector-actions">
+                  <button type="button" id="btn-open-dispute" class="btn btn-sm btn-secondary" title="Dispute or override machine score">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                    <span>Dispute / Override</span>
+                  </button>
+                  <button type="button" id="btn-copy-trace" class="btn btn-sm btn-icon" title="Copy raw trace JSON">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <nav class="inspector-tabs" role="tablist">
+                <button type="button" class="tab-btn is-active" data-tab="trace" role="tab" aria-selected="true">Trace Timeline</button>
+                <button type="button" class="tab-btn" data-tab="assertions" role="tab" aria-selected="false">Metrics &amp; Assertions</button>
+                <button type="button" class="tab-btn" data-tab="io" role="tab" aria-selected="false">Input &amp; Expected</button>
+              </nav>
+
+              <div id="tab-trace-panel" class="tab-panel is-active" role="tabpanel">
+                <div class="trace-filters">
+                  <span class="trace-filter-label">Filter events:</span>
+                  <button type="button" class="trace-filter-chip is-active" data-event-filter="all">All</button>
+                  <button type="button" class="trace-filter-chip" data-event-filter="tool">Tools</button>
+                  <button type="button" class="trace-filter-chip" data-event-filter="llm">LLM</button>
+                  <button type="button" class="trace-filter-chip" data-event-filter="evidence">Evidence</button>
+                  <button type="button" class="trace-filter-chip" data-event-filter="error">Errors</button>
+                </div>
+                <div id="trace-timeline-container" class="timeline-container"></div>
+              </div>
+              <div id="tab-assertions-panel" class="tab-panel" role="tabpanel" hidden>
+                <div id="assertions-container" class="assertions-wrap"></div>
+              </div>
+              <div id="tab-io-panel" class="tab-panel" role="tabpanel" hidden>
+                <div class="io-section">
+                  <h4 class="io-heading">Case Input</h4>
+                  <pre class="code-block" id="insp-input-json">{}</pre>
+                </div>
+                <div class="io-section">
+                  <h4 class="io-heading">Expected Values &amp; Provenance</h4>
+                  <div id="insp-expected-container" class="expected-list"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="grid" class="grid" hidden></div>
+      </div>
+    </div>
+  </div>
+
   <div id="boot" class="boot">
     <div class="boot-dot" aria-hidden="true"></div>
-    <p>Loading dashboard…</p>
+    <p>Loading Traceline…</p>
   </div>
+
   <div id="fatal" class="fatal" hidden>
     <h1 class="fatal-title">The dashboard could not load</h1>
     <p id="fatal-detail" class="fatal-detail"></p>
     <button id="fatal-retry" class="btn btn-secondary" type="button">Try again</button>
   </div>
 </main>
+
+<div id="modal-dispute" class="modal-backdrop" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-dispute-title">
+    <div class="modal-head">
+      <h3 id="modal-dispute-title" class="modal-title">Dispute or Override Metric Score</h3>
+      <button type="button" class="btn-close" id="btn-close-dispute" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-desc">
+        Overrides are recorded alongside machine scores in the audit ledger (<code class="mono">score_revisions</code>). The original machine score is never deleted.
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="dispute-metric-select">Metric</label>
+        <select id="dispute-metric-select" class="form-select"></select>
+      </div>
+      <div class="form-row">
+        <div class="form-group flex-1">
+          <label class="form-label" for="dispute-override-value">Override Verdict</label>
+          <select id="dispute-override-value" class="form-select">
+            <option value="1.0">1.0 — Mark as PASS</option>
+            <option value="0.0">0.0 — Mark as FAIL</option>
+          </select>
+        </div>
+        <div class="form-group flex-1">
+          <label class="form-label" for="dispute-path-select">Dispute Reason Path</label>
+          <select id="dispute-path-select" class="form-select">
+            <option value="rule_wrong">rule_wrong (Assertion definition incorrect)</option>
+            <option value="evidence_missing">evidence_missing (Trace gap / uncaptured event)</option>
+            <option value="judgment_wrong">judgment_wrong (Semantic judge misjudged)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="dispute-author">Reviewer / Author ID</label>
+        <input type="text" id="dispute-author" class="form-input" value="auditor@local" placeholder="e.g. alice@team">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="dispute-reason">Explanation / Justification</label>
+        <textarea id="dispute-reason" class="form-textarea" rows="3" placeholder="State why this machine score is disputed…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="btn-cancel-dispute">Cancel</button>
+      <button type="button" class="btn btn-primary" id="btn-submit-dispute">Save Override</button>
+    </div>
+  </div>
+</div>
 
 <footer class="footer">
   <span id="footer-meta"></span>

@@ -44,15 +44,48 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-async function api(path) {
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function api(path, opts = {}) {
+  const headers = { Accept: "application/json", ...(opts.headers || {}) };
+  let body = opts.body;
+  if (body && typeof body === "object" && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+  const method = opts.method || (body ? "POST" : "GET");
+  const res = await fetch(path, { ...opts, method, headers, body });
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
+    let code = "request_failed";
+    let details = {};
+    let correlationId = res.headers.get("x-correlation-id");
     try {
-      const body = await res.json();
-      if (body && body.error && body.error.message) detail = body.error.message;
+      const b = await res.json();
+      if (b && b.error) {
+        if (b.error.message) detail = b.error.message;
+        if (b.error.code) code = b.error.code;
+        if (b.error.details) details = b.error.details;
+        if (b.error.correlation_id) correlationId = b.error.correlation_id;
+      }
+      else if (b && b.detail) detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail);
+      else if (b && b.reason) detail = b.reason;
     } catch (_) { /* non-JSON error body */ }
-    throw new Error(`GET ${path} → ${detail}`);
+    const err = new Error(detail);
+    err.name = "ApiError";
+    err.code = code;
+    err.status = res.status;
+    err.details = details;
+    err.correlationId = correlationId;
+    throw err;
   }
   return res.json();
 }
@@ -211,6 +244,21 @@ const state = {
   selectionRetryTimer: null, // trace-evidence fetch retry (transient errors)
   activeCase: null,   // case row holding keyboard focus when the grid rebuilt
   lastPhase: null,    // announced run phase (aria-live)
+  caseFilter: "all",  // "all" | "fail" | "pass" | "error"
+  caseSearch: "",     // search term for test cases
+  eventFilter: "all", // "all" | "tool" | "llm" | "evidence" | "error"
+  activeInspectorTab: "trace", // "trace" | "assertions" | "io"
+  eventSource: null,  // active SSE EventSource
+  sseRunId: null,
+  view: "builder",
+  evalId: null,
+  evals: [],
+  selectedEval: null,
+  authoredDashboard: null,
+  authoredSpec: null,
+  authoredHitl: null,
+  pipeline: [],
+  artifactOpen: false,
 };
 
 /* ---------------------------------------------------------------------------
@@ -244,6 +292,13 @@ async function loadDashboard() {
   const body = await api(dashboardUrl());
   state.definition = body;
   state.selectionName = findSelectionName(body);
+  if (body.run && body.run.run_id) {
+    try {
+      state.runDetail = await api(`/runs/${encodeURIComponent(body.run.run_id)}`);
+    } catch (_) {
+      /* keep prior detail */
+    }
+  }
   await resolveSelectionData();
   render();
   schedulePolling();
@@ -355,11 +410,25 @@ function caseNameFromDefn(caseId) {
   return caseId;
 }
 
-function selectCase(caseId) {
-  if (caseId === state.selection.case) return;
+async function selectCase(caseId) {
+  if (caseId === state.selection.case) {
+    renderInspector(caseId);
+    return;
+  }
   clearSelectionRetry();
   state.selection.case = caseId;
-  refreshSelectionBlocks();
+  const run = (state.definition && state.definition.run)
+    || (state.runDetail && state.runDetail.run);
+  if (run && run.run_id) {
+    try {
+      const body = await api(`/runs/${encodeURIComponent(run.run_id)}/traces/${encodeURIComponent(caseId)}`);
+      state.traces = body.events || [];
+    } catch (_) {
+      state.traces = [];
+    }
+  }
+  if (state.view === "dashboard") renderMasterDetail();
+  else refreshSelectionBlocks();
 }
 
 function clearSelectionRetry() {
@@ -957,6 +1026,20 @@ function renderRunSelector() {
     latest.textContent = "Latest run (no runs yet)";
     latest.selected = true;
   }
+
+  const dot = $("#run-status-indicator");
+  if (dot) {
+    dot.className = "run-dot";
+    const cur = state.filterRun === "latest" ? runs[0] : runs.find((r) => r.run_id === state.filterRun);
+    if (cur) {
+      if (cur.status === "completed") dot.classList.add("dot-green");
+      else if (["running", "queued", "provisioning", "aggregating"].includes(cur.status)) dot.classList.add("dot-sky");
+      else if (["failed", "cancelled"].includes(cur.status)) dot.classList.add("dot-red");
+      else dot.classList.add("dot-neutral");
+    } else {
+      dot.classList.add("dot-neutral");
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1121,6 +1204,715 @@ function initTheme() {
 }
 
 /* ---------------------------------------------------------------------------
+ * Spec presets for New Run modal
+ * ------------------------------------------------------------------------ */
+
+const SAMPLE_SPEC = {
+  spec_version: "0.1.0",
+  name: "support-triage-suite",
+  dataset_version: "v1",
+  run_tier: "quick",
+  budget_tokens: 4000,
+  cases: [
+    {
+      case_id: "order_status_delivered",
+      name: "Delivered package inquiry",
+      input: { text: "Where is order 12345? I was expecting it yesterday." },
+      expected: [
+        { name: "order_id", value: "12345", provenance: "user_stated" },
+        { name: "status", value: "delivered", provenance: "inferred" }
+      ]
+    },
+    {
+      case_id: "order_status_transit",
+      name: "In transit package inquiry",
+      input: { text: "Can you track order 67890? Is it delayed?" },
+      expected: [
+        { name: "order_id", value: "67890", provenance: "user_stated" },
+        { name: "status", value: "in_transit", provenance: "inferred" }
+      ]
+    },
+    {
+      case_id: "damaged_item_refund",
+      name: "Damaged item replacement request",
+      input: { text: "Order 54321 arrived broken. I need a refund or replacement right now." },
+      expected: [
+        { name: "order_id", value: "54321", provenance: "user_stated" },
+        { name: "eligible", value: "true", provenance: "inferred" }
+      ]
+    }
+  ],
+  metrics: [
+    {
+      metric_id: "order_status_tool_called",
+      name: "Calls lookup_order_status tool",
+      type: "trace_rule",
+      target: { type: "trace_event", match: { event: "tool_call", tool: "lookup_order_status" }, occurrence: "any", on_missing: "fail" },
+      evaluator: { type: "trace_rule", rule: { type: "schema_validation" } },
+      scoring: { type: "binary", range: [0, 1] },
+      aggregation: { method: "pass_rate", on_error: "fail" }
+    },
+    {
+      metric_id: "eligibility_before_refund",
+      name: "Asserts eligibility checked before refund",
+      type: "trace_rule",
+      target: { type: "trace_event", match: { event: "tool_call", tool: "refund_order" }, occurrence: "any", on_missing: "pass" },
+      evaluator: { type: "trace_rule", rule: { type: "sequence", assert: { op: "exists_before", match: { event: "tool_call", tool: "check_eligibility" } } } },
+      scoring: { type: "binary", range: [0, 1] },
+      aggregation: { method: "pass_rate", on_error: "fail" }
+    }
+  ]
+};
+
+const REFUND_SAFETY_SPEC = {
+  spec_version: "0.1.0",
+  name: "refund-safety-suite",
+  dataset_version: "v1",
+  run_tier: "standard",
+  budget_tokens: 5000,
+  cases: [
+    {
+      case_id: "high_value_refund_case",
+      name: "High value refund verification",
+      input: { text: "Refund order 99999 for $350 damaged goods." },
+      expected: [
+        { name: "order_id", value: "99999", provenance: "user_stated" }
+      ]
+    }
+  ],
+  metrics: [
+    {
+      metric_id: "check_eligibility_first",
+      name: "Must check refund eligibility",
+      type: "trace_rule",
+      target: { type: "trace_event", match: { event: "tool_call", tool: "refund_order" }, occurrence: "any", on_missing: "pass" },
+      evaluator: { type: "trace_rule", rule: { type: "sequence", assert: { op: "exists_before", match: { event: "tool_call", tool: "check_eligibility" } } } },
+      scoring: { type: "binary", range: [0, 1] },
+      aggregation: { method: "pass_rate", on_error: "fail" }
+    }
+  ]
+};
+
+/* ---------------------------------------------------------------------------
+ * KPI Summary Strip
+ * ------------------------------------------------------------------------ */
+
+function renderKpiStrip(run, runDetail) {
+  const cases = (runDetail && runDetail.cases) || [];
+  const metrics = (runDetail && runDetail.metrics) || [];
+
+  let passingCases = 0;
+  let failingCases = 0;
+  let errorCases = 0;
+  let completedCases = 0;
+
+  for (const c of cases) {
+    if (c.status === "completed") completedCases++;
+    const cm = c.metrics || [];
+    const hasFail = cm.some((m) => m.status === "FAIL");
+    const hasError = cm.some((m) => m.status === "ERROR") || c.status === "failed";
+    if (hasError) {
+      errorCases++;
+    } else if (hasFail) {
+      failingCases++;
+    } else if (cm.length > 0 && cm.every((m) => m.status === "PASS")) {
+      passingCases++;
+    }
+  }
+
+  const total = cases.length || run.case_count || 0;
+  const passRate = total > 0 ? (passingCases / total) * 100 : 0;
+
+  const passVal = $("#kpi-pass-val");
+  const passBar = $("#kpi-pass-bar");
+  const passSub = $("#kpi-pass-sub");
+  if (passVal) passVal.textContent = total > 0 ? `${passRate.toFixed(1)}%` : "—";
+  if (passBar) passBar.style.width = `${Math.min(100, Math.max(0, passRate))}%`;
+  if (passSub) passSub.textContent = total > 0 ? `${passingCases} of ${total} cases passing` : "Awaiting execution";
+
+  const casesVal = $("#kpi-cases-val");
+  const casesSub = $("#kpi-cases-sub");
+  const breakdown = $("#kpi-cases-breakdown");
+  if (casesVal) casesVal.textContent = String(total);
+  if (casesSub) casesSub.textContent = `${completedCases} completed · ${failingCases} failed`;
+  if (breakdown) {
+    const chips = [chip(`${passingCases} pass`, "green")];
+    if (failingCases) chips.push(chip(`${failingCases} fail`, "red"));
+    if (errorCases) chips.push(chip(`${errorCases} err`, "amber"));
+    breakdown.replaceChildren(...chips);
+  }
+
+  const gateVal = $("#kpi-gate-val");
+  const gateSub = $("#kpi-gate-sub");
+  if (gateVal) {
+    const failedGates = metrics.filter((m) => m.gate_result === "fail");
+    if (failedGates.length > 0) {
+      gateVal.textContent = "GATE FAIL";
+      gateVal.style.color = "var(--red)";
+      if (gateSub) gateSub.textContent = `${failedGates.length} threshold rule(s) breached`;
+    } else if (metrics.some((m) => m.gate_result === "pass")) {
+      gateVal.textContent = "GATE PASS";
+      gateVal.style.color = "var(--green)";
+      if (gateSub) gateSub.textContent = "All gating thresholds satisfied";
+    } else {
+      gateVal.textContent = "UN-GATED";
+      gateVal.style.color = "var(--ink-2)";
+      if (gateSub) gateSub.textContent = "No gate threshold configured";
+    }
+  }
+
+  const runVal = $("#kpi-runtime-val");
+  const runSub = $("#kpi-runtime-sub");
+  if (runVal) {
+    if (run.run_started_at) {
+      const start = new Date(run.run_started_at).getTime();
+      const end = run.run_completed_at ? new Date(run.run_completed_at).getTime() : Date.now();
+      const durSec = Math.max(0, (end - start) / 1000);
+      runVal.textContent = durSec < 60 ? `${durSec.toFixed(2)}s` : `${Math.floor(durSec / 60)}m ${(durSec % 60).toFixed(0)}s`;
+      if (runSub) runSub.textContent = run.run_completed_at ? "Run finished" : "In progress…";
+    } else {
+      runVal.textContent = "—";
+      if (runSub) runSub.textContent = "Queued";
+    }
+  }
+
+  const costVal = $("#kpi-cost-val");
+  const costSub = $("#kpi-cost-sub");
+  if (costVal) {
+    let totalTokens = 0;
+    let totalUsd = 0;
+    for (const c of cases) {
+      for (const a of c.attempts || []) {
+        totalTokens += (a.token_usage && a.token_usage.total) || 0;
+        totalUsd += (a.cost_usd || 0);
+      }
+    }
+    costVal.textContent = totalUsd > 0 ? fmtUsd(totalUsd) : (totalTokens > 0 ? `${fmtTokens(totalTokens)} tok` : "$0.00");
+    if (costSub) costSub.textContent = totalTokens > 0 ? `${fmtTokens(totalTokens)} tokens metered` : "Observed egress";
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Master-Detail Workspace
+ * ------------------------------------------------------------------------ */
+
+function renderMasterDetail() {
+  const container = $("#cases-list-container");
+  if (!container) return;
+
+  const cases = (state.runDetail && state.runDetail.cases) || [];
+
+  const q = (state.caseSearch || "").toLowerCase().trim();
+  const filtered = cases.filter((c) => {
+    if (state.caseFilter === "fail") {
+      const hasFail = (c.metrics || []).some((m) => m.status === "FAIL");
+      if (c.status !== "failed" && !hasFail) return false;
+    } else if (state.caseFilter === "pass") {
+      const hasFail = (c.metrics || []).some((m) => m.status === "FAIL" || m.status === "ERROR");
+      if (c.status !== "completed" || hasFail) return false;
+    } else if (state.caseFilter === "error") {
+      const hasError = (c.metrics || []).some((m) => m.status === "ERROR");
+      if (c.status !== "failed" && !hasError) return false;
+    }
+
+    if (q) {
+      const name = (c.name || "").toLowerCase();
+      const id = (c.case_id || "").toLowerCase();
+      if (!name.includes(q) && !id.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const badge = $("#cases-count-badge");
+  if (badge) badge.textContent = `${filtered.length} of ${cases.length}`;
+
+  if ((!state.selection.case || !cases.some((c) => c.case_id === state.selection.case)) && filtered.length > 0) {
+    selectCase(filtered[0].case_id);
+    return;
+  }
+
+  const cards = [];
+  for (const c of filtered) {
+    const isSelected = c.case_id === state.selection.case;
+    const cm = c.metrics || [];
+    const hasFail = cm.some((m) => m.status === "FAIL");
+    const hasError = cm.some((m) => m.status === "ERROR") || c.status === "failed";
+    const statusTone = hasError ? "red" : (hasFail ? "red" : (c.status === "completed" ? "green" : "sky"));
+    const statusLabel = hasError ? "ERROR" : (hasFail ? "FAIL" : (c.status === "completed" ? "PASS" : c.status));
+
+    const card = el("div", {
+      class: `case-card ${isSelected ? "is-selected" : ""}`,
+      dataset: { caseId: c.case_id },
+      onclick: () => selectCase(c.case_id),
+    }, [
+      chip(statusLabel, statusTone),
+      el("div", { class: "case-card-body" }, [
+        el("div", { class: "case-card-title-row" }, [
+          el("span", { class: "case-card-title", text: c.name || c.case_id }),
+          el("span", { class: "case-card-id", text: c.case_id }),
+        ]),
+        el("div", { class: "case-card-meta-row" }, [
+          c.repeat_count > 1 ? el("span", { text: `${c.repeat_count} repeats` }) : null,
+          ...cm.slice(0, 3).map((m) => {
+            const mTone = m.status === "PASS" ? "green" : (m.status === "FAIL" ? "red" : "neutral");
+            return chip(m.metric_id, mTone);
+          }),
+          cm.length > 3 ? el("span", { class: "cell-sub", text: `+${cm.length - 3} more` }) : null,
+        ]),
+      ]),
+    ]);
+    cards.push(card);
+  }
+
+  if (cards.length === 0) {
+    container.replaceChildren(
+      el("div", { class: "empty-sub", style: "padding: 24px; text-align: center;", text: "No test cases match the current filter." })
+    );
+  } else {
+    container.replaceChildren(...cards);
+  }
+
+  renderInspector(state.selection.case);
+}
+
+function renderInspector(caseId) {
+  const emptyView = $("#inspector-empty");
+  const contentView = $("#inspector-content");
+  if (!caseId || !state.runDetail) {
+    if (emptyView) emptyView.hidden = false;
+    if (contentView) contentView.hidden = true;
+    return;
+  }
+
+  const cases = state.runDetail.cases || [];
+  const caseRow = cases.find((c) => c.case_id === caseId);
+  if (!caseRow) {
+    if (emptyView) emptyView.hidden = false;
+    if (contentView) contentView.hidden = true;
+    return;
+  }
+
+  if (emptyView) emptyView.hidden = true;
+  if (contentView) contentView.hidden = false;
+
+  const titleEl = $("#insp-case-name");
+  if (titleEl) titleEl.textContent = caseRow.name || caseRow.case_id;
+
+  const chipEl = $("#insp-case-status-chip");
+  if (chipEl) {
+    const cm = caseRow.metrics || [];
+    const hasFail = cm.some((m) => m.status === "FAIL");
+    const hasError = cm.some((m) => m.status === "ERROR") || caseRow.status === "failed";
+    const statusTone = hasError ? "red" : (hasFail ? "red" : (caseRow.status === "completed" ? "green" : "sky"));
+    const statusLabel = hasError ? "ERROR" : (hasFail ? "FAIL" : (caseRow.status === "completed" ? "PASS" : caseRow.status));
+    chipEl.replaceChildren(chip(statusLabel, statusTone));
+  }
+
+  const metaEl = $("#insp-case-meta");
+  if (metaEl) {
+    const dur = caseRow.completed_at && caseRow.started_at ? `${((new Date(caseRow.completed_at) - new Date(caseRow.started_at)) / 1000).toFixed(2)}s` : "—";
+    metaEl.textContent = `Case ID: ${caseRow.case_id} · Duration: ${dur} · Attempts: ${(caseRow.attempts || []).length}`;
+  }
+
+  renderInspectorTab(caseRow);
+}
+
+function renderInspectorTab(caseRow) {
+  const tab = state.activeInspectorTab;
+  const pTrace = $("#tab-trace-panel");
+  const pAssert = $("#tab-assertions-panel");
+  const pIo = $("#tab-io-panel");
+
+  if (pTrace) pTrace.hidden = tab !== "trace";
+  if (pAssert) pAssert.hidden = tab !== "assertions";
+  if (pIo) pIo.hidden = tab !== "io";
+
+  for (const btn of document.querySelectorAll(".inspector-tabs .tab-btn")) {
+    const isActive = btn.dataset.tab === tab;
+    btn.classList.toggle("is-active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+
+  if (tab === "trace") {
+      const events = Array.isArray(state.traces)
+      ? state.traces
+      : (state.traces && state.traces.events) || [];
+    renderTraceTimeline(events, caseRow.metrics || []);
+  } else if (tab === "assertions") {
+    renderAssertions(caseRow);
+  } else if (tab === "io") {
+    renderInputExpected(caseRow);
+  }
+}
+
+function renderTraceTimeline(traces, metrics) {
+  const container = $("#trace-timeline-container");
+  if (!container) return;
+
+  const evidenceIds = new Set();
+  for (const m of metrics) {
+    for (const eid of m.evidence_event_ids || []) {
+      evidenceIds.add(eid);
+    }
+  }
+
+  const filter = state.eventFilter || "all";
+  const filteredEvents = traces.filter((ev) => {
+    if (filter === "tool") return ev.event_type && ev.event_type.startsWith("tool_");
+    if (filter === "llm") return ev.event_type && ev.event_type.startsWith("llm_");
+    if (filter === "evidence") return evidenceIds.has(ev.event_id);
+    if (filter === "error") return ev.error || ev.event_type === "error";
+    return true;
+  });
+
+  if (filteredEvents.length === 0) {
+    container.replaceChildren(
+      el("div", { class: "empty-sub", style: "padding: 24px 0; text-align: center;", text: traces.length === 0 ? "No trace events captured for this case." : "No events match the selected event filter." })
+    );
+    return;
+  }
+
+  const rows = [];
+  for (let i = 0; i < filteredEvents.length; i++) {
+    const ev = filteredEvents[i];
+    const isEvidence = evidenceIds.has(ev.event_id);
+    const tone = traceEventTone(ev.event_type);
+
+    const headChildren = [
+      el("span", { class: "tl-type", text: ev.event_type }),
+      ev.tool ? el("span", { class: "tl-tool", text: `(${ev.tool})` }) : null,
+      isEvidence ? el("span", { class: "tl-evidence-badge", text: "EVIDENCE" }) : null,
+    ];
+
+    const metaChildren = [];
+    if (ev.duration_ms != null) metaChildren.push(el("span", { text: `${ev.duration_ms}ms` }));
+    if (ev.token_usage && ev.token_usage.total) metaChildren.push(el("span", { text: `${ev.token_usage.total} tok` }));
+    if (ev.cost_usd) metaChildren.push(el("span", { text: fmtUsd(ev.cost_usd) }));
+    if (ev.redacted) metaChildren.push(chip("redacted", "amber"));
+
+    const bodyChildren = [];
+    if (ev.error) {
+      bodyChildren.push(el("div", { class: "tl-error", text: ev.error }));
+    }
+
+    const payload = ev.payload != null ? ev.payload : ev;
+    const prettyJson = typeof payload === "object" ? JSON.stringify(payload, null, 2) : String(payload);
+
+    const details = el("details", { class: "tl-payload" }, [
+      el("summary", { text: isEvidence ? "Evidence event payload (inspect)" : "Event payload" }),
+      el("pre", { text: prettyJson }),
+    ]);
+    bodyChildren.push(details);
+
+    const row = el("div", { class: "tl-row" }, [
+      el("div", { class: "tl-rail" }, [
+        el("div", { class: "tl-dot", dataset: { tone } }),
+        el("div", { class: "tl-line" }),
+      ]),
+      el("div", { class: "tl-content" }, [
+        el("div", { class: "tl-head" }, [
+          ...headChildren,
+          el("div", { class: "tl-meta" }, metaChildren),
+        ]),
+        el("div", { class: "tl-body" }, bodyChildren),
+      ]),
+    ]);
+    rows.push(row);
+  }
+
+  container.replaceChildren(...rows);
+}
+
+function traceEventTone(type) {
+  if (!type) return "neutral";
+  if (type.startsWith("tool_")) return "sky";
+  if (type.startsWith("llm_")) return "violet";
+  if (type === "error" || type.includes("exceeded")) return "red";
+  if (type.startsWith("guardrail_")) return "amber";
+  if (type.startsWith("retrieval_")) return "green";
+  return "neutral";
+}
+
+function renderAssertions(caseRow) {
+  const container = $("#assertions-container");
+  if (!container) return;
+
+  const metrics = caseRow.metrics || [];
+  if (metrics.length === 0) {
+    container.replaceChildren(
+      el("div", { class: "empty-sub", style: "padding: 24px; text-align: center;", text: "No metric assertions recorded for this case." })
+    );
+    return;
+  }
+
+  const cards = [];
+  for (const m of metrics) {
+    const isPass = m.status === "PASS";
+    const tone = isPass ? "green" : (m.status === "FAIL" ? "red" : "amber");
+
+    const card = el("div", { class: "assertion-card" }, [
+      el("div", { class: "assertion-header" }, [
+        el("div", { style: "display: flex; align-items: center; gap: 8px;" }, [
+          el("span", { class: "assertion-name", text: m.metric_name || m.metric_id }),
+          m.score_revision > 1 ? chip(`rev ${m.score_revision} · overridden`, "sky") : null,
+        ]),
+        chip(m.status || "—", tone),
+      ]),
+      el("div", { class: "cell-sub", style: "display: flex; gap: 12px; margin-top: 4px;" }, [
+        el("span", { text: `Score: ${m.score != null ? m.score : "—"}` }),
+        m.evaluator_type ? el("span", { text: `Evaluator: ${m.evaluator_type}` }) : null,
+        m.evidence_event_ids ? el("span", { text: `${m.evidence_event_ids.length} evidence event(s)` }) : null,
+      ]),
+      m.reason ? el("div", { class: "assertion-msg", text: m.reason }) : null,
+      el("div", { style: "margin-top: 8px; display: flex; justify-content: flex-end;" }, [
+        el("button", {
+          type: "button",
+          class: "btn btn-sm btn-secondary",
+          text: "Dispute / Override",
+          onclick: () => openDisputeModal(caseRow.case_id, m.metric_id),
+        }),
+      ]),
+    ]);
+    cards.push(card);
+  }
+
+  container.replaceChildren(...cards);
+}
+
+function renderInputExpected(caseRow) {
+  const inputPre = $("#insp-input-json");
+  if (inputPre) {
+    inputPre.textContent = JSON.stringify(caseRow.input || {}, null, 2);
+  }
+
+  const expContainer = $("#insp-expected-container");
+  if (expContainer) {
+    const expected = caseRow.expected || [];
+    if (expected.length === 0) {
+      expContainer.replaceChildren(
+        el("div", { class: "empty-sub", style: "padding: 8px 0;", text: "No declared ground-truth assertions." })
+      );
+    } else {
+      const items = expected.map((exp) => {
+        const provTone = exp.provenance === "user_stated" ? "green" : (exp.provenance === "inferred" ? "amber" : "sky");
+        return el("div", { class: "expected-item" }, [
+          el("strong", { text: exp.name || "field" }),
+          el("span", { text: "=" }),
+          el("code", { class: "mono", text: typeof exp.value === "object" ? JSON.stringify(exp.value) : String(exp.value) }),
+          chip(exp.provenance || "stated", provTone),
+        ]);
+      });
+      expContainer.replaceChildren(...items);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Real-time SSE Progress Streaming
+ * ------------------------------------------------------------------------ */
+
+function connectSSE(runId) {
+  if (!runId || state.sseRunId === runId) return;
+  closeSSE();
+  state.sseRunId = runId;
+  const livePill = $("#live-indicator");
+  const liveText = $("#live-text");
+
+  try {
+    const es = new EventSource(`/runs/${encodeURIComponent(runId)}/progress`);
+    state.eventSource = es;
+    es.onopen = () => {
+      if (livePill) livePill.classList.add("is-active");
+      if (liveText) liveText.textContent = "Live Stream";
+    };
+    es.addEventListener("case_completed", () => {
+      loadRunDetailQuietly();
+    });
+    es.addEventListener("metric_scored", () => {
+      loadRunDetailQuietly();
+    });
+    es.addEventListener("run_completed", () => {
+      closeSSE();
+      refreshAll();
+    });
+    es.onerror = () => {
+      closeSSE();
+    };
+  } catch (_) {
+    closeSSE();
+  }
+}
+
+function closeSSE() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  state.sseRunId = null;
+  const livePill = $("#live-indicator");
+  const liveText = $("#live-text");
+  if (livePill) livePill.classList.remove("is-active");
+  if (liveText) liveText.textContent = "Live";
+}
+
+async function loadRunDetailQuietly() {
+  const run = state.definition && state.definition.run;
+  if (!run) return;
+  try {
+    const detail = await api(`/runs/${encodeURIComponent(run.run_id)}`);
+    state.runDetail = detail;
+    renderKpiStrip(run, detail);
+    renderMasterDetail();
+  } catch (_) {}
+}
+
+/* ---------------------------------------------------------------------------
+ * Modals & Interactive Actions
+ * ------------------------------------------------------------------------ */
+
+function wireModalsAndDrawers() {
+  // Dispute Modal
+  const mDispute = $("#modal-dispute");
+  const btnCloseDispute = $("#btn-close-dispute");
+  const btnCancelDispute = $("#btn-cancel-dispute");
+  const btnSubmitDispute = $("#btn-submit-dispute");
+  const btnOpenDispute = $("#btn-open-dispute");
+
+  if (btnOpenDispute) {
+    btnOpenDispute.addEventListener("click", () => {
+      openDisputeModal(state.selection.case);
+    });
+  }
+  if (btnCloseDispute && mDispute) {
+    btnCloseDispute.addEventListener("click", () => { mDispute.hidden = true; });
+  }
+  if (btnCancelDispute && mDispute) {
+    btnCancelDispute.addEventListener("click", () => { mDispute.hidden = true; });
+  }
+  if (btnSubmitDispute) {
+    btnSubmitDispute.addEventListener("click", async () => {
+      const metricId = $("#dispute-metric-select").value;
+      const overrideVal = parseFloat($("#dispute-override-value").value);
+      const disputePath = $("#dispute-path-select").value;
+      const reason = $("#dispute-reason").value.trim();
+      const authorId = $("#dispute-author").value.trim() || "auditor@local";
+
+      if (!metricId) {
+        alert("Please select a metric to override.");
+        return;
+      }
+
+      btnSubmitDispute.disabled = true;
+      try {
+        const runId = state.definition.run.run_id;
+        await api(`/runs/${encodeURIComponent(runId)}/metrics/${encodeURIComponent(metricId)}/revisions`, {
+          method: "POST",
+          body: {
+            case_id: state.selection.case,
+            score_revision: 2,
+            override_value: overrideVal,
+            dispute_path: disputePath,
+            reason: reason || "Manual reviewer audit override",
+            author_id: authorId,
+          },
+        });
+        mDispute.hidden = true;
+        await refreshAll();
+      } catch (err) {
+        alert("Failed to save score override: " + err.message);
+      } finally {
+        btnSubmitDispute.disabled = false;
+      }
+    });
+  }
+
+  // Copy Trace
+  const btnCopyTrace = $("#btn-copy-trace");
+  if (btnCopyTrace) {
+    btnCopyTrace.addEventListener("click", async () => {
+      const data = JSON.stringify(state.traces || [], null, 2);
+      try {
+        await navigator.clipboard.writeText(data);
+        const origTitle = btnCopyTrace.title;
+        btnCopyTrace.title = "Trace copied!";
+        setTimeout(() => { btnCopyTrace.title = origTitle; }, 2000);
+      } catch (_) {
+        prompt("Copy trace JSON:", data);
+      }
+    });
+  }
+
+  // Case List Search & Status Filtering
+  const searchInput = $("#case-search-input");
+  if (searchInput) {
+    searchInput.addEventListener("input", (ev) => {
+      state.caseSearch = ev.target.value;
+      renderMasterDetail();
+    });
+  }
+
+  for (const pill of document.querySelectorAll(".filter-pills .filter-pill")) {
+    pill.addEventListener("click", () => {
+      for (const p of document.querySelectorAll(".filter-pills .filter-pill")) {
+        p.classList.remove("is-active");
+        p.setAttribute("aria-selected", "false");
+      }
+      pill.classList.add("is-active");
+      pill.setAttribute("aria-selected", "true");
+      state.caseFilter = pill.dataset.filter;
+      renderMasterDetail();
+    });
+  }
+
+  // 7. Inspector Tab switching
+  for (const tabBtn of document.querySelectorAll(".inspector-tabs .tab-btn")) {
+    tabBtn.addEventListener("click", () => {
+      state.activeInspectorTab = tabBtn.dataset.tab;
+      const cases = (state.runDetail && state.runDetail.cases) || [];
+      const caseRow = cases.find((c) => c.case_id === state.selection.case);
+      if (caseRow) renderInspectorTab(caseRow);
+    });
+  }
+
+  // 8. Trace Filter Chips
+  for (const chipBtn of document.querySelectorAll(".trace-filters .trace-filter-chip")) {
+    chipBtn.addEventListener("click", () => {
+      for (const c of document.querySelectorAll(".trace-filters .trace-filter-chip")) {
+        c.classList.remove("is-active");
+      }
+      chipBtn.classList.add("is-active");
+      state.eventFilter = chipBtn.dataset.eventFilter;
+      const cases = (state.runDetail && state.runDetail.cases) || [];
+      const caseRow = cases.find((c) => c.case_id === state.selection.case);
+      if (caseRow) renderTraceTimeline(state.traces || [], caseRow.metrics || []);
+    });
+  }
+}
+
+function openDisputeModal(caseId, preselectedMetricId) {
+  const mDispute = $("#modal-dispute");
+  if (!mDispute || !state.runDetail) return;
+
+  const cases = state.runDetail.cases || [];
+  const caseRow = cases.find((c) => c.case_id === caseId) || cases[0];
+  if (!caseRow) return;
+
+  const select = $("#dispute-metric-select");
+  if (select) {
+    const metrics = caseRow.metrics || [];
+    select.replaceChildren(...metrics.map((m) => {
+      return el("option", {
+        value: m.metric_id,
+        text: `${m.metric_name || m.metric_id} (current: ${m.status || "—"})`,
+        selected: m.metric_id === preselectedMetricId,
+      });
+    }));
+  }
+
+  mDispute.hidden = false;
+}
+
+/* ---------------------------------------------------------------------------
  * Shell wiring
  * ------------------------------------------------------------------------ */
 
@@ -1140,81 +1932,760 @@ function render() {
   const defn = state.definition;
   const boot = $("#boot");
   const fatal = $("#fatal");
-  boot.hidden = true;
-  fatal.hidden = true;
-  if (!defn) return;
+  if (boot) boot.hidden = true;
+  if (fatal) fatal.hidden = true;
 
-  renderBanner();
-  document.title = defn.name || "Evaluation Engine — Run dashboard";
+  const kpiStrip = $("#kpi-strip");
+  const masterDetail = $("#master-detail-workspace");
+  const grid = $("#grid");
+  const preview = $("#preview-dashboard");
+  const fillHint = $("#dashboard-fill-hint");
+  const livePill = $("#live-indicator");
 
-  const run = defn.run;
-  if (!run) {
-    renderEmptyWorkspace();
-  } else {
-    renderGrid();
-    /* keep the selected row in sync across refreshes */
-    for (const row of document.querySelectorAll("tr.case-row")) {
-      const selected = row.getAttribute("aria-selected") === "true";
-      if (selected) row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const evalRec = state.selectedEval;
+  renderPipeline(evalRec && evalRec.pipeline ? evalRec.pipeline : state.pipeline);
+  renderEvalsList();
+
+  if (state.view !== "dashboard") {
+    if (livePill) livePill.hidden = true;
+    return;
+  }
+  if (livePill) livePill.hidden = false;
+
+  const dash = (evalRec && evalRec.dashboard) || state.authoredDashboard;
+  const cases = (evalRec && (evalRec.dataset || (evalRec.spec && evalRec.spec.cases)))
+    || (state.authoredSpec && state.authoredSpec.cases)
+    || [];
+  const boundRunId = evalRec && evalRec.run_id;
+  const run = defn && defn.run;
+  const hasBoundRun = !!(boundRunId && run && run.run_id === boundRunId);
+  const showLiveRun = hasBoundRun || (!evalRec && run);
+
+  if (showLiveRun) {
+    if (preview) preview.hidden = true;
+    if (fillHint) fillHint.hidden = true;
+    if (grid) grid.hidden = true;
+    renderBanner();
+    document.title = `${defn.name || "Traceline"} — LLM Agent Evaluation`;
+    if (kpiStrip) {
+      kpiStrip.hidden = false;
+      renderKpiStrip(run, state.runDetail);
     }
+    if (masterDetail) {
+      masterDetail.hidden = false;
+      renderMasterDetail();
+    }
+    if (!run.terminal) connectSSE(run.run_id);
+    else closeSSE();
+    const meta = $("#footer-meta");
+    if (meta) {
+      meta.textContent = `${defn.name || "dashboard"} · definition v${defn.version} · registry v${defn.registry_version}`;
+    }
+    return;
   }
 
-  /* First mount done — card-in animation runs once, never again on refresh. */
-  $("#grid").classList.add("settled");
+  closeSSE();
+  if (kpiStrip) kpiStrip.hidden = true;
+  if (masterDetail) masterDetail.hidden = true;
+  if (grid) grid.hidden = true;
+  const banner = $("#banner");
+  if (banner) banner.hidden = true;
 
-  const meta = $("#footer-meta");
-  meta.textContent = `${defn.name || "dashboard"} · definition v${defn.version} · registry v${defn.registry_version}`;
-
-  /* Restore keyboard focus on the row the user just activated, or on the row
-   * that held focus when the grid was rebuilt (renderGrid recorded it). */
-  const focusCase = state.pendingFocus || state.activeCase;
-  if (focusCase) {
-    const target = document.querySelector(`tr.case-row[data-case="${CSS.escape(focusCase)}"]`);
-    state.pendingFocus = null;
-    state.activeCase = null;
-    if (target) target.focus({ preventScroll: true });
+  if (dash) {
+    if (preview) {
+      preview.hidden = false;
+      preview.replaceChildren(...previewWidgets(dash, cases));
+    }
+    if (fillHint) fillHint.hidden = false;
+  } else {
+    if (preview) {
+      preview.hidden = false;
+      preview.replaceChildren(
+        el("div", { class: "empty" }, [
+          svgIcon("flask"),
+          el("p", { class: "empty-title", text: "No evaluation selected" }),
+          el("p", { class: "empty-text", text: "Author an eval in Eval Builder, then pick it here to inspect its pipeline and dashboard." }),
+        ]),
+      );
+    }
+    if (fillHint) fillHint.hidden = true;
   }
 }
 
 function showFatal(err) {
   $("#boot").hidden = true;
+  if (state.view === "builder") return;
   const fatal = $("#fatal");
   fatal.hidden = false;
   $("#fatal-detail").textContent = err && err.message ? err.message : String(err);
   stopPolling();
 }
 
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const artifactMotion = {
+  raf: 0,
+  x: 1,
+  o: 0,
+  v: 0,
+  vo: 0,
+  open: false,
+};
+
+function applyArtifactTransform() {
+  const panel = $("#artifact-panel");
+  if (!panel) return;
+  const w = panel.offsetWidth || 480;
+  panel.style.transform = `translateX(${artifactMotion.x * w}px)`;
+  panel.style.opacity = String(artifactMotion.o);
+}
+
+function setArtifactOpen(open) {
+  const workspace = $("#view-builder");
+  const rail = $("#artifact-rail");
+  const panel = $("#artifact-panel");
+  if (!workspace || !rail || !panel) return;
+  artifactMotion.open = open;
+  state.artifactOpen = open;
+  if (open) {
+    workspace.classList.add("is-artifact-open");
+    rail.setAttribute("aria-hidden", "false");
+  }
+  if (prefersReducedMotion()) {
+    artifactMotion.x = open ? 0 : 1;
+    artifactMotion.o = open ? 1 : 0;
+    artifactMotion.v = 0;
+    applyArtifactTransform();
+    if (!open) {
+      workspace.classList.remove("is-artifact-open");
+      rail.setAttribute("aria-hidden", "true");
+    }
+    return;
+  }
+  const style = getComputedStyle(panel);
+  const m = style.transform && style.transform !== "none" ? new DOMMatrix(style.transform) : null;
+  const w = panel.offsetWidth || 480;
+  artifactMotion.x = m ? m.m41 / w : (open ? 1 : 0);
+  artifactMotion.o = Number.parseFloat(style.opacity);
+  if (Number.isNaN(artifactMotion.o)) artifactMotion.o = open ? 0 : 1;
+  startArtifactSpring();
+}
+
+function startArtifactSpring() {
+  if (artifactMotion.raf) cancelAnimationFrame(artifactMotion.raf);
+  const k = 140;
+  const c = 2 * Math.sqrt(k); /* critically damped, mass = 1 */
+  let last = performance.now();
+  const step = (now) => {
+    const dt = Math.min(0.032, (now - last) / 1000);
+    last = now;
+    const tx = artifactMotion.open ? 0 : 1;
+    const to = artifactMotion.open ? 1 : 0;
+    const ax = -k * (artifactMotion.x - tx) - c * artifactMotion.v;
+    const ao = -k * (artifactMotion.o - to) - c * artifactMotion.vo;
+    artifactMotion.v += ax * dt;
+    artifactMotion.vo += ao * dt;
+    artifactMotion.x += artifactMotion.v * dt;
+    artifactMotion.o += artifactMotion.vo * dt;
+    applyArtifactTransform();
+    const settled = Math.abs(artifactMotion.x - tx) < 0.002
+      && Math.abs(artifactMotion.o - to) < 0.002
+      && Math.abs(artifactMotion.v) < 0.02
+      && Math.abs(artifactMotion.vo) < 0.02;
+    if (settled) {
+      artifactMotion.x = tx;
+      artifactMotion.o = to;
+      artifactMotion.v = 0;
+      artifactMotion.vo = 0;
+      applyArtifactTransform();
+      artifactMotion.raf = 0;
+      if (!artifactMotion.open) {
+        const workspace = $("#view-builder");
+        const rail = $("#artifact-rail");
+        if (workspace) workspace.classList.remove("is-artifact-open");
+        if (rail) rail.setAttribute("aria-hidden", "true");
+      }
+      return;
+    }
+    artifactMotion.raf = requestAnimationFrame(step);
+  };
+  artifactMotion.raf = requestAnimationFrame(step);
+}
+
+function previewWidgets(dashboard, cases) {
+  const blocks = (dashboard && dashboard.blocks) || [];
+  const kpiGates = (dashboard && dashboard.kpi_gates) || [];
+  const widgets = [];
+  const allowed = new Set(["metric_summary", "case_table", "trace_evidence"]);
+
+  for (const block of blocks) {
+    if (!allowed.has(block.component)) continue;
+    const title = block.title || COMPONENT_TITLES[block.component] || block.component;
+    const card = el("div", { class: "preview-widget" }, [el("h4", { text: title })]);
+    if (block.component === "metric_summary") {
+      const grid = el("div", { class: "preview-kpis" });
+      const names = kpiGates.length
+        ? kpiGates.map((g) => g.metric)
+        : ["pass_rate"];
+      for (const name of names) {
+        grid.append(el("div", { class: "preview-kpi" }, [
+          el("div", { class: "kpi-label", text: String(name).replace(/_/g, " ") }),
+          el("div", { class: "kpi-val", text: "—" }),
+          el("div", { class: "kpi-sub", text: "Sample until the agent runs" }),
+        ]));
+      }
+      card.append(grid);
+    } else if (block.component === "case_table") {
+      const list = (cases || []).slice(0, 8);
+      if (!list.length) {
+        card.append(el("p", { class: "empty-sub", text: "Cases appear here from the authored dataset." }));
+      } else {
+        for (const c of list) {
+          card.append(el("div", { class: "preview-case" }, [
+            el("span", { class: "cell-main", text: c.name || c.case_id || "case" }),
+            el("span", { class: "cell-sub", text: c.case_id || "" }),
+          ]));
+        }
+        card.append(el("p", { class: "kpi-sub", text: `${(cases || []).length} cases in dataset` }));
+      }
+    } else if (block.component === "trace_evidence") {
+      card.append(el("p", { class: "empty-sub", text: "Trace evidence fills after the connected agent executes." }));
+    }
+    widgets.push(card);
+  }
+  if (!widgets.length) {
+    widgets.push(el("p", { class: "empty-sub", text: "No preview widgets in this dashboard definition." }));
+  }
+  return widgets;
+}
+
+function renderArtifactPreview() {
+  const body = $("#artifact-body");
+  const title = $("#artifact-title");
+  const dash = state.authoredDashboard;
+  if (title) title.textContent = (dash && dash.dashboard_name) || "Dashboard sample";
+  if (!body) return;
+  const cases = (state.authoredSpec && state.authoredSpec.cases) || [];
+  body.replaceChildren(...previewWidgets(dash, cases));
+}
+
+function renderPipeline(pipeline) {
+  const strip = $("#pipeline-strip");
+  if (!strip) return;
+  const steps = pipeline || [];
+  if (!steps.length) {
+    strip.hidden = true;
+    strip.replaceChildren();
+    return;
+  }
+  strip.hidden = false;
+  const nodes = [];
+  steps.forEach((s, i) => {
+    if (i > 0) nodes.push(el("div", { class: "pipeline-connector", "aria-hidden": "true" }));
+    nodes.push(el("div", {
+      class: "pipeline-step",
+      dataset: { status: s.status || "pending" },
+    }, [
+      el("span", { class: "pipeline-node" }, [el("span", { class: "pipeline-dot" })]),
+      el("span", { class: "pipeline-copy" }, [
+        el("span", { class: "pipeline-label", text: s.label || s.id }),
+        el("span", { class: "pipeline-status", text: s.status || "pending" }),
+      ]),
+    ]));
+  });
+  strip.replaceChildren(el("div", { class: "pipeline-track" }, nodes));
+}
+
+async function loadEvals() {
+  try {
+    const body = await api("/api/evals");
+    state.evals = body.evals || [];
+    renderEvalsList();
+  } catch (_) {
+    state.evals = [];
+  }
+}
+
+function renderEvalsList() {
+  const list = $("#evals-list");
+  const badge = $("#evals-count-badge");
+  if (badge) badge.textContent = String((state.evals || []).length);
+  if (!list) return;
+  if (!state.evals.length) {
+    list.replaceChildren(el("p", { class: "empty-sub", style: "padding:16px;", text: "No custom evals yet." }));
+    return;
+  }
+  list.replaceChildren(...state.evals.map((ev) => {
+    const btn = el("button", {
+      type: "button",
+      class: `eval-item${state.selectedEval && state.selectedEval.eval_id === ev.eval_id ? " is-selected" : ""}`,
+      dataset: { evalId: ev.eval_id },
+    }, [
+      el("span", { class: "eval-item-name", text: ev.name || ev.eval_id }),
+      el("span", { class: "eval-item-meta", text: ev.run_id ? `run ${shortId(ev.run_id)}` : "no run yet" }),
+    ]);
+    btn.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      selectEval(ev.eval_id);
+    });
+    return btn;
+  }));
+}
+
+async function selectEval(evalId) {
+  try {
+    const rec = await api(`/api/evals/${encodeURIComponent(evalId)}`);
+    state.selectedEval = rec;
+    state.evalId = rec.eval_id;
+    state.pipeline = rec.pipeline || [];
+    state.authoredDashboard = rec.dashboard;
+    state.authoredSpec = rec.spec;
+    if (rec.run_id) {
+      state.filterRun = rec.run_id;
+      state.selection.case = null;
+      state.runDetail = null;
+      state.traces = null;
+      await loadDashboard();
+    } else {
+      state.definition = state.definition || { name: rec.name, blocks: [], run: null };
+      render();
+    }
+    renderArtifactPreview();
+  } catch (err) {
+    console.warn("select eval failed", err);
+  }
+}
+
+async function runThisEval() {
+  const evalId = state.evalId || (state.selectedEval && state.selectedEval.eval_id);
+  if (!evalId) {
+    alert("Author an evaluation in chat first.");
+    return;
+  }
+  const btn = $("#btn-run-this-eval");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api(`/api/evals/${encodeURIComponent(evalId)}/run`, { method: "POST" });
+    state.filterRun = res.run_id;
+    await selectEval(evalId);
+    switchTab("dashboard");
+    await refreshAll();
+  } catch (err) {
+    alert("Failed to run eval: " + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+let switchTab = () => {};
+
+function wireTabs() {
+  const tabBuilder = $("#tab-btn-builder");
+  const tabDashboard = $("#tab-btn-dashboard");
+  const viewBuilder = $("#view-builder");
+  const viewDashboard = $("#view-dashboard");
+  const runFilter = $("#run-filter");
+
+  switchTab = function switchTabInner(target) {
+    const builder = target === "builder" || target === "architect";
+    state.view = builder ? "builder" : "dashboard";
+    document.body.dataset.view = state.view;
+    if (tabBuilder) {
+      tabBuilder.classList.toggle("is-active", builder);
+      tabBuilder.setAttribute("aria-selected", builder ? "true" : "false");
+    }
+    if (tabDashboard) {
+      tabDashboard.classList.toggle("is-active", !builder);
+      tabDashboard.setAttribute("aria-selected", builder ? "false" : "true");
+    }
+    if (viewBuilder) viewBuilder.hidden = !builder;
+    if (viewDashboard) viewDashboard.hidden = builder;
+    if (runFilter) runFilter.hidden = true;
+    if (!builder) {
+      loadEvals().then(() => {
+        if (!state.selectedEval && state.evalId) return selectEval(state.evalId);
+        render();
+      });
+    }
+  };
+
+  if (tabBuilder) tabBuilder.addEventListener("pointerdown", () => switchTab("builder"));
+  if (tabDashboard) tabDashboard.addEventListener("pointerdown", () => switchTab("dashboard"));
+  return { switchTab };
+}
+
+/* ---------------------------------------------------------------------------
+ * Harness chat (Eval Builder) — never conflated with agent-under-test traces
+ * ------------------------------------------------------------------------ */
+
+const HARNESS_AVATAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>';
+const USER_AVATAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+
+function formatReplyNodes(text) {
+  const wrap = el("div");
+  const paras = String(text || "").split(/\n{2,}/);
+  for (const para of paras) {
+    const p = el("p", { class: "chat-p" });
+    const parts = para.split(/(\*\*[^*]+\*\*|`[^`]+`|\n)/);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part === "\n") { p.append(el("br")); continue; }
+      if (part.startsWith("**") && part.endsWith("**")) {
+        p.append(el("strong", { text: part.slice(2, -2) }));
+      } else if (part.startsWith("`") && part.endsWith("`")) {
+        p.append(el("code", { class: "mono", text: part.slice(1, -1) }));
+      } else {
+        p.append(document.createTextNode(part));
+      }
+    }
+    wrap.append(p);
+  }
+  return wrap;
+}
+
+function hitlCard(hitl, data) {
+  const record = { ...(data || {}), ...(hitl || {}) };
+  const tools = record.tools_detected || [];
+  const models = record.models_detected || [];
+  const files = record.files || [];
+  const cases = (data && data.sample_data) || [];
+  const diagnostics = (data && data.diagnostics) || [];
+  const entry = record.entrypoint;
+  const verification = verificationState(record);
+  const validation = validationState(record.validation_status);
+  const card = el("div", { class: "hitl-card" });
+  card.append(el("div", { class: "hitl-head" }, [
+    el("span", { class: "chat-card-title", text: "Static analysis" }),
+    el("div", { class: "hitl-statuses" }, [
+      validation ? chip(validation.label, validation.tone) : null,
+      chip(verification.label, verification.tone),
+    ]),
+  ]));
+  card.append(el("p", {
+    class: "hitl-status-copy",
+    text: verification.message,
+  }));
+  const grid = el("div", { class: "hitl-grid" });
+  grid.append(el("div", {}, [
+    el("div", { class: "hitl-label", text: "Entrypoint" }),
+    entry
+      ? el("code", { class: "mono", text: typeof entry === "string" ? entry : Array.isArray(entry) ? entry.join(" ") : String(entry) })
+      : el("span", { class: "hitl-empty", text: "No entrypoint detected" }),
+  ]));
+  grid.append(el("div", {}, [
+    el("div", { class: "hitl-label", text: "Tools" }),
+    el("div", { class: "chips" }, tools.length ? tools.map((t) => chip(String(t), TONES.neutral)) : [el("span", { class: "hitl-empty", text: "No tools detected" })]),
+  ]));
+  grid.append(el("div", {}, [
+    el("div", { class: "hitl-label", text: "Models" }),
+    el("div", { class: "chips" }, models.length ? models.map((m) => chip(String(m), TONES.neutral)) : [el("span", { class: "hitl-empty", text: "No literal models detected" })]),
+  ]));
+  grid.append(el("div", {}, [
+    el("div", { class: "hitl-label", text: "Example cases" }),
+    el("span", {
+      class: cases.length ? "" : "hitl-empty",
+      text: cases.length ? `${cases.length} explicitly selected` : "No example cases attached",
+    }),
+  ]));
+  card.append(grid);
+  if (files.length) {
+    const fileRow = el("div", { class: "hitl-files" });
+    for (const f of files.slice(0, 12)) {
+      const name = typeof f === "string" ? f : (f.name || f.path || "file");
+      fileRow.append(el("span", { class: "hitl-file", text: name }));
+    }
+    card.append(el("div", { class: "hitl-label", style: "margin-top:10px;", text: "Files" }));
+    card.append(fileRow);
+  } else {
+    card.append(el("div", { class: "hitl-empty-block" }, [
+      el("div", { class: "hitl-label", text: "Source files" }),
+      el("span", { class: "hitl-empty", text: "No source files observed" }),
+    ]));
+  }
+  if (diagnostics.length) {
+    const diagnosticList = el("div", { class: "diagnostic-list" });
+    for (const diagnostic of diagnostics) {
+      const location = [diagnostic.path, diagnostic.line].filter((part) => part != null).join(":");
+      diagnosticList.append(el("div", { class: "diagnostic-item" }, [
+        el("div", { class: "diagnostic-head" }, [
+          chip(diagnostic.code || "parse_diagnostic", TONES.amber, { dot: false }),
+          location ? el("code", { class: "mono diagnostic-location", text: location }) : null,
+        ]),
+        el("p", { class: "diagnostic-message", text: diagnostic.message || "Source could not be parsed." }),
+      ]));
+    }
+    card.append(el("section", { class: "diagnostics", "aria-label": "Parse diagnostics" }, [
+      el("div", { class: "hitl-label", text: "Parse diagnostics" }),
+      diagnosticList,
+    ]));
+  }
+  return card;
+}
+
+function verificationState(record) {
+  const status = record && record.verification_status;
+  const verificationId = record && record.verification_id;
+  if (!verificationId || status === "not_verified") {
+    return {
+      label: "NOT VERIFIED",
+      tone: TONES.neutral,
+      message: (record && record.verification_message) || "Not verified.",
+    };
+  }
+  if (status === "verified") {
+    return { label: "VERIFIED", tone: TONES.green, message: "Runtime verification recorded." };
+  }
+  if (status === "failed") {
+    return { label: "VERIFICATION FAILED", tone: TONES.red, message: "Runtime verification failed." };
+  }
+  return { label: "VERIFICATION UNKNOWN", tone: TONES.neutral, message: "Verification status is unknown." };
+}
+
+function validationState(status) {
+  if (status === "validated") return { label: "SCHEMA VALIDATED", tone: TONES.green };
+  if (status === "failed") return { label: "SCHEMA FAILED", tone: TONES.red };
+  return null;
+}
+
+function recoveryCard(err) {
+  const states = {
+    source_required: {
+      title: "Source required",
+      guidance: "Paste a local project path or upload a ZIP to continue.",
+    },
+    source_not_found: {
+      title: "Source not found",
+      guidance: "Check that the path exists and try again, or upload a ZIP.",
+    },
+  };
+  const recovery = states[err && err.code] || {
+    title: "Request failed",
+    guidance: "Review the error and try again.",
+  };
+  return el("section", { class: "recovery-card", "aria-label": recovery.title }, [
+    el("div", { class: "recovery-head" }, [
+      el("strong", { text: recovery.title }),
+      err && err.code ? chip(err.code, TONES.red, { dot: false }) : null,
+    ]),
+    el("p", { class: "recovery-detail", text: (err && err.message) || "The request could not be completed." }),
+    el("p", { class: "recovery-guidance", text: recovery.guidance }),
+  ]);
+}
+
+function agentStepsCard(steps) {
+  const wrap = el("div", { class: "agent-trace-pipeline" });
+  wrap.append(el("div", { class: "agent-trace-header" }, [
+    el("strong", { text: "Harness orchestration" }),
+    chip(`${steps.length} observed steps`, TONES.neutral, { dot: false }),
+  ]));
+  const list = el("div", { class: "agent-steps-list" });
+  for (const s of steps) {
+    const stepStatus = s.status === "failed"
+      ? { label: "FAILED", tone: TONES.red }
+      : { label: String(s.status || "observed").toUpperCase(), tone: TONES.neutral };
+    list.append(el("div", { class: "agent-step-item", dataset: { status: s.status || "observed" } }, [
+      el("div", { class: "agent-step-title" }, [
+        el("span", { class: "agent-role-name", text: s.agent_name || s.agent_role || s.role || "Harness agent" }),
+        s.tool_called ? el("code", { class: "tool-badge", text: `tool: ${s.tool_called}` }) : null,
+        chip(stepStatus.label, stepStatus.tone, { dot: false }),
+      ]),
+      s.summary ? el("div", { class: "agent-step-summary", text: s.summary }) : null,
+    ]));
+  }
+  wrap.append(list);
+  return wrap;
+}
+
+function wireArchitectChat() {
+  const msgContainer = $("#chat-messages");
+  const userInput = $("#chat-user-input");
+  const btnSend = $("#btn-chat-send");
+  const statusHint = $("#chat-status-hint");
+  const zipInput = $("#chat-zip-input");
+  const btnUpload = $("#btn-chat-upload");
+  const btnSample = $("#btn-sample-run");
+  const btnRunEval = $("#btn-run-this-eval");
+  const btnCloseArtifact = $("#btn-artifact-close");
+
+  function appendMsg(role, nodes) {
+    if (!msgContainer) return null;
+    const empty = $("#chat-empty");
+    if (empty) empty.hidden = true;
+    const isAssistant = role === "assistant";
+    const avatar = el("div", { class: "chat-avatar" });
+    avatar.innerHTML = isAssistant ? HARNESS_AVATAR : USER_AVATAR;
+    const bubble = el("div", { class: "chat-bubble" });
+    if (Array.isArray(nodes)) {
+      for (const n of nodes) if (n) bubble.append(n);
+    } else if (nodes instanceof Node) {
+      bubble.append(nodes);
+    } else {
+      bubble.append(el("p", { class: "chat-p", text: String(nodes || "") }));
+    }
+    const stamp = el("time", {
+      class: "chat-stamp",
+      text: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    });
+    const col = el("div", { class: "chat-col" }, [bubble, stamp]);
+    const msg = el("div", { class: `chat-msg ${role}` }, [avatar, col]);
+    msgContainer.appendChild(msg);
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+    return msg;
+  }
+
+  function applyChatPayload(res) {
+    if (res.eval_id) state.evalId = res.eval_id;
+    if (res.spec_data) state.authoredSpec = res.spec_data;
+    if (res.hitl) state.authoredHitl = res.hitl;
+    if (res.pipeline) state.pipeline = res.pipeline;
+    if (res.dashboard) {
+      state.authoredDashboard = res.dashboard;
+      renderArtifactPreview();
+      setArtifactOpen(true);
+    }
+    if (res.eval_id) loadEvals();
+  }
+
+  async function handleSend(text) {
+    text = (text || (userInput && userInput.value) || "").trim();
+    if (!text) return;
+    if (userInput) userInput.value = "";
+    appendMsg("user", el("p", { class: "chat-p", text: text }));
+    const typing = appendMsg("assistant", el("p", { class: "chat-p muted", text: "Harness is working…" }));
+    if (statusHint) statusHint.textContent = "Processing…";
+    try {
+      const body = { message: text };
+      if (state.evalId) body.eval_id = state.evalId;
+      const res = await api("/api/harness/chat", { method: "POST", body });
+      if (typing) typing.remove();
+      const nodes = [formatReplyNodes(res.reply)];
+      if (res.agent_steps && res.agent_steps.length) nodes.push(agentStepsCard(res.agent_steps));
+      if (res.hitl || (res.data && (res.data.tools_detected || res.data.files))) {
+        nodes.push(hitlCard(res.hitl, res.data));
+      }
+      if (res.suggestions && res.suggestions.length) {
+        const row = el("div", { class: "chat-presets" });
+        for (const s of res.suggestions) {
+          row.append(el("button", {
+            type: "button",
+            class: "chip-btn chat-preset-btn",
+            dataset: { preset: s },
+            text: s,
+          }));
+        }
+        nodes.push(row);
+      }
+      appendMsg("assistant", nodes);
+      applyChatPayload(res);
+    } catch (err) {
+      if (typing) typing.remove();
+      appendMsg("assistant", recoveryCard(err));
+    } finally {
+      if (statusHint) statusHint.textContent = "Ready";
+    }
+  }
+
+  async function uploadZip(file) {
+    if (!file) return;
+    if (statusHint) statusHint.textContent = "Uploading…";
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await api("/api/projects/upload", { method: "POST", body: fd });
+      const source = res.source || res.name;
+      await handleSend(`Analyze ${source}`);
+    } catch (err) {
+      appendMsg("assistant", recoveryCard(err));
+    } finally {
+      if (statusHint) statusHint.textContent = "Ready";
+      if (zipInput) zipInput.value = "";
+    }
+  }
+
+  if (msgContainer) {
+    msgContainer.addEventListener("pointerdown", (ev) => {
+      const chipBtn = ev.target.closest(".chat-preset-btn");
+      if (chipBtn && chipBtn.dataset.preset) {
+        ev.preventDefault();
+        handleSend(chipBtn.dataset.preset);
+      }
+    });
+  }
+  if (btnSend) btnSend.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    handleSend();
+  });
+  if (userInput) {
+    userInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        handleSend();
+      }
+    });
+  }
+  if (btnUpload && zipInput) {
+    btnUpload.addEventListener("pointerdown", () => zipInput.click());
+    zipInput.addEventListener("change", () => {
+      const f = zipInput.files && zipInput.files[0];
+      if (f) uploadZip(f);
+    });
+  }
+  if (btnSample) {
+    btnSample.addEventListener("pointerdown", async (ev) => {
+      ev.preventDefault();
+      btnSample.disabled = true;
+      try {
+        const res = await api("/api/runs/sample", { method: "POST" });
+        state.filterRun = res.run_id;
+        switchTab("dashboard");
+        await refreshAll();
+      } catch (err) {
+        alert("Sample run failed: " + err.message);
+      } finally {
+        btnSample.disabled = false;
+      }
+    });
+  }
+  if (btnRunEval) btnRunEval.addEventListener("pointerdown", () => runThisEval());
+  if (btnCloseArtifact) btnCloseArtifact.addEventListener("pointerdown", () => setArtifactOpen(false));
+}
+
 async function init() {
   const urlRun = new URLSearchParams(location.search).get("run_id");
   if (urlRun && urlRun !== "latest") state.filterRun = urlRun;
 
-  $("#refresh-btn").addEventListener("click", () => refreshAll().catch(showFatal));
-  $("#fatal-retry").addEventListener("click", () => { location.reload(); });
-  $("#run-select").addEventListener("change", (ev) => {
-    state.filterRun = ev.target.value;
-    state.selection.case = null;
-    state.runDetail = null;
-    state.traces = null;
-    clearSelectionRetry();
-    try {
-      const url = new URL(location.href);
-      if (state.filterRun === "latest") url.searchParams.delete("run_id");
-      else url.searchParams.set("run_id", state.filterRun);
-      history.replaceState(null, "", url);
-    } catch (_) { /* file:// context — ignore */ }
-    loadDashboard().catch(showFatal);
+  $("#refresh-btn").addEventListener("click", () => {
+    Promise.all([refreshAll().catch(() => {}), loadEvals()]).then(() => {
+      if (state.selectedEval) selectEval(state.selectedEval.eval_id);
+    });
   });
+  $("#fatal-retry").addEventListener("click", () => { location.reload(); });
+  const runSelect = $("#run-select");
+  if (runSelect) {
+    runSelect.addEventListener("change", (ev) => {
+      state.filterRun = ev.target.value;
+      state.selection.case = null;
+      state.runDetail = null;
+      state.traces = null;
+      clearSelectionRetry();
+      loadDashboard().catch(() => {});
+    });
+  }
 
   initTheme();
+  wireModalsAndDrawers();
+  wireTabs();
+  wireArchitectChat();
+  $("#boot").hidden = true;
 
+  loadHealth();
+  loadEvals().catch(() => {});
   try {
     await loadRuns();
     renderRunSelector();
-    await loadDashboard();
-    loadHealth();
-  } catch (err) {
-    showFatal(err);
-  }
+  } catch (_) { /* builder remains usable */ }
 }
 
 /* Console-level debugging handle (no runtime cost, no network). Exposes

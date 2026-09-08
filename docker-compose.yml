@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eval-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: eval_db
+      POSTGRES_USER: eval_maint
+      POSTGRES_PASSWORD: ${POSTGRES_MAINT_PASSWORD:?set POSTGRES_MAINT_PASSWORD in .env}
+    ports:
+      - "5433:5432"
+    volumes:
+      - eval_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eval_maint -d eval_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "llm_agent_eval.bootstrap_postgres"]
+    environment:
+      DATABASE_URL: "postgresql://eval_maint:${POSTGRES_MAINT_PASSWORD:?set POSTGRES_MAINT_PASSWORD in .env}@postgres:5432/eval_db"
+      LLM_AGENT_EVAL_APP_DB_USER: eval_app
+      LLM_AGENT_EVAL_APP_DB_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  eval-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eval-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
+      LLM_AGENT_EVAL_DB: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./fixtures:/app/fixtures
+      - ./web:/app/web
+      - ./src:/app/src
+
+volumes:
+  eval_pgdata:

@@ -14,6 +14,8 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "httpx>=0.27",
+    "psycopg[binary]>=3.1",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -27,9 +29,14 @@ eval-engine = "llm_agent_eval.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.data-files]
+"share/llm-agent-eval/migrations" = ["migrations/0001_workflow_objects.sql", "migrations/0002_jobs_secrets.sql"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "browser: requires the browser end-to-end harness (future suite; not yet present)",
+    "integration: requires documented disposable external services (future suite; not yet present)",
     "live: hits a real LLM provider; requires DEEPSEEK_API_KEY (run last)",
 ]
 addopts = "-m 'not live'"

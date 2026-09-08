@@ -61,17 +61,26 @@ coarse lock additionally protects transaction boundaries). No ORM — stdlib
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import re
 import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+try:
+    import psycopg
+except ImportError:
+    psycopg = None
+
 from .events import EVENT_TYPES, CostBlock, ErrorBlock, OtelContext, RedactionState, Source, TraceEvent
+from .redaction import redact
 from .evaluators import CaseScore, CaseStatus, RunAggregate
 from .lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -95,6 +104,7 @@ __all__ = [
     "CaseMetricResultRecord",
     "RunMetricResultRecord",
     "ScoreRevisionRecord",
+    "CustomEvalRecord",
     "case_key",
 ]
 
@@ -457,6 +467,23 @@ CREATE TABLE IF NOT EXISTS score_revisions (
   created_at TEXT NOT NULL,
   PRIMARY KEY (run_id, case_id, metric_id, score_revision)
 );
+
+CREATE TABLE IF NOT EXISTS custom_evals (
+  eval_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  project_id TEXT,
+  spec_json TEXT NOT NULL,
+  dashboard_json TEXT NOT NULL,
+  dataset_json TEXT NOT NULL,
+  source_path TEXT,
+  entrypoint TEXT NOT NULL DEFAULT '[]',
+  cwd TEXT,
+  run_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS custom_evals_workspace_idx ON custom_evals (workspace_id, created_at DESC);
 """
 
 #: gate_status values (§18 DDL).
@@ -632,25 +659,125 @@ class ScoreRevisionRecord:
     created_at: str
 
 
+@dataclass(frozen=True)
+class CustomEvalRecord:
+    eval_id: str
+    workspace_id: str
+    name: str
+    project_id: str | None
+    spec: dict[str, Any]
+    dashboard: dict[str, Any]
+    dataset: list[dict[str, Any]]
+    source_path: str | None
+    entrypoint: list[str]
+    cwd: str | None
+    run_id: str | None
+    created_at: str
+    updated_at: str
+
+
+def _psycopg_row_factory(cursor: Any) -> Any:
+    if cursor.description is None:
+        return lambda values: values
+    cols = [c.name for c in cursor.description]
+    def make_row(values: tuple[Any, ...]) -> Any:
+        d = dict(zip(cols, values))
+        class RowProxy(dict):
+            def __getitem__(self, key: Any) -> Any:
+                if isinstance(key, int):
+                    return values[key]
+                return super().__getitem__(key)
+        return RowProxy(d)
+    return make_row
+
+
+class _PostgresConnectionWrapper:
+    """A wrapper around psycopg connection that accepts SQLite-style '?' placeholders
+    and converts them to PostgreSQL '%s' placeholders, handling ON CONFLICT."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    @staticmethod
+    def _convert_sql(sql: str) -> str:
+        sql_pg = sql.replace("?", "%s")
+        if re.search(r"INSERT\s+OR\s+IGNORE\s+INTO\s+", sql_pg, flags=re.IGNORECASE):
+            sql_pg = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO\s+", "INSERT INTO ", sql_pg, flags=re.IGNORECASE).rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        sql_pg = sql_pg.replace("ORDER BY rowid", "ORDER BY case_id")
+        return sql_pg
+
+    def execute(self, sql: str, params: Any = ()) -> Any:
+        sql_pg = self._convert_sql(sql)
+        cur = self._conn.cursor()
+        cur.execute(sql_pg, params)
+        return cur
+
+    def executemany(self, sql: str, params_seq: Any) -> Any:
+        sql_pg = self._convert_sql(sql)
+        cur = self._conn.cursor()
+        cur.executemany(sql_pg, params_seq)
+        return cur
+
+    def executescript(self, sql: str) -> Any:
+        cur = self._conn.cursor()
+        cur.execute(sql)
+        return cur
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
 
 
+def _workspace_scoped(method):
+    """Scope existing repository calls as well as new workflow repositories.
+
+    Materialize streaming reads before releasing the transaction. Explicit
+    workspace arguments remain the trusted service boundary; HTTP obtains
+    them from authenticated context, never from request content.
+    """
+    signature = inspect.signature(method)
+
+    @wraps(method)
+    def scoped(self, *args, **kwargs):
+        workspace_id = signature.bind(self, *args, **kwargs).arguments["workspace_id"]
+        with self.workspace_transaction(workspace_id):
+            result = method(self, *args, **kwargs)
+            return list(result) if inspect.isgeneratorfunction(method) else result
+    return scoped
+
+
 class Storage:
-    """SQLite persistence behind a thin layer (so the schema migrates to
-    Postgres+RLS later, per R10). Single connection, single-threaded sync."""
+    """Persistence layer supporting both local SQLite and production PostgreSQL (§18)."""
 
     def __init__(self, db_path: str | Path):
         self._db_path = str(db_path)
-        # check_same_thread=False + _LockedConnection: the API shares this one
-        # connection across its request threads and background run threads.
-        self._conn = sqlite3.connect(
-            self._db_path, check_same_thread=False, factory=_LockedConnection
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._tx_depth = 0
+        self._scope_workspace = None
+        if self._db_path.startswith(("postgresql://", "postgres://")):
+            if psycopg is None:
+                raise RuntimeError("psycopg is required for PostgreSQL storage (pip install 'psycopg[binary]')")
+            self._is_postgres = True
+            pg_conn = psycopg.connect(self._db_path, row_factory=_psycopg_row_factory, autocommit=True)
+            self._conn = _PostgresConnectionWrapper(pg_conn)
+        else:
+            self._is_postgres = False
+            self._conn = sqlite3.connect(
+                self._db_path, check_same_thread=False, factory=_LockedConnection
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
     def close(self) -> None:
         self._conn.close()
@@ -662,22 +789,77 @@ class Storage:
         # transaction, and a rollback here would silently destroy that
         # thread's uncommitted write.
         with _CONNECTION_LOCK:
+            depth = self._tx_depth
+            savepoint = f"storage_nested_{depth}"
+            self._conn.execute(
+                ("BEGIN" if self._is_postgres else "BEGIN IMMEDIATE") if depth == 0
+                else f"SAVEPOINT {savepoint}"
+            )
+            self._tx_depth += 1
             try:
                 yield
-                self._conn.commit()
+                self._conn.execute("COMMIT" if depth == 0 else f"RELEASE SAVEPOINT {savepoint}")
             except BaseException:
-                self._conn.rollback()
+                if depth == 0:
+                    self._conn.rollback()
+                else:
+                    self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 raise
+            finally:
+                self._tx_depth -= 1
+
+    @contextmanager
+    def workspace_transaction(self, workspace_id: str):
+        """Transaction-local PostgreSQL RLS context; SQLite is application scoping.
+
+        No session-level SET survives connection reuse. Nested service calls
+        cannot switch tenant midway through an operation.
+        """
+        if not isinstance(workspace_id, str) or not workspace_id:
+            raise ValueError("workspace identity is required")
+        with _CONNECTION_LOCK:
+            previous = self._scope_workspace
+            if previous is not None and previous != workspace_id:
+                raise ValueError("cannot switch workspace inside a transaction")
+            self._scope_workspace = workspace_id
+            try:
+                with self._tx():
+                    if self._is_postgres and previous is None:
+                        self._conn.execute("SELECT set_config('app.workspace_id', ?, true)", (workspace_id,)).fetchall()
+                    yield self._conn
+            finally:
+                self._scope_workspace = previous
 
     def create_schema(self) -> None:
-        """Create all tables; idempotent (``CREATE TABLE IF NOT EXISTS``)."""
+        """Create tables under maintenance credentials, or open a ready app DB.
+
+        The running API uses a non-bypass role.  PostgreSQL checks CREATE
+        privileges even for ``CREATE TABLE IF NOT EXISTS``, so an app process
+        must only verify that its already-migrated schema exists rather than
+        attempting the bootstrap DDL at every startup.
+        """
+        if self._is_postgres:
+            existing_base = self._conn.execute("SELECT to_regclass('projects')").fetchone()[0] is not None
+            existing_workflow = self._conn.execute("SELECT to_regclass('object_versions')").fetchone()[0] is not None
+            existing_jobs = self._conn.execute("SELECT to_regclass('jobs')").fetchone()[0] is not None
+            if existing_base and existing_workflow and existing_jobs:
+                return
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        from .migrations import install_workflow_schema
+        exists = self._is_postgres and self._conn.execute(
+            "SELECT to_regclass('jobs')"
+        ).fetchone()[0] is not None
+        if not exists:
+            install_workflow_schema(self._conn, postgres=self._is_postgres)
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def create_project(
         self,
         *,
@@ -697,6 +879,7 @@ class Storage:
             )
         return self.get_project(project_id, workspace_id)
 
+    @_workspace_scoped
     def get_project(self, project_id: str, workspace_id: str) -> ProjectRecord | None:
         row = self._conn.execute(
             "SELECT * FROM projects WHERE project_id = ? AND workspace_id = ?",
@@ -704,6 +887,7 @@ class Storage:
         ).fetchone()
         return _project_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def set_project_smoke_state(
         self,
         project_id: str,
@@ -727,6 +911,7 @@ class Storage:
             )
         return self.get_project(project_id, workspace_id)
 
+    @_workspace_scoped
     def set_project_entrypoint(
         self, project_id: str, workspace_id: str, entrypoint: Sequence[str]
     ) -> ProjectRecord:
@@ -739,6 +924,7 @@ class Storage:
             )
         return self.get_project(project_id, workspace_id)
 
+    @_workspace_scoped
     def append_smoke_attempt(
         self,
         *,
@@ -769,6 +955,7 @@ class Storage:
         ).fetchone()
         return _smoke_attempt_from_row(row)
 
+    @_workspace_scoped
     def list_smoke_attempts(
         self, project_id: str, workspace_id: str, *, limit: int = 50
     ) -> list[SmokeAttemptRecord]:
@@ -783,6 +970,7 @@ class Storage:
     # Runs
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def create_run(
         self,
         *,
@@ -847,6 +1035,7 @@ class Storage:
             raise RuntimeError(f"run {run_id!r} was not persisted")
         return run
 
+    @_workspace_scoped
     def _get_run_by_idempotency_key(
         self, workspace_id: str, idempotency_key: str
     ) -> RunRecord | None:
@@ -856,6 +1045,7 @@ class Storage:
         ).fetchone()
         return _run_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def get_run_by_idempotency_key(
         self, workspace_id: str, idempotency_key: str
     ) -> RunRecord | None:
@@ -864,6 +1054,7 @@ class Storage:
         versus conflicts (the same key with a different payload is a 409)."""
         return self._get_run_by_idempotency_key(workspace_id, idempotency_key)
 
+    @_workspace_scoped
     def get_run(self, run_id: str, workspace_id: str) -> RunRecord | None:
         row = self._conn.execute(
             "SELECT * FROM runs WHERE run_id = ? AND workspace_id = ?",
@@ -871,6 +1062,7 @@ class Storage:
         ).fetchone()
         return _run_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def list_runs(
         self, workspace_id: str, *, limit: int = 50, status: str | None = None
     ) -> list[RunRecord]:
@@ -888,6 +1080,7 @@ class Storage:
             ).fetchall()
         return [_run_from_row(r) for r in rows]
 
+    @_workspace_scoped
     def list_runs_cursor(
         self,
         workspace_id: str,
@@ -921,6 +1114,7 @@ class Storage:
             next_cursor = (last.created_at, last.run_id)
         return page, next_cursor
 
+    @_workspace_scoped
     def set_run_status(
         self, run_id: str, workspace_id: str, to: RunStatus | str
     ) -> RunRecord:
@@ -945,6 +1139,7 @@ class Storage:
             )
         return self.get_run(run_id, workspace_id)
 
+    @_workspace_scoped
     def set_run_progress(
         self, run_id: str, workspace_id: str, progress: dict[str, Any]
     ) -> RunRecord:
@@ -959,6 +1154,7 @@ class Storage:
     # Cases
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def insert_cases(
         self, run_id: str, workspace_id: str, cases: Sequence[TestCase], *, repeat_count: int
     ) -> None:
@@ -978,6 +1174,7 @@ class Storage:
                 rows,
             )
 
+    @_workspace_scoped
     def get_case(self, run_id: str, case_id: str, workspace_id: str) -> CaseRecord | None:
         row = self._conn.execute(
             "SELECT * FROM run_cases WHERE run_id = ? AND case_id = ? AND workspace_id = ?",
@@ -985,6 +1182,7 @@ class Storage:
         ).fetchone()
         return _case_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def list_cases(self, run_id: str, workspace_id: str) -> list[CaseRecord]:
         rows = self._conn.execute(
             "SELECT * FROM run_cases WHERE run_id = ? AND workspace_id = ?"
@@ -993,6 +1191,7 @@ class Storage:
         ).fetchall()
         return [_case_from_row(r) for r in rows]
 
+    @_workspace_scoped
     def set_case_status(
         self, run_id: str, case_id: str, workspace_id: str, to: RunCaseStatus | str
     ) -> CaseRecord:
@@ -1015,6 +1214,7 @@ class Storage:
             )
         return self.get_case(run_id, case_id, workspace_id)
 
+    @_workspace_scoped
     def set_case_classification(
         self,
         run_id: str,
@@ -1035,6 +1235,7 @@ class Storage:
     # Attempts
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def create_attempt(
         self,
         *,
@@ -1055,6 +1256,7 @@ class Storage:
             )
         return self.get_attempt_by_id(attempt_id, workspace_id)
 
+    @_workspace_scoped
     def get_attempt_by_id(self, attempt_id: str, workspace_id: str) -> AttemptRecord | None:
         row = self._conn.execute(
             "SELECT * FROM run_case_attempts WHERE attempt_id = ? AND workspace_id = ?",
@@ -1062,6 +1264,7 @@ class Storage:
         ).fetchone()
         return _attempt_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def get_attempt(
         self,
         *,
@@ -1078,6 +1281,7 @@ class Storage:
         ).fetchone()
         return _attempt_from_row(row) if row is not None else None
 
+    @_workspace_scoped
     def list_attempts(
         self, run_id: str, workspace_id: str, case_id: str | None = None
     ) -> list[AttemptRecord]:
@@ -1095,6 +1299,7 @@ class Storage:
             ).fetchall()
         return [_attempt_from_row(r) for r in rows]
 
+    @_workspace_scoped
     def set_attempt_status(
         self,
         attempt_id: str,
@@ -1141,8 +1346,13 @@ class Storage:
     def insert_trace_events(self, events: Sequence[TraceEvent]) -> None:
         """Batch insert; idempotent per (run_id, event_id) (INSERT OR IGNORE —
         a re-ingested attempt's events never duplicate)."""
+        if not events:
+            return
+        workspace_id = events[0].workspace_id
+        if any(e.workspace_id != workspace_id for e in events):
+            raise ValueError("trace batches must belong to one workspace")
         rows = [_event_row(e) for e in events]
-        with self._tx():
+        with self.workspace_transaction(workspace_id):
             self._conn.executemany(
                 "INSERT OR IGNORE INTO trace_events (event_id, run_id, case_id,"
                 "  attempt_id, workspace_id, repeat_index, attempt, sequence, type,"
@@ -1153,6 +1363,7 @@ class Storage:
                 rows,
             )
 
+    @_workspace_scoped
     def get_trace_events(
         self,
         *,
@@ -1179,6 +1390,7 @@ class Storage:
     # Metric results
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def upsert_case_metric_results(
         self,
         *,
@@ -1231,6 +1443,7 @@ class Storage:
     # Cost summaries (§12A.5) — per-run totals keyed by price_version
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def add_cost_summaries(
         self, run_id: str, workspace_id: str, rows: Iterable[Mapping[str, Any]]
     ) -> None:
@@ -1259,6 +1472,7 @@ class Storage:
                 ],
             )
 
+    @_workspace_scoped
     def get_cost_summaries(self, run_id: str, workspace_id: str) -> list[dict[str, Any]]:
         """Per-price-version totals for the run (the dashboard's cost stat
         resolves against this — aggregates-only, never a trace scan)."""
@@ -1278,6 +1492,7 @@ class Storage:
             for r in rows
         ]
 
+    @_workspace_scoped
     def iter_cost_json(self, run_id: str, workspace_id: str) -> Iterable[dict[str, Any]]:
         """Yield parsed §12B cost blocks from cost-bearing trace_events. The
         engine aggregates these into ``cost_summaries`` at run completion."""
@@ -1289,6 +1504,7 @@ class Storage:
         for r in rows:
             yield json.loads(r[0])
 
+    @_workspace_scoped
     def get_case_scores(
         self,
         *,
@@ -1313,6 +1529,7 @@ class Storage:
         rows = self._conn.execute(sql, params).fetchall()
         return [_case_metric_result_from_row(r) for r in rows]
 
+    @_workspace_scoped
     def upsert_run_metric_result(
         self,
         *,
@@ -1356,6 +1573,7 @@ class Storage:
                 ),
             )
 
+    @_workspace_scoped
     def get_run_metric_results(
         self, run_id: str, workspace_id: str, *, score_revision: int | None = None
     ) -> list[RunMetricResultRecord]:
@@ -1377,6 +1595,7 @@ class Storage:
     # Score revisions (§13A.1) — overrides alongside machine scores
     # ------------------------------------------------------------------
 
+    @_workspace_scoped
     def append_score_revision(
         self,
         *,
@@ -1425,6 +1644,7 @@ class Storage:
             run_id, case_id, metric_id, score_revision, workspace_id
         )
 
+    @_workspace_scoped
     def get_score_revision(
         self, run_id: str, case_id: str, metric_id: str, score_revision: int, workspace_id: str
     ) -> ScoreRevisionRecord:
@@ -1439,6 +1659,7 @@ class Storage:
             )
         return _score_revision_from_row(row)
 
+    @_workspace_scoped
     def set_score_revision_status(
         self,
         *,
@@ -1459,6 +1680,7 @@ class Storage:
             )
         return self.get_score_revision(run_id, case_id, metric_id, score_revision, workspace_id)
 
+    @_workspace_scoped
     def get_score_revisions(
         self,
         *,
@@ -1478,6 +1700,88 @@ class Storage:
         sql += " ORDER BY case_id, metric_id, score_revision"
         rows = self._conn.execute(sql, params).fetchall()
         return [_score_revision_from_row(r) for r in rows]
+
+    @_workspace_scoped
+    def create_custom_eval(
+        self,
+        *,
+        workspace_id: str,
+        name: str,
+        spec: dict[str, Any],
+        dashboard: dict[str, Any],
+        dataset: Sequence[Mapping[str, Any]] | None = None,
+        project_id: str | None = None,
+        source_path: str | None = None,
+        entrypoint: Sequence[str] = (),
+        cwd: str | None = None,
+        eval_id: str | None = None,
+    ) -> CustomEvalRecord:
+        now = _now()
+        eid = eval_id or uuid.uuid4().hex
+        cases = list(dataset) if dataset is not None else list(spec.get("cases") or [])
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO custom_evals (eval_id, workspace_id, name, project_id,"
+                "  spec_json, dashboard_json, dataset_json, source_path, entrypoint,"
+                "  cwd, run_id, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+                (
+                    eid, workspace_id, name, project_id,
+                    json.dumps(spec), json.dumps(dashboard), json.dumps(cases),
+                    source_path, json.dumps(list(entrypoint)), cwd, now, now,
+                ),
+            )
+        record = self.get_custom_eval(eid, workspace_id)
+        assert record is not None
+        return record
+
+    @_workspace_scoped
+    def get_custom_eval(self, eval_id: str, workspace_id: str) -> CustomEvalRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM custom_evals WHERE eval_id = ? AND workspace_id = ?",
+            (eval_id, workspace_id),
+        ).fetchone()
+        return _custom_eval_from_row(row) if row is not None else None
+
+    @_workspace_scoped
+    def list_custom_evals(self, workspace_id: str) -> list[CustomEvalRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM custom_evals WHERE workspace_id = ? ORDER BY created_at DESC",
+            (workspace_id,),
+        ).fetchall()
+        return [_custom_eval_from_row(r) for r in rows]
+
+    @_workspace_scoped
+    def set_custom_eval_run(
+        self, eval_id: str, workspace_id: str, run_id: str
+    ) -> CustomEvalRecord:
+        now = _now()
+        with self._tx():
+            self._conn.execute(
+                "UPDATE custom_evals SET run_id = ?, updated_at = ?"
+                " WHERE eval_id = ? AND workspace_id = ?",
+                (run_id, now, eval_id, workspace_id),
+            )
+        record = self.get_custom_eval(eval_id, workspace_id)
+        if record is None:
+            raise KeyError(f"eval {eval_id!r} not found in workspace {workspace_id!r}")
+        return record
+
+    @_workspace_scoped
+    def update_custom_eval_dashboard(
+        self, eval_id: str, workspace_id: str, dashboard: dict[str, Any]
+    ) -> CustomEvalRecord:
+        now = _now()
+        with self._tx():
+            self._conn.execute(
+                "UPDATE custom_evals SET dashboard_json = ?, updated_at = ?"
+                " WHERE eval_id = ? AND workspace_id = ?",
+                (json.dumps(dashboard), now, eval_id, workspace_id),
+            )
+        record = self.get_custom_eval(eval_id, workspace_id)
+        if record is None:
+            raise KeyError(f"eval {eval_id!r} not found in workspace {workspace_id!r}")
+        return record
 
 
 # ---------------------------------------------------------------------------
@@ -1636,6 +1940,14 @@ def _event_row(e: TraceEvent) -> tuple[Any, ...]:
         cost_usd_micros = int(round(e.cost.cost_usd * 1_000_000))
         price_version = e.cost.price_version
         cost_json = e.cost.model_dump_json()
+    safe_payload = redact(e.payload) if e.payload is not None else None
+    safe_error = redact(e.error.model_dump()) if e.error is not None else None
+    flags = set((safe_payload.detector_flags if safe_payload else ()) + (safe_error.detector_flags if safe_error else ()))
+    truncated = (safe_payload and safe_payload.truncated) or (safe_error and safe_error.truncated)
+    state = e.redaction_state.model_copy(deep=True)
+    if flags or truncated:
+        state.status = "truncated" if truncated else "redacted"
+        state.rules = sorted(set(state.rules) | {f"storage:{flag}" for flag in flags} | ({"storage:truncated"} if truncated else set()))
     return (
         e.event_id, e.run_id, e.case_id, e.attempt_id, e.workspace_id,
         e.repeat_index, e.attempt, e.sequence, e.type.value, e.source.value,
@@ -1643,10 +1955,10 @@ def _event_row(e: TraceEvent) -> tuple[Any, ...]:
         e.provider_request_id, e.tool,
         e.otel.model_dump_json() if e.otel is not None else None,
         cost_usd_micros, price_version, cost_json,
-        e.redaction_state.model_dump_json(),
-        json.dumps(e.payload) if e.payload is not None else None,
+        state.model_dump_json(),
+        json.dumps(safe_payload.content) if safe_payload is not None else None,
         e.payload_ref,
-        e.error.model_dump_json() if e.error is not None else None,
+        json.dumps(safe_error.content) if safe_error is not None else None,
     )
 
 
@@ -1735,4 +2047,22 @@ def _score_revision_from_row(row: sqlite3.Row) -> ScoreRevisionRecord:
         author_id=row["author_id"],
         status=row["status"],
         created_at=row["created_at"],
+    )
+
+
+def _custom_eval_from_row(row: sqlite3.Row) -> CustomEvalRecord:
+    return CustomEvalRecord(
+        eval_id=row["eval_id"],
+        workspace_id=row["workspace_id"],
+        name=row["name"],
+        project_id=row["project_id"],
+        spec=_j(row["spec_json"]) or {},
+        dashboard=_j(row["dashboard_json"]) or {},
+        dataset=_j(row["dataset_json"]) or [],
+        source_path=row["source_path"],
+        entrypoint=list(_j(row["entrypoint"]) or []),
+        cwd=row["cwd"],
+        run_id=row["run_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

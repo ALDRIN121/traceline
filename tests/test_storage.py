@@ -378,6 +378,25 @@ class TestTraceEvents:
             run_id=run.run_id, workspace_id="ws1"
         ) != []
 
+    def test_storage_redaction_updates_trace_state(self, storage):
+        run = _make_run(storage)
+        event = self._events(run, count=1)[0].model_copy(update={
+            "payload": {"api_key": "sk-test-do-not-persist-0001"},
+        })
+        storage.insert_trace_events([event])
+        stored = storage.get_trace_events(run_id=run.run_id, workspace_id="ws1")[0]
+        assert "sk-test-do-not-persist-0001" not in str(stored.payload)
+        assert stored.redaction_state.status == "redacted"
+        assert stored.redaction_state.rules
+
+    def test_storage_marks_truncated_trace_payloads(self, storage):
+        run = _make_run(storage)
+        event = self._events(run, count=1)[0].model_copy(update={"payload": {"log": "x" * 20_000}})
+        storage.insert_trace_events([event])
+        stored = storage.get_trace_events(run_id=run.run_id, workspace_id="ws1")[0]
+        assert stored.redaction_state.status == "truncated"
+        assert "storage:truncated" in stored.redaction_state.rules
+
 
 class TestCostSummaries:
     """§12B.2: per-price_version totals written at finalize; the engine's

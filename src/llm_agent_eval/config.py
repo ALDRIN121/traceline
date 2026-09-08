@@ -92,7 +92,9 @@ class RunTiers:
 
 @dataclass(frozen=True)
 class Settings:
-    db_path: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_DB", "./eval.db"))
+    db_path: str = field(default_factory=lambda: _env("DATABASE_URL", _env("LLM_AGENT_EVAL_DB", "./eval.db")))
+    artifact_root: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_ARTIFACT_ROOT", "./.artifacts"))
+    artifact_max_bytes: int = 16 * 1024 * 1024
     #: The price-version stamped on cost-bearing events at ingestion
     #: (§12A.5/§12B.2: historical cost totals survive provider price drift only
     #: with the version recorded). Stamped by the engine — the proxy owns this

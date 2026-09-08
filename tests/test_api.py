@@ -123,6 +123,26 @@ def run_to_complete(client, n_cases=2, **body_kwargs):
 
 
 class TestHealthAndEnvelope:
+    def test_app_factory_registers_health_and_archive_upload_routes(self, tmp_path):
+        """A temporary database can build the API, including multipart ZIP intake.
+
+        This catches a packaging regression where FastAPI cannot register the
+        archive-upload route because its multipart parser is absent.
+        """
+        db = Storage(tmp_path / "factory.db")
+        db.create_schema()
+        try:
+            app = create_app(storage=db, engine=Engine(db, work_root=tmp_path / "work"))
+            routes = {
+                (route.path, method)
+                for route in app.routes
+                for method in getattr(route, "methods", ())
+            }
+            assert ("/health", "GET") in routes
+            assert ("/api/projects/upload", "POST") in routes
+        finally:
+            db.close()
+
     def test_health(self, client):
         c, _, _ = client
         resp = c.get("/health")

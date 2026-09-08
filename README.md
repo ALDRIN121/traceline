@@ -13,42 +13,65 @@ deterministic engine executes and scores. Semantic judging is one evaluator type
 exact match, schema, rule, trace, numeric, reference, and custom code come first, because most of
 what teams actually need to check can be stated exactly.
 
-## What's inside
+## Current implementation status
+
+This repository is actively implementing the v3 design. The installed package is a useful
+prototype for local evaluation semantics and API experimentation; it is not yet the complete
+v3 platform. In particular, the planned rootless per-case sandbox, recording egress proxy,
+credential brokerage, durable worker queue, PostgreSQL RLS deployment, secure source-ingestion
+pipeline, and hosted-agent connector are not shipping in this package yet. The FastAPI ZIP upload
+route is present for prototype intake only and is not the final bounded, quarantined ingestion
+service.
+
+See the [workflow implementation plan](docs/design/workflow-implementation-plan.md) and the
+[implementation status](docs/design/workflow-implementation-status.md) for the verified boundary
+between prototype behavior and planned work.
+
+## What's available today
 
 - **EvaluationSpec** — one validated JSON document defines cases, metrics, scoring, aggregation,
   and the run-level gate. An LLM harness (opt-in) translates intent into a spec; the engine never
   executes LLM output.
-- **Trace capture by egress proxy** — the agent's sandbox has no internet route; a per-run
-  recording proxy is its sole egress and the trace source of truth. Provider-agnostic by
-  construction, and the same proxy meters token cost to USD and enforces a hard per-run budget.
-- **Deterministic-first evaluators** — exact match, schema, numeric, trace rules, CEL predicates,
-  reference answers, and semantic judging (marked `UNCALIBRATED` until validated).
-- **Runs with a real lifecycle** — queued → running → aggregating → complete; cancel is
-  non-blocking, interrupted runs resume, and each test case runs in a fresh process so state never
-  leaks between cases.
+- **Deterministic-first evaluation foundation** — validated specs, exact match, schema, numeric,
+  trace-rule, reference, and provisional semantic-judge building blocks.
+- **Prototype runs and evidence APIs** — local development storage, run lifecycle endpoints, and
+  declarative dashboard data; execution isolation and proxy-authoritative capture remain planned.
 - **Evidence-linked dashboards** — a declarative definition renders run overviews, per-case
   tables, and trace evidence: every score is clickable down to the event that produced it.
-- **Self-hosted and clean** — Apache-2.0, no telemetry, no phone-home, no bundled credentials;
-  runs fully locally on Linux, macOS, and Windows/WSL2.
+- **Open-source local prototype** — Apache-2.0, no telemetry, no phone-home, and no bundled
+  provider credentials. Tri-platform isolated execution is a design target, not a current claim.
 
 ## Quickstart
 
 ```bash
-pip install -e .
-eval-engine serve                 # dashboard at http://127.0.0.1:8000
+uv venv .venv
+uv pip sync --python .venv/bin/python requirements-dev.lock
+uv pip install --python .venv/bin/python --no-deps -e .
+.venv/bin/eval-engine serve       # prototype UI/API at http://127.0.0.1:8000
 ```
 
-Create a project, pass the smoke gate, and run an evaluation:
+The current CLI can create a local project, run its prototype smoke gate, and execute a local
+evaluation:
 
 ```bash
-eval-engine init my-agent-eval                       # spec template + project skeleton
-eval-engine smoke my-agent-eval                      # smoke gate: does the agent actually run?
-eval-engine run my-agent-eval/spec.json --entrypoint python my-agent-eval/agent.py
-eval-engine results <run-id>                         # scores, gate status, revisions
+.venv/bin/eval-engine init my-agent-eval                       # spec template + project skeleton
+.venv/bin/eval-engine smoke my-agent-eval                      # smoke gate: does the agent actually run?
+.venv/bin/eval-engine run my-agent-eval/spec.json --entrypoint .venv/bin/python my-agent-eval/agent.py
+.venv/bin/eval-engine results <run-id>                         # scores, gate status, revisions
 ```
 
-The dashboard is served by the same server as `eval-engine serve` — run selector, metric table,
-per-case table, and clickable trace evidence.
+The dashboard is served by the same server as `eval-engine serve`. It is a prototype presentation
+surface, not evidence of a completed hosted or sandboxed evaluation workflow.
+
+To start the current containerized prototype and its local PostgreSQL service:
+
+```bash
+docker compose up --build
+```
+
+The Compose file's local database values are development-only defaults. Supply deployment
+credentials through your environment or deployment secret manager; the image and lockfiles do not
+contain database or provider credentials.
 
 ## The reference fixture
 
@@ -62,17 +85,20 @@ support-triage agent that runs offline or against any OpenAI-compatible endpoint
 
 The full design lives in [`docs/design/`](docs/design/). Start with the
 [review-and-v3 plan](docs/design/v2-review-and-v3-plan.md), then the
-[v3 specification](docs/design/LLM_Agent_Evaluation_Engine_v3.md) — the repo is implemented
-against v3, and section references in code (e.g. `§11A`) point at it.
+[v3 specification](docs/design/LLM_Agent_Evaluation_Engine_v3.md). The prototype is being
+progressively aligned with v3; section references in code (e.g. `§11A`) identify the intended
+contract rather than claiming every v3 mechanism is complete.
 
 ## Tests
 
 ```bash
-PYTHONPATH=src python -m pytest -q    # 508 tests, no network required
+PYTHONPATH=src python -m pytest -q
 ```
 
-A few tests are marked `live`: they exercise a real LLM provider through `DEEPSEEK_API_KEY` in
-`.env` (never committed) and are skipped by default — run them last.
+The default suite excludes the opt-in `live` marker. `live` tests exercise a real LLM provider
+through `DEEPSEEK_API_KEY` in `.env` (never committed) and should run last. `integration` and
+`browser` markers are registered for their future suites; their absence today does not mean those
+environments are verified.
 
 ## License
 

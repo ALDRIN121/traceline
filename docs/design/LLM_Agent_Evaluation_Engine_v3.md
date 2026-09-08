@@ -1934,12 +1934,9 @@ Every platform runs *Linux containers* — Windows containers are never used.
   makes the framework-adapter cut (§4H) safe.
 - **The design documents ship in the repository** — this review and v3 are the project's
   rationale record.
-- **License: explicitly open.** Whether others may run this platform commercially is a real
-  choice for a project whose adopters are self-hosters, and it is the one decision here with no
-  reversible default. It is recorded as the plan's explicitly open decision (4K, 4J): open
-  source is decided (decision 6); the specific terms governing commercial use by others are
-  open for the owner, with the constraint that there is no reversible default. This is the one
-  deliberately open item in this document — never a design gap.
+- **License: Apache-2.0.** The platform is open source and may be self-hosted or used
+  commercially under Apache-2.0. The repository includes the license text before release; this
+  is a locked product decision, not an open design question.
 
 # 12. Tracing and Observability
 
@@ -6229,7 +6226,7 @@ ITERATION / REGRESSION
 
 This integrated model makes the agent layer, evaluation engine, execution infrastructure, search system, and UI generation system parts of one product rather than independent features. The conversational agent is the interface to the complexity; the structured evaluation model, executor, metric engine, trace system, and component registry remain the durable technical foundation.
 
-## §45 — Closing: assembly, reality check, and open items
+## §45 — Closing: assembly and reality check
 
 **What this document is.** v3 is v2's text revised in place where the plan marks revision
 (§3, §17–§21, §26, §38, §40 — each marked `(REVISED)` with a what-changed note), plus new
@@ -6248,6 +6245,5 @@ PREPARE → SMOKE), §20 (`source_digest` + `runtime_config_digest`), §32A/§32
 0.2/0.3 rules), and §37A.5 (proxy-only vs adapter-scored evidence). The next step in the
 design's own terms is the same walk against the reference agent by an implementer.
 
-**Open items.** Exactly one, deliberately: the license. §4K.4 records it as the plan's
-explicitly open decision — whether others may run this platform commercially — with no
-reversible default. Everything else in this document is decided as specified.
+**Decision completeness.** Apache-2.0 is the license (§4K.4). Everything else in this document
+is decided as specified; future implementation choices must preserve the invariants in §42.

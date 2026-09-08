@@ -28,17 +28,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import sqlite3
+import sys
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import FastAPI, File, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +50,8 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import settings
+from .auth import Actor
+from .contracts import WorkflowError
 from .dashboard import (
     DEFAULT_DEFINITION,
     get_registry_version,
@@ -61,7 +67,7 @@ from .engine import (
 )
 from .lifecycle import IllegalTransition, RunCaseStatus, RunStatus, is_run_terminal
 from .spec import SpecValidationError, validate_spec
-from .storage import Storage
+from .storage import CustomEvalRecord, Storage
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +105,19 @@ class RevisionRequest(BaseModel):
     dispute_path: Literal["rule_wrong", "evidence_missing", "judgment_wrong"] | None = None
     reason: str | None = None
     author_id: str | None = None
+
+
+class ValidateSpecRequest(BaseModel):
+    """POST /api/evaluations/validate body."""
+
+    spec: dict[str, Any] | str
+
+
+class AuthorSpecRequest(BaseModel):
+    """POST /api/harness/author body."""
+
+    intent: str
+    repair_attempts: int | None = None
 
 #: §17.10 error taxonomy → HTTP status mapping.
 _ERROR_STATUS = {
@@ -234,6 +253,82 @@ def _normalized_spec(spec: dict[str, Any] | str) -> str:
     return validate_spec(spec).model_dump_json()
 
 
+_PIPELINE_STEPS = (
+    ("connect", "Agent connected"),
+    ("hitl", "HITL confirmed"),
+    ("plan", "Eval plan & spec"),
+    ("dataset", "Dataset built"),
+    ("dashboard", "Dashboard authored"),
+    ("run", "Agent executed"),
+    ("score", "Scored"),
+)
+
+
+def _pipeline_for_eval(record: CustomEvalRecord, run_status: str | None) -> list[dict[str, Any]]:
+    authored = bool(record.spec and record.dashboard)
+    run_stage = "pending"
+    score_stage = "pending"
+    if run_status in ("complete",):
+        run_stage = "complete"
+        score_stage = "complete"
+    elif run_status in ("failed", "cancelled", "incomplete"):
+        run_stage = "failed"
+        score_stage = "pending"
+    elif run_status in ("draft", "queued", "provisioning", "running", "aggregating"):
+        run_stage = "running"
+        score_stage = "pending"
+    statuses = {
+        "connect": "complete" if record.source_path or record.entrypoint else "pending",
+        "hitl": "complete" if record.entrypoint else "pending",
+        "plan": "complete" if authored else "pending",
+        "dataset": "complete" if record.dataset else "pending",
+        "dashboard": "complete" if record.dashboard else "pending",
+        "run": run_stage,
+        "score": score_stage,
+    }
+    return [
+        {"id": sid, "label": label, "status": statuses[sid]}
+        for sid, label in _PIPELINE_STEPS
+    ]
+
+
+def _eval_payload(record: CustomEvalRecord, run_status: str | None = None) -> dict[str, Any]:
+    return {
+        "eval_id": record.eval_id,
+        "name": record.name,
+        "project_id": record.project_id,
+        "spec": record.spec,
+        "dashboard": record.dashboard,
+        "dataset": record.dataset,
+        "source_path": record.source_path,
+        "entrypoint": record.entrypoint,
+        "cwd": record.cwd,
+        "run_id": record.run_id,
+        "hitl": {
+            "entrypoint": " ".join(record.entrypoint) if record.entrypoint else None,
+            "source_path": record.source_path,
+        },
+        "pipeline": _pipeline_for_eval(record, run_status),
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _safe_extract_zip(data: bytes, dest: Path) -> Path:
+    dest.mkdir(parents=True, exist_ok=True)
+    dest = dest.resolve()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist():
+            target = (dest / info.filename).resolve()
+            if dest != target and dest not in target.parents:
+                raise ValueError("zip archive contains an unsafe path")
+        zf.extractall(dest)
+    children = [p for p in dest.iterdir() if p.name != "__MACOSX"]
+    if len(children) == 1 and children[0].is_dir():
+        return children[0]
+    return dest
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -244,6 +339,8 @@ def create_app(
     storage: Storage | None = None,
     engine: Engine | None = None,
     workspace_id: str = "default",
+    auth_resolver: Any = None,
+    artifact_root: Path | None = None,
 ) -> FastAPI:
     """Build the application. Pass ``storage``/``engine`` to pin the store and
     engine (tests, ``eval-engine serve``); when omitted, the app lazily opens
@@ -303,8 +400,23 @@ def create_app(
             or request.headers.get("x-correlation-id")
             or uuid.uuid4().hex
         )
+        try:
+            actor = auth_resolver(request) if auth_resolver else Actor("local-owner", ws, "owner")
+            if not isinstance(actor, Actor):
+                raise WorkflowError("Authentication required", code="unauthorized", status=401)
+            actor.require(workspace_id=ws, write=request.method not in {"GET", "HEAD", "OPTIONS"})
+            request.state.actor = actor
+        except WorkflowError as exc:
+            response = _error(request, exc.status, exc.code, str(exc), exc.details)
+            response.headers["x-correlation-id"] = request.state.correlation_id
+            return response
         response = await call_next(request)
         response.headers["x-correlation-id"] = request.state.correlation_id
+        path = request.url.path
+        if path == "/" or path.endswith((".html", ".js", ".css", ".json")):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
     def _error(
@@ -327,6 +439,13 @@ def create_app(
         )
 
     # ---- §17.10 error envelope -------------------------------------------
+
+    @app.exception_handler(WorkflowError)
+    async def _workflow_error(request: Request, exc: WorkflowError) -> JSONResponse:
+        return _error(request, exc.status, exc.code, str(exc), exc.details)
+
+    from .workflow_api import workflow_router
+    app.include_router(workflow_router(store, artifact_root or Path(settings.artifact_root), settings.artifact_max_bytes))
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -898,6 +1017,374 @@ def create_app(
             DEFAULT_DEFINITION, filters, None, store(), workspace_id=ws
         )
         return asdict(resolved)
+
+    @app.post("/api/evaluations/validate")
+    def validate_evaluation_spec(body: ValidateSpecRequest) -> dict[str, Any]:
+        """Validate an evaluation spec against the schema (immediate, §32A.2)."""
+        try:
+            spec = validate_spec(body.spec)
+            return {
+                "valid": True,
+                "validation_status": "validated",
+                "verification_id": None,
+                "verification_status": "not_verified",
+                "spec": spec.model_dump(),
+                "errors": [],
+            }
+        except SpecValidationError as exc:
+            return {
+                "valid": False,
+                "validation_status": "failed",
+                "verification_id": None,
+                "verification_status": "not_verified",
+                "spec": None,
+                "errors": [{"field": p.field, "message": p.message} for p in exc.problems],
+            }
+
+    @app.post("/api/harness/author")
+    def author_evaluation_spec(body: AuthorSpecRequest, request: Request) -> dict[str, Any]:
+        """Author an evaluation spec from natural language intent (§10B/§31A)."""
+        from .gateway import DeepSeekGateway
+        from .harness import author_spec
+
+        if not settings.model.has_key:
+            template = {
+                "spec_version": "0.1.0",
+                "name": "authored-suite",
+                "dataset_version": "v1",
+                "run_tier": "quick",
+                "cases": [
+                    {
+                        "case_id": "case_1",
+                        "name": "Refund eligibility check",
+                        "description": body.intent[:100],
+                        "input": {"order_id": "ORD-1001", "query": body.intent},
+                        "expected": {
+                            "eligibility": {"tag": "user_stated", "value": True},
+                        },
+                    },
+                ],
+                "metrics": [
+                    {
+                        "metric_id": "eligibility_before_refund",
+                        "name": "eligibility checked before refund",
+                        "type": "trace_rule",
+                        "target": {"type": "trace", "on_missing": "fail"},
+                        "evaluator": {
+                            "type": "trace_rule",
+                            "rule": {
+                                "op": "for_all",
+                                "match": {"event": "tool_call", "tool": "refund_order"},
+                                "assert": {"op": "exists_before", "match": {"event": "tool_call", "tool": "check_eligibility"}},
+                            },
+                        },
+                        "scoring": {"type": "binary", "range": [0, 1]},
+                        "aggregation": {"method": "pass_rate", "on_error": "fail"},
+                    },
+                ],
+            }
+            return {
+                "state": "validated",
+                "spec": template,
+                "repair_attempts": 0,
+                "expected_count": 1,
+                "inferred_expected": 0,
+                "inferred_share": 0.0,
+                "notice": "Offline authoring template generated (set DEEPSEEK_API_KEY for dynamic LLM drafting).",
+            }
+
+        gateway = DeepSeekGateway(settings.model)
+        res = author_spec(body.intent, gateway, repair_attempts=body.repair_attempts)
+        if not res.validated or res.spec is None:
+            return {
+                "state": res.state,
+                "reason": res.reason,
+                "repair_attempts": res.repair_attempts,
+            }
+        return {
+            "state": "validated",
+            "spec": res.spec.model_dump(),
+            "repair_attempts": res.repair_attempts,
+            "expected_count": res.expected_count,
+            "inferred_expected": res.inferred_expected,
+            "inferred_share": res.inferred_share,
+        }
+
+    @app.post("/api/runs/sample", status_code=202)
+    def start_sample_run(request: Request) -> dict[str, Any]:
+        """Trigger an instant demonstration run using the sample agent fixture."""
+        import sys
+        sample_dir = Path(__file__).resolve().parents[2] / "fixtures" / "sample-agent"
+        entrypoint = [sys.executable, str(sample_dir)]
+        sample_spec = {
+            "spec_version": "0.1.0",
+            "name": "sample-support-triage",
+            "dataset_version": "v1",
+            "run_tier": "quick",
+            "cases": [
+                {
+                    "case_id": f"refund-{i+1}",
+                    "name": f"Refund request #{i+1}",
+                    "input": {
+                        "order_id": f"ORD-{1000 + i}",
+                        "customer_message": f"Please refund order ORD-{1000 + i}",
+                    },
+                    "expected": {
+                        "refund_amount": {"tag": "user_stated", "value": 49.99},
+                    },
+                }
+                for i in range(3)
+            ],
+            "metrics": [
+                {
+                    "metric_id": "search_follows_llm",
+                    "name": "search articles follows model decision",
+                    "type": "trace_rule",
+                    "target": {"type": "trace", "on_missing": "fail"},
+                    "evaluator": {
+                        "type": "trace_rule",
+                        "rule": {
+                            "op": "for_all",
+                            "match": {"event": "tool_call", "tool": "search_articles"},
+                            "assert": {"op": "exists_before", "match": {"event": "llm_response"}},
+                        },
+                    },
+                    "scoring": {"type": "binary", "range": [0, 1]},
+                    "aggregation": {"method": "pass_rate", "on_error": "fail"},
+                },
+                {
+                    "metric_id": "eligibility_before_refund",
+                    "name": "eligibility checked before refund",
+                    "type": "trace_rule",
+                    "target": {"type": "trace", "on_missing": "fail"},
+                    "evaluator": {
+                        "type": "trace_rule",
+                        "rule": {
+                            "op": "for_all",
+                            "match": {"event": "tool_call", "tool": "process_refund"},
+                            "assert": {"op": "exists_before", "match": {"event": "tool_call", "tool": "check_eligibility"}},
+                        },
+                    },
+                    "scoring": {"type": "binary", "range": [0, 1]},
+                    "aggregation": {"method": "pass_rate", "on_error": "fail"},
+                },
+            ],
+        }
+        run = eng().create_run(
+            ws, sample_spec, tier="quick", repeats=1, retry_max=0,
+            entrypoint=entrypoint, cwd=str(sample_dir),
+        )
+        start_run(run.run_id, request)
+        return {
+            "run_id": run.run_id,
+            "status": "queued",
+            "message": "Sample evaluation run initiated.",
+        }
+
+    @app.post("/api/projects/analyze")
+    def analyze_project(body: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Statically inspect the explicitly selected local source (§32A)."""
+        from .orchestrator import (
+            RepoReaderAgent,
+            RepoSummaryAgent,
+            entrypoint_command_for_candidate,
+            local_source_id,
+        )
+
+        source = body.get("source")
+        if not isinstance(source, str) or not source.strip():
+            return _error(
+                request,
+                422,
+                "source_required",
+                "an explicit source path is required",
+            )
+        source = source.strip()
+        root = Path(__file__).resolve().parents[2]
+        target_dir = root / source if not Path(source).is_absolute() else Path(source)
+        if not target_dir.is_dir():
+            return _error(
+                request,
+                404,
+                "source_not_found",
+                f"source {source!r} was not found",
+            )
+        target_dir = target_dir.resolve()
+        is_explicit_example = target_dir == (root / "fixtures" / "sample-agent").resolve()
+
+        scan = RepoReaderAgent().scan_directory(target_dir)
+        analysis = RepoSummaryAgent().analyze_capabilities(
+            target_dir,
+            scan["files"],
+            include_example_data=is_explicit_example,
+        )
+
+        entrypoint_name = scan["entrypoint_candidates"][0] if scan["entrypoint_candidates"] else None
+        entrypoint_command = entrypoint_command_for_candidate(target_dir, entrypoint_name)
+
+        project_name = target_dir.name
+        project = store().create_project(
+            workspace_id=ws,
+            name=project_name,
+            entrypoint=entrypoint_command,
+        )
+
+        return {
+            "project_id": project.project_id,
+            "source_id": local_source_id(target_dir),
+            "source_path": str(target_dir),
+            "name": project_name,
+            "status": "ANALYZED",
+            "summary": analysis["summary"],
+            "entrypoint": f"python {entrypoint_name}" if entrypoint_name else None,
+            "entrypoint_command": entrypoint_command,
+            "tools_detected": analysis["tools_detected"],
+            "models_detected": analysis["models_detected"],
+            "files": scan["files"],
+            "findings": analysis["findings"],
+            "diagnostics": analysis["diagnostics"],
+            "sample_data": analysis["sample_data"],
+            "suggested_evals": [],
+            "verification_id": None,
+            "verification_status": "not_verified",
+            "verification_message": "Not verified.",
+            "message": "Static analysis completed. Runtime has not been verified.",
+        }
+
+    @app.post("/api/projects/upload")
+    async def upload_agent_archive(file: UploadFile = File(...)) -> dict[str, Any]:
+        """Accept a ZIP of the agent under test and unpack it for Builder chat."""
+        raw = await file.read()
+        stem = Path(file.filename or "agent").stem or "agent"
+        dest = Path(tempfile.gettempdir()) / "llm_agent_eval" / "uploads" / uuid.uuid4().hex / stem
+        try:
+            source = _safe_extract_zip(raw, dest)
+        except (ValueError, zipfile.BadZipFile) as exc:
+            return JSONResponse(status_code=400, content={"error": {"message": str(exc)}})
+        return {
+            "name": source.name,
+            "source": str(source),
+            "message": "Archive unpacked. Connect it in chat to author an eval.",
+        }
+
+    @app.get("/api/evals")
+    def list_custom_evals() -> dict[str, Any]:
+        records = store().list_custom_evals(ws)
+        items = []
+        for rec in records:
+            run_status = None
+            if rec.run_id:
+                run = store().get_run(rec.run_id, ws)
+                run_status = run.status if run else None
+            items.append(_eval_payload(rec, run_status))
+        return {"evals": items}
+
+    @app.get("/api/evals/{eval_id}")
+    def get_custom_eval(eval_id: str, request: Request) -> Any:
+        rec = store().get_custom_eval(eval_id, ws)
+        if rec is None:
+            return _error(request, 404, "not_found", f"eval {eval_id!r} not found")
+        run_status = None
+        if rec.run_id:
+            run = store().get_run(rec.run_id, ws)
+            run_status = run.status if run else None
+        return _eval_payload(rec, run_status)
+
+    @app.post("/api/evals/{eval_id}/run", status_code=202)
+    def run_custom_eval(eval_id: str, request: Request) -> Any:
+        """Execute the connected agent against this eval's authored spec and dataset."""
+        rec = store().get_custom_eval(eval_id, ws)
+        if rec is None:
+            return _error(request, 404, "not_found", f"eval {eval_id!r} not found")
+        if not rec.entrypoint:
+            return _error(request, 409, "validation_error", "eval has no agent entrypoint")
+        try:
+            run = eng().create_run(
+                ws, rec.spec, tier=rec.spec.get("run_tier") or "quick",
+                repeats=1, retry_max=0,
+                entrypoint=rec.entrypoint, cwd=rec.cwd,
+            )
+        except (ValueError, SpecValidationError, EngineError) as exc:
+            return _error(request, 422, "validation_error", str(exc))
+        store().set_custom_eval_run(eval_id, ws, run.run_id)
+        start_run(run.run_id, request)
+        return {
+            "eval_id": eval_id,
+            "run_id": run.run_id,
+            "status": "queued",
+            "message": "Custom evaluation run initiated against the connected agent.",
+        }
+
+    @app.post("/api/harness/chat")
+    def harness_chat_turn(body: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Conversational turn endpoint with multi-agent orchestration and cross-communication (§31A)."""
+        from dataclasses import asdict
+        from .orchestrator import OrchestratorAgent, SourceNotFoundError
+
+        msg = (body.get("message") or "").strip()
+        project_id = body.get("project_id")
+        eval_id = body.get("eval_id")
+
+        orch = OrchestratorAgent()
+        try:
+            result = orch.process_turn(msg, project_id=project_id)
+        except SourceNotFoundError as exc:
+            return _error(request, 404, "source_not_found", str(exc))
+
+        eval_record = None
+        if result.project_data:
+            try:
+                p = store().create_project(
+                    workspace_id=ws,
+                    name=result.project_data["name"],
+                    entrypoint=result.project_data.get("entrypoint_command") or [],
+                )
+                result.project_data["project_id"] = p.project_id
+                project_id = p.project_id
+            except Exception:
+                pass
+
+        if result.spec_data and result.dashboard:
+            source = result.source_path
+            cwd = source
+            entrypoint = [sys.executable, source] if source else []
+            eval_record = store().create_custom_eval(
+                workspace_id=ws,
+                name=result.spec_data.get("name") or "custom-eval",
+                spec=result.spec_data,
+                dashboard=result.dashboard,
+                dataset=result.spec_data.get("cases") or [],
+                project_id=project_id,
+                source_path=source,
+                entrypoint=entrypoint,
+                cwd=cwd,
+                eval_id=eval_id,
+            )
+
+        payload = {
+            "role": "assistant",
+            "action": result.action,
+            "reply": result.orchestrator_summary,
+            "agent_steps": [asdict(s) for s in result.agent_steps],
+            "data": result.project_data,
+            "spec_data": result.spec_data,
+            "dashboard": result.dashboard or (eval_record.dashboard if eval_record else None),
+            "hitl": None,
+            "eval_id": eval_record.eval_id if eval_record else eval_id,
+            "pipeline": _eval_payload(eval_record).get("pipeline") if eval_record else [],
+            "suggestions": result.suggestions,
+        }
+        if eval_record:
+            payload["hitl"] = {
+                "entrypoint": " ".join(eval_record.entrypoint),
+                "tools_detected": (result.project_data or {}).get("tools_detected") or [],
+                "models_detected": (result.project_data or {}).get("models_detected") or [],
+                "files": (result.project_data or {}).get("files") or [],
+                "verification_id": (result.project_data or {}).get("verification_id"),
+                "verification_status": (result.project_data or {}).get("verification_status"),
+                "verification_message": (result.project_data or {}).get("verification_message"),
+            }
+        return payload
 
     # The dashboard UI is a static single-page app; mount it only when
     # present — the backend is fully usable headless (the API is the contract).
