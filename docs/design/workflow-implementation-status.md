@@ -225,12 +225,21 @@ complete.
   inspection, and browser-local draft recovery. It never starts an evaluation;
   an optional supplied session ID can resume a persisted session and queue a
   typed proposal.
+- A reviewed onboarding extension accepts an existing project ID, queues existing
+  Git/ZIP import routes, displays server-backed knowledge reports and pending
+  entrypoint questions, confirms findings, and restores sessions. It explicitly
+  names unsupported project creation/listing, free-text correction, and job
+  completion polling rather than simulating them. Project changes invalidate
+  report/session state; ZIP bytes remain binary; confirmation restores keyboard
+  focus to the report heading.
 - Browser evidence: `npm run test:browser --
-  tests/browser/authoring/authoring.spec.js` → **2 passed**. The harness loads
-  the static page directly because this execution environment's browser cannot
-  reach a listening localhost server; it therefore proves the static interaction
-  slice only, not FastAPI integration.
-- Remaining: browser-backed Git/ZIP-to-project onboarding, report correction,
-  persisted metric-result display, dataset mapping/label review, canonical
+  tests/browser/authoring/authoring.spec.js` → **11 passed**. An independent
+  review reproduced and then approved fixes for ZIP transport, stale report and
+  session state, pending questions, and keyboard focus. The harness loads the
+  static page directly because this execution environment's browser cannot
+  reach a listening localhost server; it therefore proves browser interaction
+  and injected server responses, not live FastAPI/worker integration.
+- Remaining: complete browser-backed project bootstrap, worker completion
+  reconciliation, free-text corrections, dataset mapping/label review, canonical
   preview save/revision/undo, cross-tab conflict recovery, real API visual
   checks, and the required desktop/mobile/accessibility acceptance scenarios.
