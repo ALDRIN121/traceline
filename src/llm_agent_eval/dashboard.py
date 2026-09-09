@@ -18,6 +18,7 @@ UNCALIBRATED); it invents nothing.
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -48,6 +49,8 @@ __all__ = [
     "ResolvedDashboard",
     "ResolvedBlock",
     "DEFAULT_DEFINITION",
+    "LEGACY_COMPONENTS",
+    "canonicalize_dashboard",
 ]
 
 #: The dashboard definition schema version (§37B.1 — version 3, 12-column grid).
@@ -255,6 +258,23 @@ class ResolutionContext:
 
 
 _REGISTRY: dict[str, ComponentSpec] = {}
+
+LEGACY_COMPONENTS = {
+    "metric_summary": "MetricCard",
+    "run_table": "RunSummary",
+    "case_table": "TestCaseTable",
+    "trace_evidence": "TraceTimeline",
+}
+
+
+def canonicalize_dashboard(definition: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite lowercase prototype component ids to canonical registry names."""
+    content = json.loads(json.dumps(definition))
+    for block in content.get("blocks") or []:
+        name = block.get("component")
+        if name in LEGACY_COMPONENTS:
+            block["component"] = LEGACY_COMPONENTS[name]
+    return content
 
 
 def register_component(spec: ComponentSpec) -> None:
@@ -992,6 +1012,26 @@ def _register_builtins() -> None:
             InputSpec("case", "case_id", required=True),
         ),
         resolve=_resolve_trace_evidence,
+    )
+    aliases = {
+        "MetricCard": "metric_summary",
+        "MetricBreakdown": "metric_summary",
+        "RunSummary": "run_table",
+        "TestCaseTable": "case_table",
+        "TraceTimeline": "trace_evidence",
+        "ExpectedVsActual": "case_table",
+    }
+    for canonical, prototype in aliases.items():
+        spec = _REGISTRY[prototype]
+        _REGISTRY[canonical] = ComponentSpec(
+            name=canonical, version=spec.version, inputs=spec.inputs,
+            resolve=spec.resolve, selection_type=spec.selection_type,
+        )
+    _REGISTRY["FilterBar"] = ComponentSpec(
+        name="FilterBar",
+        version=1,
+        inputs=(),
+        resolve=lambda bind, ctx: {"component": "FilterBar", "filters": dict(ctx.filters)},
     )
 
 

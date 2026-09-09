@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DashboardDefinition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "blocks"],
+  "properties": {
+    "version": { "const": 3 },
+    "name": { "type": "string", "minLength": 1 },
+    "registry_version": { "type": "integer" },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "grid" },
+        "columns": { "const": 12 }
+      }
+    },
+    "filters": { "type": "array" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component", "span", "bind"],
+        "properties": {
+          "component": {
+            "type": "string",
+            "enum": [
+              "MetricCard",
+              "MetricBreakdown",
+              "RunSummary",
+              "TestCaseTable",
+              "TraceTimeline",
+              "ExpectedVsActual",
+              "FilterBar",
+              "metric_summary",
+              "run_table",
+              "case_table",
+              "trace_evidence"
+            ]
+          },
+          "span": { "type": "integer", "minimum": 1, "maximum": 12 },
+          "bind": { "type": "object" }
+        }
+      }
+    }
+  }
+}

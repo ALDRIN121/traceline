@@ -158,8 +158,13 @@ class TestValidator:
 
     def test_unknown_component(self):
         defn = json.loads(json.dumps(CANONICAL))
-        defn["blocks"][0]["component"] = "MetricCard"
+        defn["blocks"][0]["component"] = "HTMLPreview"
         assert "unknown_component" in codes_of(defn)
+
+    def test_canonical_metric_card_validates(self):
+        defn = json.loads(json.dumps(CANONICAL))
+        defn["blocks"][0]["component"] = "MetricCard"
+        validate_definition(defn)
 
     def test_unknown_filter_reference(self):
         defn = json.loads(json.dumps(CANONICAL))
@@ -270,9 +275,9 @@ class TestValidator:
 
     def test_registry_exposes_components_and_version(self):
         assert get_registry_version() == REGISTRY_VERSION == 1
-        assert set(registry_components()) == {
-            "metric_summary", "run_table", "case_table", "trace_evidence",
-        }
+        names = set(registry_components())
+        assert {"metric_summary", "run_table", "case_table", "trace_evidence"} <= names
+        assert {"MetricCard", "RunSummary", "TestCaseTable", "TraceTimeline"} <= names
 
 
 class TestResolution:

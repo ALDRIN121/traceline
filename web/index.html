@@ -8,6 +8,7 @@
 <title>Traceline — LLM Agent Evaluation Engine</title>
 <link rel="stylesheet" href="styles.css?v=7">
 <script src="app.js?v=7" defer></script>
+<script src="authoring.js?v=1" defer></script>
 </head>
 <body data-view="builder">
 <a class="skip-link" href="#main">Skip to content</a>
@@ -82,7 +83,83 @@
 
 <main id="main" class="main">
   <section id="view-builder" class="builder-workspace" aria-label="Eval Builder" aria-labelledby="builder-heading">
-    <section class="architect-chat" aria-label="Harness conversation">
+    <section class="authoring-workspace" aria-labelledby="authoring-heading">
+      <header class="authoring-topline">
+        <div>
+          <p class="authoring-breadcrumb">Project <span aria-hidden="true">/</span> Evaluation draft</p>
+          <h1 id="authoring-heading">Evaluation workspace</h1>
+          <p class="authoring-lede">Review what is known, decide what to measure, then save a synthetic preview.</p>
+        </div>
+        <div class="authoring-save-state" id="authoring-save-state" role="status" aria-live="polite">Draft saved in this browser</div>
+      </header>
+
+      <div class="authoring-layout">
+        <section class="authoring-conversation" aria-label="Evaluation guidance">
+          <div class="authoring-guide-mark" aria-hidden="true">↗</div>
+          <h2>Start with the evidence you have</h2>
+          <p>Use source as reference, confirm any uncertain claims, and make every scoring decision visible before a preview is saved.</p>
+          <div class="authoring-guide-status">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="authoring-binding-status">No persisted session attached</span>
+          </div>
+          <p class="authoring-quiet">Attach a saved session with <code>?session_id=…</code> to resume its exact decision state. This page never starts an evaluation.</p>
+        </section>
+
+        <section class="authoring-artifact" aria-label="Authoring artifact">
+          <nav class="authoring-tabs" role="tablist" aria-label="Evaluation authoring sections">
+            <button id="authoring-reference-tab" class="authoring-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="authoring-reference">Reference</button>
+            <button id="authoring-metrics-tab" class="authoring-tab" type="button" role="tab" aria-selected="false" aria-controls="authoring-metrics">Metrics</button>
+            <button id="authoring-dataset-tab" class="authoring-tab" type="button" role="tab" aria-selected="false" aria-controls="authoring-dataset">Dataset</button>
+            <button id="authoring-preview-tab" class="authoring-tab" type="button" role="tab" aria-selected="false" aria-controls="authoring-preview">Preview</button>
+          </nav>
+
+          <div id="authoring-reference" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-reference-tab">
+            <div class="authoring-pane-head"><div><h2>Agent reference</h2><p>Facts remain distinguishable from assumptions and execution evidence.</p></div><span class="authoring-revision">Not confirmed</span></div>
+            <div class="reference-cards">
+              <article class="reference-card"><span class="fact-status found">Found in source</span><h3>Source snapshot</h3><p>Import a Git snapshot or ZIP to attach citations and an immutable source identity.</p><button type="button" class="text-action" data-authoring-next="source">Choose a source</button></article>
+              <article class="reference-card"><span class="fact-status unknown">Needs review</span><h3>Runtime capabilities</h3><p>Tool use and provider cost stay unknown until actual observed evidence exists.</p><button type="button" class="text-action" data-authoring-next="review">Review claims</button></article>
+            </div>
+            <div class="authoring-callout"><strong>Correction-safe:</strong> confirming understanding creates a revision. It does not assert that a deployed API matches the source.</div>
+          </div>
+
+          <div id="authoring-metrics" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-metrics-tab" hidden>
+            <div class="authoring-pane-head"><div><h2>Choose what good means</h2><p>Select a small set, then make missing evidence and evaluator errors explicit.</p></div><span id="metric-selection-count" class="authoring-revision">0 selected</span></div>
+            <fieldset class="metric-options"><legend>Suggested metrics</legend>
+              <label class="metric-option"><input id="metric-valid-response" type="checkbox" value="valid-response"><span><strong>Response is valid</strong><small>Checks the final response against the declared output shape.</small></span><em>Available</em></label>
+              <label class="metric-option"><input id="metric-latency" type="checkbox" value="latency"><span><strong>Response meets the time budget</strong><small>Uses measured request timing, not an assumed provider duration.</small></span><em>Available</em></label>
+              <label class="metric-option"><input id="metric-accuracy" type="checkbox" value="accuracy"><span><strong>Response matches approved labels</strong><small>Requires independent labels before it can enforce a gate.</small></span><em>Needs labels</em></label>
+              <label class="metric-option is-unavailable"><input type="checkbox" value="tool-trace" disabled><span><strong>Required tool sequence occurred</strong><small>A hosted output-only target cannot provide trace evidence.</small></span><em>Unavailable</em></label>
+            </fieldset>
+            <label class="custom-intent" for="authoring-custom-intent"><span>Add a criterion in your own words</span><textarea id="authoring-custom-intent" rows="2" placeholder="For example: Give a clear explanation of the delivery status."></textarea></label>
+            <div class="authoring-actions"><button id="review-selected-metrics" class="btn btn-primary" type="button">Review selected metrics</button><button id="inspect-definition" class="btn btn-secondary" type="button" aria-expanded="false">Inspect definition</button></div>
+            <pre id="definition-inspector" class="definition-inspector" hidden aria-label="Metric definition inspection"></pre>
+          </div>
+
+          <div id="authoring-dataset" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-dataset-tab" hidden>
+            <div class="authoring-pane-head"><div><h2>Review test data</h2><p>Mapping and labels are versioned independently from agent requests.</p></div><span class="authoring-revision">No dataset version</span></div>
+            <div class="dataset-empty"><h3>Bring representative cases</h3><p>CSV, JSON, and JSONL imports report every mapping error. Missing labels stay missing; they are never filled in automatically.</p><button type="button" class="btn btn-secondary" data-authoring-next="dataset">Map a dataset</button></div>
+          </div>
+
+          <div id="authoring-preview" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-preview-tab" hidden>
+            <div class="synthetic-banner"><strong>Synthetic preview</strong><span>No agent has been evaluated</span></div>
+            <div class="authoring-pane-head"><div><h2>Review the dashboard shape</h2><p>A preview uses the canonical component registry and declared ranges only.</p></div><span class="authoring-revision">No revision saved</span></div>
+            <div class="preview-empty"><div class="preview-placeholder"></div><p>Save metric and dataset decisions to create an immutable preview revision.</p></div>
+          </div>
+        </section>
+      </div>
+
+      <section id="metric-review-card" class="metric-review" aria-live="polite" hidden>
+        <div><h2>Review selected metrics</h2><p>These choices change evaluation meaning. They are not defaults.</p></div>
+        <div class="policy-fields">
+          <label for="metric-on-missing">When evidence is missing<select id="metric-on-missing"><option value="">Choose an outcome</option><option value="fail">Mark the criterion failed</option><option value="skip">Exclude the case from this metric</option><option value="error">Record an evaluator error</option></select></label>
+          <label for="metric-on-error">When the evaluator has an error<select id="metric-on-error"><option value="">Choose an outcome</option><option value="fail">Mark the criterion failed</option><option value="skip">Exclude the case from this metric</option><option value="error">Record an evaluator error</option></select></label>
+        </div>
+        <p id="metric-policy-help" class="metric-policy-help">Choose both outcomes before saving.</p>
+        <div class="authoring-actions"><button id="save-metric-decisions" class="btn btn-primary" type="button" disabled>Save metric decisions</button><button id="close-metric-review" class="btn btn-secondary" type="button">Back to metrics</button></div>
+      </section>
+    </section>
+
+    <section class="architect-chat" aria-label="Legacy prototype harness conversation" hidden>
       <header class="chat-header">
         <div class="chat-title-group">
           <h3 id="builder-heading">Eval Builder</h3>
@@ -135,7 +212,7 @@
       </div>
     </section>
 
-    <div class="artifact-rail" id="artifact-rail" aria-hidden="true">
+    <div class="artifact-rail" id="artifact-rail" aria-hidden="true" hidden>
       <aside class="artifact-panel" id="artifact-panel" aria-label="Authored dashboard preview">
         <header class="artifact-head">
           <div class="artifact-titles">

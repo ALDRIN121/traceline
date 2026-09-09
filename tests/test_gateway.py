@@ -21,6 +21,7 @@ from llm_agent_eval.gateway import (
     DeepSeekGateway,
     GatewayError,
     GatewayResponse,
+    LiteLLMGateway,
     MockGateway,
 )
 
@@ -257,3 +258,50 @@ def test_deepseek_gateway_network_error_wrapped():
     gateway, _ = make_gateway(handler)
     with pytest.raises(GatewayError, match="request failed"):
         gateway.chat([{"role": "user", "content": "x"}])
+
+
+class _LiteLLMMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _LiteLLMChoice:
+    def __init__(self, content):
+        self.message = _LiteLLMMessage(content)
+
+
+class _LiteLLMUsage:
+    prompt_tokens = 4
+    completion_tokens = 6
+
+
+class _LiteLLMResponse:
+    def __init__(self, content, *, model="openai/gpt-4o"):
+        self.choices = [_LiteLLMChoice(content)]
+        self.usage = _LiteLLMUsage()
+        self.model = model
+
+
+def test_litellm_gateway_never_sets_sampling_and_reads_usage():
+    captured = {}
+
+    def completion(**kwargs):
+        captured.update(kwargs)
+        return _LiteLLMResponse('{"ok": true}')
+
+    gateway = LiteLLMGateway(ModelConfig(api_key="sk-litellm-test", model="openai/gpt-4o"), completion=completion)
+    response = gateway.chat([{"role": "user", "content": "ping"}])
+    assert "temperature" not in captured
+    assert captured["model"] == "openai/gpt-4o"
+    assert captured["messages"] == [{"role": "user", "content": "ping"}]
+    assert response.input_tokens == 4
+    assert response.output_tokens == 6
+    parsed = gateway.chat_json([{"role": "user", "content": "ping"}])
+    assert parsed == {"ok": True}
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_litellm_gateway_offline_without_key():
+    gateway = LiteLLMGateway(ModelConfig(api_key=""))
+    with pytest.raises(GatewayError, match="API key"):
+        gateway.chat([{"role": "user", "content": "hi"}])

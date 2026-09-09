@@ -52,6 +52,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .config import settings
 from .auth import Actor
 from .contracts import WorkflowError
+from .gateway import LiteLLMGateway, ModelGateway
 from .dashboard import (
     DEFAULT_DEFINITION,
     get_registry_version,
@@ -341,6 +342,7 @@ def create_app(
     workspace_id: str = "default",
     auth_resolver: Any = None,
     artifact_root: Path | None = None,
+    gateway: ModelGateway | None = None,
 ) -> FastAPI:
     """Build the application. Pass ``storage``/``engine`` to pin the store and
     engine (tests, ``eval-engine serve``); when omitted, the app lazily opens
@@ -445,8 +447,10 @@ def create_app(
         return _error(request, exc.status, exc.code, str(exc), exc.details)
 
     from .workflow_api import workflow_router
-    router = workflow_router(store, artifact_root or Path(settings.artifact_root), settings.artifact_max_bytes)
+    model_gateway = gateway or LiteLLMGateway(settings.model)
+    router = workflow_router(store, artifact_root or Path(settings.artifact_root), settings.artifact_max_bytes, model_gateway)
     app.state.import_service = router.import_service
+    app.state.workflow_worker = router.worker
     app.state.workflow_actor = Actor("local-owner", ws, "owner")
     app.include_router(router)
 

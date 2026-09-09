@@ -25,7 +25,9 @@ build/
 
 # Playwright MCP scratch (browser verification artifacts)
 .playwright-mcp/
+node_modules/
+playwright-report/
+test-results/
 .agents/
 .codex/
 .commandcode/
-

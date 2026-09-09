@@ -40,8 +40,8 @@ __all__ = [
     "ModelGateway",
     "DeepSeekGateway",
     "MockGateway",
+    "LiteLLMGateway",
 ]
-
 
 class GatewayError(Exception):
     """A gateway call failed: unreachable provider, HTTP error, unparseable
@@ -289,3 +289,69 @@ class MockGateway(ModelGateway):
                 f"got {type(result).__name__}"
             )
         return result
+
+
+class LiteLLMGateway(ModelGateway):
+    """Platform model calls via the LiteLLM SDK — never LiteLLM Proxy server.
+
+    Sampling parameters are never set. Structured JSON is requested when
+    json mode is true; the returned dict remains untrusted until the caller
+    validates it. ``completion`` is injectable for tests.
+    """
+
+    def __init__(self, config: ModelConfig, *, completion=None, provider: str | None = None):
+        self._config = config
+        self._completion = completion
+        self._provider = provider or config.provider
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def model(self) -> str:
+        return self._config.model
+
+    def _complete(self, messages, *, json_mode: bool):
+        if not self._config.has_key:
+            raise GatewayError("no API key configured — the gateway is offline")
+        completion = self._completion
+        if completion is None:
+            import litellm
+            completion = litellm.completion
+        body: dict[str, Any] = {"model": self._config.model, "messages": messages, "api_key": self._config.api_key}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        try:
+            response = completion(**body)
+        except GatewayError:
+            raise
+        except Exception as exc:
+            raise GatewayError(f"provider request failed ({exc.__class__.__name__})") from exc
+        return response
+
+    @staticmethod
+    def _usage(response) -> tuple[str, str, int, int]:
+        message = response.choices[0].message
+        content = getattr(message, "content", None) or ""
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
+        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
+        model = getattr(response, "model", None) or ""
+        return content, str(model), input_tokens, output_tokens
+
+    def chat(self, messages, *, json_schema_hint=None) -> GatewayResponse:
+        content, model, input_tokens, output_tokens = self._usage(self._complete(messages, json_mode=False))
+        return GatewayResponse(content, model or self.model, input_tokens, output_tokens)
+
+    def chat_json(self, messages, json_schema_hint=None) -> dict[str, Any]:
+        content, _, _, _ = self._usage(self._complete(messages, json_mode=True))
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError) as exc:
+            raise GatewayError("provider returned content that is not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise GatewayError(
+                f"provider returned a JSON {type(parsed).__name__}, expected an object"
+            )
+        return parsed

@@ -664,6 +664,50 @@ class _Parser:
 # ---------------------------------------------------------------------------
 
 
+_CEL_MARKERS = ("[", "has(", "size(", "matches(", "contains_secret(", " in ")
+_CEL_NAMES = (
+    "payload", "args", "output", "test", "case", "raw_value", "cost", "timestamp",
+    "provider_request_id", "parent_event_id", "redaction_state",
+)
+
+
+def _needs_cel(text: str) -> bool:
+    return any(marker in text for marker in _CEL_MARKERS)
+
+
+def _contains_secret(value) -> bool:
+    from .redaction import redact
+    text = value if isinstance(value, str) else str(value)
+    return bool(redact(text).detector_flags)
+
+
+def _cel_value(value):
+    from celpy.adapter import json_to_cel
+    return json_to_cel(value)
+
+
+def _compile_cel(text: str):
+    import celpy
+    from celpy import CELEvalError, CELParseError
+
+    try:
+        env = celpy.Environment()
+        expression = env.compile(text)
+        runner = env.program(expression, functions={"contains_secret": _contains_secret})
+    except CELParseError as exc:
+        raise PredicateSyntaxError(text, getattr(exc, "pos", 0) or 0, str(exc)) from exc
+    empty = {name: _cel_value({} if name != "raw_value" else 0) for name in _CEL_NAMES}
+    try:
+        runner.evaluate(empty)
+    except CELEvalError as exc:
+        message = str(exc)
+        if "undeclared reference" in message:
+            raise PredicateSemanticError(f"unknown identifier in CEL expression: {text}") from exc
+    except Exception:
+        pass
+    return runner
+
+
 class Predicate:
     """A compiled §9A scalar predicate.
 
@@ -676,21 +720,33 @@ class Predicate:
     explicit position on any grammar violation — compilation is never silent.
     ``evaluate`` is total: it always returns a bool (UNKNOWN renders False),
     and a missing field never passes a check by accident (module docstring).
+    Stored prototype expressions keep ``language_version='prototype'``; CEL
+    map/index and extension functions use ``language_version='cel'``.
     """
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, *, language_version: str = "prototype"):
         if not isinstance(text, str):
             raise TypeError(f"predicate text must be a str, got {type(text).__name__}")
         if not text.strip():
             raise PredicateSyntaxError(text, 0, "predicate is empty")
+        if language_version not in {"prototype", "cel"}:
+            raise PredicateSemanticError(f"unsupported language_version {language_version!r}")
         self.text = text
+        self.language_version = language_version
+        self._cel = None
+        if language_version == "cel":
+            self._tokens = []
+            self._ast = None
+            self._cel = _compile_cel(text)
+            return
         self._tokens = _tokenize(text)
         self._ast = _Parser(text, self._tokens).parse()
 
     @classmethod
-    def compile(cls, text: str) -> "Predicate":
+    def compile(cls, text: str, *, language_version: str | None = None) -> "Predicate":
         """Compile ``text`` into a Predicate; errors are explicit."""
-        return cls(text)
+        version = language_version or "prototype"
+        return cls(text, language_version=version)
 
     def evaluate(self, event: TraceEvent) -> bool:
         """Evaluate against one TraceEvent. Returns True only for True;
@@ -699,11 +755,35 @@ class Predicate:
             raise TypeError(
                 f"Predicate.evaluate expects a TraceEvent, got {type(event).__name__}"
             )
+        if self._cel is not None:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            cost = event.cost.model_dump() if getattr(event, "cost", None) is not None else {}
+            redaction = event.redaction_state.model_dump() if getattr(event, "redaction_state", None) is not None else {}
+            activation = {
+                "payload": _cel_value(payload),
+                "args": _cel_value(payload.get("args") if isinstance(payload.get("args"), dict) else {}),
+                "output": _cel_value(payload.get("output") if isinstance(payload.get("output"), dict) else payload),
+                "test": _cel_value({}),
+                "case": _cel_value({}),
+                "raw_value": 0,
+                "cost": _cel_value(cost),
+                "timestamp": event.timestamp.isoformat() if getattr(event, "timestamp", None) else "",
+                "provider_request_id": event.provider_request_id or "",
+                "parent_event_id": event.parent_event_id or "",
+                "redaction_state": _cel_value(redaction),
+            }
+            try:
+                result = self._cel.evaluate(activation)
+            except Exception:
+                return False
+            return result is True or result == True
         return self._ast.evaluate(event) is True
 
     @property
     def tree(self) -> Node:
         """The compiled AST (introspection/debugging)."""
+        if self._ast is None:
+            raise PredicateSemanticError("CEL predicates do not expose the prototype AST")
         return self._ast
 
     def __str__(self) -> str:

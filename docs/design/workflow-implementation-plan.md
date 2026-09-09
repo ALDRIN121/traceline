@@ -241,11 +241,11 @@ def test_static_findings_do_not_claim_execution(platform):
 
 **Interfaces:** `process_turn(session_id, message | card_action, expected_revision, operation_id) -> TurnResult`; result references proposed version IDs and observed tool states. `ModelGateway` uses pinned LiteLLM SDK and structured-output validation, with existing fake gateway retained for tests.
 
-- [ ] Save sessions/messages/tool calls and version pointers. Load confirmed reference + selected eval context before responding; no keyword-only replacement of current evaluation.
-- [ ] Implement metric suggestions with stable IDs, required capabilities, label needs and rationale. Multi-selection is one proposal; custom wording follows the same compiler/validator path.
-- [ ] Apply bounded repair, provenance checks and resource budgets. Stop after two failed repairs with the prior draft intact; do not fabricate labels or successful execution.
-- [ ] Separate harness/judge model bindings, preserve structured usage/provenance and provider errors. Selecting unavailable model credentials does not disable reading results or deterministic runs.
-- [ ] Scenario `authored_session`: confirmed support workflow, three candidate metrics, no verified target. Second turn “make latency 2 seconds” must patch that eval's metric and leave its other metrics unchanged.
+- [x] Save sessions/messages/tool calls and version pointers. Load confirmed reference + selected eval context before responding; no keyword-only replacement of current evaluation.
+- [x] Implement metric suggestions with stable IDs, required capabilities, label needs and rationale. Multi-selection is one proposal; custom wording follows the same compiler/validator path.
+- [x] Apply bounded repair, provenance checks and resource budgets. Stop after two failed repairs with the prior draft intact; do not fabricate labels or successful execution.
+- [x] Separate harness/judge model bindings, preserve structured usage/provenance and provider errors. Selecting unavailable model credentials does not disable reading results or deterministic runs.
+- [x] Scenario `authored_session`: confirmed support workflow, three candidate metrics, no verified target. Second turn “make latency 2 seconds” must patch that eval's metric and leave its other metrics unchanged.
 
 ```python
 def test_turn_changes_current_evaluation(platform):
@@ -267,10 +267,10 @@ def test_turn_changes_current_evaluation(platform):
 
 **Interface:** `validate_import(upload_id, mapping, metric_requirements) -> DatasetValidationReport`; `commit_dataset(report_id, explicit_exclusions, expected_revision) -> DatasetVersion`. Input, reference, metadata hashes are separate.
 
-- [ ] Implement CSV/JSON/JSONL streaming parsing, master limits, null/missing distinctions, deterministic JSON Pointer/column mapping and row error reports.
-- [ ] Store case IDs, input hashes, labels/provenance, tags/splits, required fixture state. Reject contradictory/duplicate identities and disclose deliberate exclusions.
-- [ ] Review/confirm generated cases; case labels from the evaluated agent remain unapproved until independently confirmed. Golden data cannot enter the agent-visible request.
-- [ ] Scenario `mixed_label_dataset`: 4 cases, two approved labels, one inferred label, one missing label. Health metrics eligible on four; enforceable accuracy eligible on two with coverage report 2/4.
+- [x] Implement CSV/JSON/JSONL streaming parsing, master limits, null/missing distinctions, deterministic JSON Pointer/column mapping and row error reports.
+- [x] Store case IDs, input hashes, labels/provenance, tags/splits, required fixture state. Reject contradictory/duplicate identities and disclose deliberate exclusions.
+- [x] Review/confirm generated cases; case labels from the evaluated agent remain unapproved until independently confirmed. Golden data cannot enter the agent-visible request.
+- [x] Scenario `mixed_label_dataset`: 4 cases, two approved labels, one inferred label, one missing label. Health metrics eligible on four; enforceable accuracy eligible on two with coverage report 2/4.
 
 ```python
 def test_inferred_is_not_gold(platform):
@@ -289,11 +289,11 @@ The read route above is the matching version-detail resource for the dataset ser
 
 **Interface:** `build_preview(dashboard_version, evaluation_version, dataset_version, generator_version) -> PreviewManifest`; use canonical DashboardDefinition/bindings and existing resolver, injecting a synthetic data provider.
 
-- [ ] Migrate chat's incomplete dashboard shape into canonical registry definitions; reject unknown components/bindings instead of dropping them. Persist a migration/version map for existing evals.
-- [ ] Write the built-in skill: only schema JSON, approved registry, type-checked bindings, no embedded scripts/remote assets. Repo-provided skills cannot alter platform instructions.
-- [ ] Implement deterministic preview generation from declared ranges/expectations, seeded by spec hash; no undeclared numbers/verdicts. Render placeholder where unavailable.
-- [ ] Atomically save definition/data/manifest/derived preview.html; revision edits and undo create immutable versions. Review receipt is presentation-only and bound to exact revision context.
-- [ ] Scenario `declared_range_dashboard`: one latency metric range, one range-less metric, known definition and dataset. Generate twice; hashes identical; range-less metric remains placeholder.
+- [x] Migrate chat's incomplete dashboard shape into canonical registry definitions; reject unknown components/bindings instead of dropping them. Persist a migration/version map for existing evals.
+- [x] Write the built-in skill: only schema JSON, approved registry, type-checked bindings, no embedded scripts/remote assets. Repo-provided skills cannot alter platform instructions.
+- [x] Implement deterministic preview generation from declared ranges/expectations, seeded by spec hash; no undeclared numbers/verdicts. Render placeholder where unavailable.
+- [x] Atomically save definition/data/manifest/derived preview.html; revision edits and undo create immutable versions. Review receipt is presentation-only and bound to exact revision context.
+- [x] Scenario `declared_range_dashboard`: one latency metric range, one range-less metric, known definition and dataset. Generate twice; hashes identical; range-less metric remains placeholder.
 
 ```python
 def test_preview_is_reproducible(platform):
@@ -334,12 +334,12 @@ class TargetAdapter:
 
 Return typed `VerificationRecord`, `InvocationResult` and `CancellationResult` respectively; definitions live in `contracts.py`. InvocationResult contains normalized output, outcome, connector/runtime observations, capability profile, evidence refs and remote uncertainty. The execution context is service-owned workspace/job/secret authorization; it is never LLM-authored.
 
-- [ ] Implement master JSON Pointer mapping and configured output schema. Verify none/bearer/API-key auth via encrypted refs; expected labels cannot be mapped.
-- [ ] Support bounded contract/OpenAPI import as schema assistance; resolve bundled references only, disable external `$ref` fetches, and require explicit operation/endpoint selection before verification.
-- [ ] Implement endpoint/IP/DNS/TLS/redirect policy with protected destinations and administrator-managed private allowlist. Pin the validated address at connection time while preserving TLS hostname verification.
-- [ ] Implement real smoke invocation with typed 401/403/network/200-error/mapping/size/timeout outcomes; persist exact version/secret refs, expiry and observed deployment identity. Do not count health GET alone as invocation success.
-- [ ] Implement stateless API invocation, external timing, request/concurrency limits, zero retries by default and unknown remote cost. Reject unsupported stateful/stream/async mode honestly.
-- [ ] Scenario `output_only_api`: local test server permitted by test-only exact policy; returns `{"answer":{"status":"ok"}}`, no telemetry, unique call log. Production policy still rejects arbitrary localhost.
+- [x] Implement master JSON Pointer mapping and configured output schema. Verify none/bearer/API-key auth via encrypted refs; expected labels cannot be mapped.
+- [x] Support bounded contract/OpenAPI import as schema assistance; resolve bundled references only, disable external `$ref` fetches, and require explicit operation/endpoint selection before verification.
+- [x] Implement endpoint/IP/DNS/TLS/redirect policy with protected destinations and administrator-managed private allowlist. Pin the validated address at connection time while preserving TLS hostname verification.
+- [x] Implement real smoke invocation with typed 401/403/network/200-error/mapping/size/timeout outcomes; persist exact version/secret refs, expiry and observed deployment identity. Do not count health GET alone as invocation success.
+- [x] Implement stateless API invocation, external timing, request/concurrency limits, zero retries by default and unknown remote cost. Reject unsupported stateful/stream/async mode honestly.
+- [x] Scenario `output_only_api`: local test server permitted by test-only exact policy; returns `{"answer":{"status":"ok"}}`, no telemetry, unique call log. Production policy still rejects arbitrary localhost.
 
 ```python
 def test_remote_verification_does_not_invent_tool_evidence(platform):

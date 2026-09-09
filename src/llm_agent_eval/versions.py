@@ -33,7 +33,8 @@ class VersionStore:
         self.storage = storage
 
     def _parent(self, conn, parent_id, actor):
-        for table, key in (("projects", "project_id"), ("custom_evals", "eval_id")):
+        for table, key in (("projects", "project_id"), ("custom_evals", "eval_id"),
+                           ("datasets", "dataset_id"), ("targets", "target_id")):
             found = conn.execute(f"SELECT {key} FROM {table} WHERE {key}=? AND workspace_id=?",
                                  (parent_id, actor.workspace_id)).fetchone()
             if found is not None:
@@ -122,7 +123,7 @@ class VersionStore:
         original custom_evals row or a run's frozen spec. Full dashboard shape
         conversion belongs to T09; malformed legacy definitions stay quarantined.
         """
-        from .dashboard import validate_definition
+        from .dashboard import canonicalize_dashboard, validate_definition
         from .spec import validate_spec
 
         actor.require(write=True)
@@ -148,6 +149,8 @@ class VersionStore:
                         if head["active_revision"]:
                             reason = "Legacy content changed after a durable version was created; explicit review required"
                         else:
+                            if kind == "dashboard":
+                                content = canonicalize_dashboard(content)
                             version_id = self.create(kind, row["eval_id"], content, 0, actor).version_id
                             state = "migrated"
                     conn.execute("INSERT INTO legacy_definition_migrations (workspace_id,eval_id,kind,source_digest,version_id,state,reason,created_at) VALUES (?,?,?,?,?,?,?,?)",

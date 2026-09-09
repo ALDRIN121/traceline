@@ -341,6 +341,9 @@ class Evaluator(BaseModel):
     #: (full CEL supports size()/matches()/contains_secret() that the starter
     #: metrics rely on — §10B.1).
     predicate: str | None = None
+    #: prototype = the closed starter grammar; cel = cel-python. Stored rules
+    #: keep their original version so they are not silently reinterpreted.
+    language_version: Literal["prototype", "cel"] | None = None
     #: trace_rule — a §9A.3 rule object, structurally validated (never
     #: evaluated by this layer).
     rule: dict[str, Any] | None = None
@@ -369,6 +372,13 @@ class Evaluator(BaseModel):
                 )
         if t == "cel_predicate" and not (isinstance(self.predicate, str) and self.predicate):
             raise ValueError("cel_predicate evaluator requires a non-empty 'predicate'")
+        if t == "cel_predicate":
+            from .predicates import Predicate, PredicateError
+            version = self.language_version or "cel"
+            try:
+                Predicate.compile(self.predicate, language_version=version)
+            except PredicateError as exc:
+                raise ValueError(f"cel_predicate does not compile: {exc}") from exc
         if t == "trace_rule":
             if not isinstance(self.rule, dict):
                 raise ValueError("trace_rule evaluator requires 'rule' (§9A.3)")

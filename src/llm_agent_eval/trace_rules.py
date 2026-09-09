@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .events import Source, TraceEvent
-from .predicates import Predicate, PredicateError
+from .predicates import Predicate, PredicateError, _needs_cel
 from .spec import TRACE_RULE_OPS
 
 __all__ = ["RuleResult", "TraceRuleError", "evaluate_rule"]
@@ -188,7 +188,9 @@ def _within_window(event: TraceEvent, anchor_ts: Any, ms: int) -> bool:
 def _compile_where(text: str, cache: dict[str, Predicate]) -> Predicate:
     if text not in cache:
         try:
-            cache[text] = Predicate.compile(text)
+            cache[text] = Predicate.compile(
+                text, language_version="cel" if _needs_cel(text) else "prototype",
+            )
         except PredicateError as exc:
             raise TraceRuleError(f"match.where does not compile: {exc}") from exc
     return cache[text]

@@ -1,0 +1,4 @@
+[
+  {"id": "n1", "request": {"q": "present-null"}, "gold": null, "note": null},
+  {"id": "n2", "request": {"q": "missing-gold"}}
+]

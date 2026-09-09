@@ -1,0 +1,3 @@
+case_id,query,expected,label_status
+csv1,status please,in transit,user_stated
+csv2,need help,,

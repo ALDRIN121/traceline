@@ -234,7 +234,7 @@ class TestDashboards:
         bad = tmp_path / "bad.json"
         bad.write_text(json.dumps({"version": 3, "name": "x", "layout": {"type": "grid", "columns": 12},
                                    "filters": [], "blocks": [
-                                       {"component": "MetricCard", "span": 6, "bind": {}}]}))
+                                       {"component": "HTMLPreview", "span": 6, "bind": {}}]}))
         code, _, err = run_cli(
             capsys, tmp_path / "eval.db", "dashboards", run_id, "--definition", str(bad)
         )

@@ -1,0 +1,4 @@
+{"case_id":"c1","input":{"q":"where is order 1"},"expected":{"answer":"shipped"},"label_status":"user_stated","tags":["normal"],"split":"eval","fixture_state":{"order":"1"}}
+{"case_id":"c2","input":{"q":"where is order 2"},"expected":{"answer":"refunded"},"label_status":"user_stated","tags":["boundary"],"split":"eval"}
+{"case_id":"c3","input":{"q":"where is order 3"},"expected":{"answer":"maybe-shipped"},"label_status":"inferred","tags":["generated"],"split":"eval"}
+{"case_id":"c4","input":{"q":"where is order 4"},"tags":["unlabeled"],"split":"eval"}
