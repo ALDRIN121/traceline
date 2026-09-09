@@ -74,3 +74,36 @@ Those remain T12/T13 conformance and runtime work.
 ## Implementation commit
 
 `85851681f125c1a6b54aef7ee4e1a2e81a0d9076`
+
+## P1/P2 repair evidence
+
+The review found two preflight defects: a `unix:` URI authority could carry
+credentials into the emitted explicit socket value, and a selected explicit
+rootless socket was blocked by an unrelated root default connection. The root
+causes were `_socket_override()` accepting `urlparse(...).netloc`, and default
+connection discovery running unconditionally before selected-socket validation.
+
+RED:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_runtime_preflight.py
+```
+
+Result: `2 failed, 6 passed`. The credential-bearing URI returned `ready`; the
+valid explicit socket returned `blocked_setup` because the default connection
+was rootful.
+
+GREEN:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_runtime_preflight.py
+.venv/bin/python scripts/runtime_preflight.py
+```
+
+Result: `8 passed in 0.01s`; the live macOS JSON remains the
+`ready_for_containment_experiment` result recorded above. The repair rejects
+all `unix:` authority/userinfo forms before a command runs, so no daemon
+credential can reach an output surface. An explicit valid socket is queried
+directly; default discovery is only required when no override was supplied.
+
+Fix implementation commit: `PENDING`.

@@ -16,8 +16,9 @@ The JSON includes `state`, `code`, `message`, `runtime_tier`, `next_action`,
 observed engine/API versions, and a connection identity. It does not print a
 default socket path, daemon credentials, or raw Podman diagnostics. An explicit
 `ENGINE_SOCKET` is accepted only when it is a validated absolute Unix-socket
-endpoint; that explicit value is returned to make an operator's configured
-override auditable. Root or rootful connections are blocked with
+endpoint with no URI authority, userinfo, or credentials; that explicit value
+is returned to make an operator's configured override auditable. Root or
+rootful connections are blocked with
 `rootless_runtime_required`.
 
 On macOS, install and start a rootless Podman Machine before running preflight.

@@ -128,3 +128,43 @@ def test_validated_socket_override_is_preserved_and_never_uses_docker() -> None:
     }
     assert ("podman", "--url", socket, "info", "--format", "json") in runner.calls
     assert all("docker" not in part.lower() for call in runner.calls for part in call)
+
+
+def test_engine_socket_with_uri_authority_is_rejected_without_exposing_credentials() -> None:
+    secret_socket = "unix://operator:do-not-emit@localhost/run/user/501/podman/podman.sock"
+    runner = FakePodman({
+        ("podman", "system", "connection", "list", "--format", "json"): default_connection(),
+        ("podman", "machine", "inspect"): {"Name": "podman-machine-default", "Running": True},
+        ("podman", "--url", secret_socket, "info", "--format", "json"): rootless_info(),
+    })
+
+    result = preflight(
+        environment={"ENGINE_SOCKET": secret_socket}, system="Darwin", command_runner=runner
+    )
+
+    assert result.code == "runtime_socket_invalid"
+    assert "do-not-emit" not in json.dumps(result.to_dict())
+    assert runner.calls == []
+
+
+def test_explicit_rootless_socket_is_not_blocked_by_a_root_default_connection() -> None:
+    socket = "unix:///Users/example/.local/share/containers/podman.sock"
+    runner = FakePodman({
+        ("podman", "system", "connection", "list", "--format", "json"): default_connection(
+            uri="ssh://root@localhost:12345/run/podman/podman.sock"
+        ),
+        ("podman", "machine", "inspect"): {"Name": "podman-machine-default", "Running": True},
+        ("podman", "--url", socket, "info", "--format", "json"): rootless_info(),
+    })
+
+    result = preflight(
+        environment={"ENGINE_SOCKET": socket}, system="Darwin", command_runner=runner
+    )
+
+    assert result.state == "ready_for_containment_experiment"
+    assert result.connection == {
+        "name": "ENGINE_SOCKET",
+        "source": "explicit",
+        "socket": socket,
+    }
+    assert ("podman", "--url", socket, "info", "--format", "json") in runner.calls

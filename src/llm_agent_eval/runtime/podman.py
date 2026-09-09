@@ -102,6 +102,9 @@ def _socket_override(value: str | None) -> str | None:
     path = parsed.path if parsed.scheme == "unix" else value
     if (
         (parsed.scheme not in {"", "unix"})
+        or bool(parsed.netloc)
+        or parsed.username is not None
+        or parsed.password is not None
         or not path.startswith("/")
         or ".." in path.split("/")
         or parsed.query
@@ -192,31 +195,33 @@ def preflight(
             "Configure a rootless Podman user socket; do not use a root or Docker socket.",
         )
 
-    connections, error = _command_json(
-        ["podman", "system", "connection", "list", "--format", "json"], command_runner
-    )
-    if error == "missing":
-        return _blocked(
-            "runtime_unavailable",
-            "Podman is not installed or is not available on PATH.",
-            runtime_tier,
-            "Install Podman and configure a rootless connection before continuing.",
+    connection: dict[str, Any] | None = None
+    if not socket:
+        connections, error = _command_json(
+            ["podman", "system", "connection", "list", "--format", "json"], command_runner
         )
-    connection = _selected_connection(connections)
-    if error or connection is None:
-        return _blocked(
-            "runtime_unavailable",
-            "Podman could not report a default connection.",
-            runtime_tier,
-            "Configure and select a rootless Podman connection, then run preflight again.",
-        )
-    if _is_root_connection(str(connection.get("URI", ""))):
-        return _blocked(
-            "rootless_runtime_required",
-            "The default Podman connection targets a root socket.",
-            runtime_tier,
-            "Configure a rootless Podman user connection; do not use a root or Docker socket.",
-        )
+        if error == "missing":
+            return _blocked(
+                "runtime_unavailable",
+                "Podman is not installed or is not available on PATH.",
+                runtime_tier,
+                "Install Podman and configure a rootless connection before continuing.",
+            )
+        connection = _selected_connection(connections)
+        if error or connection is None:
+            return _blocked(
+                "runtime_unavailable",
+                "Podman could not report a default connection.",
+                runtime_tier,
+                "Configure and select a rootless Podman connection, then run preflight again.",
+            )
+        if _is_root_connection(str(connection.get("URI", ""))):
+            return _blocked(
+                "rootless_runtime_required",
+                "The default Podman connection targets a root socket.",
+                runtime_tier,
+                "Configure a rootless Podman user connection; do not use a root or Docker socket.",
+            )
 
     if host_system == "darwin":
         machine, error = _command_json(
@@ -256,6 +261,7 @@ def preflight(
     if socket:
         safe_connection = {"name": "ENGINE_SOCKET", "source": "explicit", "socket": socket}
     else:
+        assert connection is not None
         name = connection.get("Name")
         safe_connection = {"name": str(name) if name else "default", "source": "default"}
     return RuntimePreflight(
