@@ -94,15 +94,18 @@
       </header>
 
       <div class="authoring-layout">
-        <section class="authoring-conversation" aria-label="Evaluation guidance">
+        <section class="authoring-conversation" aria-label="Authoring activity">
           <div class="authoring-guide-mark" aria-hidden="true">↗</div>
-          <h2>Start with the evidence you have</h2>
-          <p>Use source as reference, confirm any uncertain claims, and make every scoring decision visible before a preview is saved.</p>
+          <h2>Authoring activity</h2>
+          <p>Saved work is shown only after the service responds. This page never starts an evaluation.</p>
           <div class="authoring-guide-status">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="authoring-binding-status">No persisted session attached</span>
           </div>
-          <p class="authoring-quiet">Attach a saved session with <code>?session_id=…</code> to resume its exact decision state. This page never starts an evaluation.</p>
+          <div id="authoring-activity-status" class="authoring-activity-status" role="status" aria-live="polite">Attach a saved session to send authoring notes.</div>
+          <label class="authoring-note" for="authoring-note"><span>Authoring note</span><textarea id="authoring-note" rows="3" placeholder="Describe a metric or correction to review…"></textarea></label>
+          <button id="send-authoring-note" class="btn btn-secondary" type="button">Send note</button>
+          <p class="authoring-quiet">Attach a saved session with <code>?session_id=…</code> to resume its exact decision state.</p>
         </section>
 
         <section class="authoring-artifact" aria-label="Authoring artifact">
@@ -114,12 +117,26 @@
           </nav>
 
           <div id="authoring-reference" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-reference-tab">
-            <div class="authoring-pane-head"><div><h2>Agent reference</h2><p>Facts remain distinguishable from assumptions and execution evidence.</p></div><span class="authoring-revision">Not confirmed</span></div>
-            <div class="reference-cards">
-              <article class="reference-card"><span class="fact-status found">Found in source</span><h3>Source snapshot</h3><p>Import a Git snapshot or ZIP to attach citations and an immutable source identity.</p><button type="button" class="text-action" data-authoring-next="source">Choose a source</button></article>
-              <article class="reference-card"><span class="fact-status unknown">Needs review</span><h3>Runtime capabilities</h3><p>Tool use and provider cost stay unknown until actual observed evidence exists.</p><button type="button" class="text-action" data-authoring-next="review">Review claims</button></article>
-            </div>
-            <div class="authoring-callout"><strong>Correction-safe:</strong> confirming understanding creates a revision. It does not assert that a deployed API matches the source.</div>
+            <div class="authoring-pane-head"><div><h2>Source and knowledge</h2><p>Import an immutable source snapshot, then review only the report the server returns.</p></div><span id="knowledge-state" class="authoring-revision">Project context required</span></div>
+            <section class="project-context" aria-labelledby="project-context-heading">
+              <div><h3 id="project-context-heading">Project context</h3><p>Enter an existing project ID, or open this page with <code>?project_id=…</code>. This interface cannot create projects.</p></div>
+              <label for="authoring-project-id">Existing project ID<input id="authoring-project-id" type="text" autocomplete="off" spellcheck="false" placeholder="Project ID from the API"></label>
+              <div class="authoring-actions"><button id="load-project-report" class="btn btn-secondary" type="button" disabled>Load project report</button></div>
+            </section>
+            <section class="source-import" aria-labelledby="source-import-heading">
+              <div><h3 id="source-import-heading">Import source</h3><p>Source import is queued. A worker must complete it before a knowledge report is available.</p></div>
+              <fieldset class="source-kind"><legend>Source type</legend><label><input type="radio" name="source-kind" value="git" checked> Git repository</label><label><input type="radio" name="source-kind" value="zip"> ZIP archive</label></fieldset>
+              <div id="git-source-fields" class="source-fields"><label for="source-git-url">HTTPS Git URL<input id="source-git-url" type="url" placeholder="https://example.com/agent.git"></label><label for="source-git-ref">Git ref<input id="source-git-ref" type="text" placeholder="A branch, tag, or commit"></label></div>
+              <div id="zip-source-fields" class="source-fields" hidden><label for="source-zip-file">ZIP archive<input id="source-zip-file" type="file" accept=".zip,application/zip"></label></div>
+              <div class="authoring-actions"><button id="queue-source-import" class="btn btn-primary" type="button">Queue source import</button></div>
+              <p id="source-import-status" class="source-import-status" role="status" aria-live="polite">Choose a project before importing a source.</p>
+            </section>
+            <section id="knowledge-report-card" class="knowledge-report" aria-live="polite" hidden>
+              <div class="knowledge-report-head"><div><h3>Knowledge report</h3><p id="knowledge-report-meta"></p></div><button id="refresh-knowledge-report" class="text-action" type="button">Refresh report</button></div>
+              <div id="knowledge-review-state" class="authoring-callout"></div>
+              <div id="knowledge-facts" class="reference-cards"></div>
+            </section>
+            <div class="authoring-callout"><strong>Correction-safe:</strong> confirmation creates a server revision. Text corrections are not available in the current API, so this UI preserves the report and names that recovery limit.</div>
           </div>
 
           <div id="authoring-metrics" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-metrics-tab" hidden>

@@ -4,13 +4,15 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "traceline.authoring-draft.v1";
   const $ = (selector) => document.querySelector(selector);
   const all = (selector) => [...document.querySelectorAll(selector)];
   const params = new URLSearchParams(location.search);
   const sessionId = params.get("session_id");
+  const STORAGE_KEY = `traceline.authoring-draft.v1:${sessionId || "unsaved"}`;
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
+  let projectId = (params.get("project_id") || "").trim();
+  let knowledgeReport = null;
 
   const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "" });
   function loadDraft() {
@@ -84,6 +86,7 @@
     if (!response.ok) {
       const error = new Error(payload?.error?.message || "The saved authoring session could not be reached.");
       error.code = payload?.error?.code;
+      error.correlationId = payload?.error?.correlation_id;
       throw error;
     }
     return payload;
@@ -93,9 +96,222 @@
     return `authoring-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  function reportError(prefix, error) {
+    const correlation = error.correlationId ? ` (correlation ${error.correlationId})` : "";
+    return `${prefix}: ${error.message}${correlation}`;
+  }
+
+  function setActivity(message) {
+    const status = $("#authoring-activity-status");
+    if (status) status.textContent = message;
+  }
+
+  function setProjectContext(value) {
+    projectId = value.trim();
+    const input = $("#authoring-project-id");
+    const load = $("#load-project-report");
+    const importButton = $("#queue-source-import");
+    const state = $("#knowledge-state");
+    if (input && input.value !== projectId) input.value = projectId;
+    if (load) load.disabled = !projectId;
+    if (importButton) importButton.disabled = !projectId;
+    if (!knowledgeReport && state) state.textContent = projectId ? "Source report not loaded" : "Project context required";
+    const sourceStatus = $("#source-import-status");
+    if (!projectId && sourceStatus) sourceStatus.textContent = "Choose a project before importing a source.";
+  }
+
+  function factStatusLabel(status) {
+    return {
+      observed_static: "Found in source",
+      user_confirmed: "User confirmed",
+      observed_execution: "Observed in execution",
+      inferred: "Inferred",
+      unknown: "Unknown",
+      contradicted: "Contradicted",
+      review_needed: "Review needed",
+    }[status] || status || "Unknown";
+  }
+
+  function appendText(parent, tag, text, className = "") {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = text;
+    parent.append(element);
+    return element;
+  }
+
+  function renderKnowledgeReport(report) {
+    knowledgeReport = report;
+    const card = $("#knowledge-report-card");
+    const state = $("#knowledge-state");
+    const meta = $("#knowledge-report-meta");
+    const review = $("#knowledge-review-state");
+    const facts = $("#knowledge-facts");
+    if (!card || !meta || !review || !facts) return;
+    card.hidden = false;
+    if (state) state.textContent = report.review_needed ? "Review needed" : `Report revision ${report.revision}`;
+    meta.textContent = `Source revision ${report.source_version_id} · report ${report.report_id}`;
+    review.textContent = report.review_needed
+      ? "A source change affects confirmed findings. Review each fact before using it in authoring."
+      : "Facts retain their evidence status. Confirming one creates a new report revision.";
+    facts.replaceChildren();
+    for (const fact of report.facts || []) {
+      const item = document.createElement("article");
+      item.className = "reference-card knowledge-fact";
+      const badge = appendText(item, "span", factStatusLabel(fact.status), `fact-status ${fact.status === "user_confirmed" ? "found" : "unknown"}`);
+      badge.dataset.status = fact.status || "unknown";
+      appendText(item, "h4", fact.name || "Unnamed finding");
+      appendText(item, "p", `${fact.kind || "finding"} · ${fact.summary || "No summary supplied."}`);
+      const evidence = (fact.evidence || [])[0];
+      if (evidence?.path) appendText(item, "p", `${evidence.path}:${evidence.line_start || "?"}`, "knowledge-citation mono");
+      if (fact.status !== "user_confirmed") {
+        const confirm = document.createElement("button");
+        confirm.type = "button";
+        confirm.className = "text-action";
+        confirm.textContent = "Confirm finding";
+        confirm.addEventListener("click", () => confirmFinding(fact.fact_id, confirm));
+        item.append(confirm);
+      }
+      const correction = document.createElement("button");
+      correction.type = "button";
+      correction.className = "text-action correction-unavailable";
+      correction.disabled = true;
+      correction.textContent = "Text correction unavailable";
+      correction.title = "The current knowledge API supports confirmation only.";
+      item.append(correction);
+      facts.append(item);
+    }
+  }
+
+  async function loadKnowledgeReport() {
+    const state = $("#knowledge-state");
+    if (!projectId) {
+      if (state) state.textContent = "Project context required";
+      return;
+    }
+    if (state) state.textContent = "Loading project report…";
+    try {
+      const report = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge`);
+      renderKnowledgeReport(report);
+      setActivity("Knowledge report loaded from the service.");
+    } catch (error) {
+      knowledgeReport = null;
+      if (state) {
+        state.textContent = error.code === "not_found"
+          ? "Knowledge report unavailable — import source and wait for the worker"
+          : reportError("Knowledge report unavailable", error);
+      }
+      setActivity(reportError("The service did not return a knowledge report", error));
+    }
+  }
+
+  async function confirmFinding(factId, button) {
+    if (!knowledgeReport || !projectId) return;
+    button.disabled = true;
+    setActivity("Confirming the finding with the service…");
+    try {
+      const report = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/confirm`, {
+        method: "POST",
+        body: {
+          expected_revision: knowledgeReport.revision,
+          report_id: knowledgeReport.report_id,
+          corrections: [{ fact_id: factId, status: "user_confirmed" }],
+        },
+      });
+      renderKnowledgeReport(report);
+      setActivity("Finding confirmed. The service returned a new knowledge report revision.");
+    } catch (error) {
+      button.disabled = false;
+      setActivity(reportError("Finding was not confirmed", error));
+    }
+  }
+
+  function selectedSourceKind() {
+    return $("input[name=source-kind]:checked")?.value || "git";
+  }
+
+  function updateSourceFields() {
+    const git = $("#git-source-fields");
+    const zip = $("#zip-source-fields");
+    const kind = selectedSourceKind();
+    if (git) git.hidden = kind !== "git";
+    if (zip) zip.hidden = kind !== "zip";
+  }
+
+  async function queueSourceImport() {
+    const status = $("#source-import-status");
+    if (!projectId) {
+      if (status) status.textContent = "Project context required — use an existing project ID before importing.";
+      return;
+    }
+    const kind = selectedSourceKind();
+    let source;
+    try {
+      if (kind === "zip") {
+        const file = $("#source-zip-file")?.files?.[0];
+        if (!file) throw new Error("Choose a ZIP archive before queueing the import");
+        if (status) status.textContent = "Uploading ZIP archive…";
+        const upload = await request("/api/uploads", {
+          method: "POST",
+          headers: { "Content-Type": file.type || "application/zip" },
+          body: file,
+        });
+        source = { kind: "zip", upload_id: upload.upload_id };
+      } else {
+        const url = $("#source-git-url")?.value.trim();
+        const ref = $("#source-git-ref")?.value.trim();
+        if (!url || !ref) throw new Error("Provide both an HTTPS Git URL and an explicit ref");
+        source = { kind: "git", url, ref };
+      }
+      if (status) status.textContent = "Queueing source import…";
+      const queued = await request(`/api/projects/${encodeURIComponent(projectId)}/imports`, {
+        method: "POST",
+        headers: { "Idempotency-Key": operationKey() },
+        body: source,
+      });
+      if (status) status.textContent = `Import ${queued.state}. Worker job ${queued.job_id} must finish before a report can load.`;
+      const state = $("#knowledge-state");
+      if (state) state.textContent = "Import queued — report pending";
+      setActivity(`Source import ${queued.state}; no source claim has been made yet.`);
+    } catch (error) {
+      if (status) status.textContent = reportError("Source import was not queued", error);
+      setActivity(reportError("Source import recovery needed", error));
+    }
+  }
+
+  async function sendAuthoringNote() {
+    const note = $("#authoring-note");
+    const message = note?.value.trim();
+    const session = window.__tracelineAuthoringSession;
+    if (!session) {
+      setActivity("Authoring note not sent — attach a saved session to use the session API.");
+      return;
+    }
+    if (!message) {
+      setActivity("Write an authoring note before sending it.");
+      return;
+    }
+    setActivity("Sending authoring note…");
+    try {
+      const queued = await request(`/api/sessions/${encodeURIComponent(session.session_id)}/turns`, {
+        method: "POST",
+        headers: { "Idempotency-Key": operationKey() },
+        body: { expected_revision: session.revision, message },
+      });
+      if (note) note.value = "";
+      setActivity(`Authoring note ${queued.state}. Job ${queued.job_id} is awaiting the worker.`);
+    } catch (error) {
+      setActivity(reportError("Authoring note was not sent", error));
+    }
+  }
+
   async function resumeSession() {
     const binding = $("#authoring-binding-status");
-    if (!sessionId) return;
+    if (!sessionId) {
+      setProjectContext(projectId);
+      if (projectId) loadKnowledgeReport();
+      return;
+    }
     if (binding) binding.textContent = "Loading saved authoring session…";
     try {
       const session = await request(`/api/sessions/${encodeURIComponent(sessionId)}`);
@@ -103,8 +319,12 @@
       const saveState = $("#authoring-save-state");
       if (saveState) saveState.textContent = "Saved session restored";
       window.__tracelineAuthoringSession = session;
+      setProjectContext(session.project_id || projectId);
+      if (projectId) loadKnowledgeReport();
     } catch (error) {
       if (binding) binding.textContent = `Saved session unavailable: ${error.message}`;
+      setActivity(reportError("Saved session unavailable", error));
+      setProjectContext(projectId);
     }
   }
 
@@ -205,9 +425,29 @@
     updateSummary();
   }
 
+  function wireSourceAndActivity() {
+    const projectInput = $("#authoring-project-id");
+    if (projectInput) {
+      projectInput.value = projectId;
+      projectInput.addEventListener("input", () => setProjectContext(projectInput.value));
+      projectInput.addEventListener("change", () => {
+        knowledgeReport = null;
+        setProjectContext(projectInput.value);
+      });
+    }
+    $("#load-project-report")?.addEventListener("click", loadKnowledgeReport);
+    $("#refresh-knowledge-report")?.addEventListener("click", loadKnowledgeReport);
+    all("input[name=source-kind]").forEach((input) => input.addEventListener("change", updateSourceFields));
+    $("#queue-source-import")?.addEventListener("click", queueSourceImport);
+    $("#send-authoring-note")?.addEventListener("click", sendAuthoringNote);
+    updateSourceFields();
+    setProjectContext(projectId);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     wireTabs();
     wireMetrics();
+    wireSourceAndActivity();
     all("[data-authoring-next]").forEach((button) => button.addEventListener("click", () => {
       const target = button.dataset.authoringNext;
       setTab(target === "dataset" ? "dataset" : target === "source" || target === "review" ? "reference" : target);
