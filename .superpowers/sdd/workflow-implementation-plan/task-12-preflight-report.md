@@ -106,4 +106,4 @@ all `unix:` authority/userinfo forms before a command runs, so no daemon
 credential can reach an output surface. An explicit valid socket is queried
 directly; default discovery is only required when no override was supplied.
 
-Fix implementation commit: `PENDING`.
+Fix implementation commit: `3838a4001fb63693da88b5f9ed8298f1bf6c64fa`.
