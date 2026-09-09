@@ -71,6 +71,6 @@ capture/redaction; network packet proof; read-only roots and bounded scratch;
 fresh cases; or gVisor/microVM containment. It generates no per-install CA.
 Those remain T12/T13 conformance and runtime work.
 
-## Commit
+## Implementation commit
 
-`PENDING`
+`85851681f125c1a6b54aef7ee4e1a2e81a0d9076`
