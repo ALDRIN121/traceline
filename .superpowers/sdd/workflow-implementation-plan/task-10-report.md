@@ -91,3 +91,46 @@ acceptance suite. It intentionally does not start an evaluation.
 ## Commit
 
 Implementation commit: `a0af3c4dae0a17fcc046b2717ca3855f27228a79` (`feat(web): add durable authoring onboarding states`).
+
+## Fix round 1 evidence (T10 review findings)
+
+This follow-up addresses the five concrete findings in `task-10-review.md` without
+expanding the onboarding slice:
+
+- `web/authoring.js` now preserves `File`/`Blob` request bodies and their supplied
+  content type for ZIP uploads; only plain record payloads are JSON-encoded.
+- A restored session is detached when the visible project changes. Notes and metric
+  proposals retain their local draft but cannot target the old session. Project
+  changes clear the visible report and invalidate in-flight report/confirmation
+  responses, so stale facts cannot appear under a newer project.
+- Knowledge reports now render `needs_entrypoint_declaration` and
+  `pending_questions`, including the named current-API recovery limitation.
+- Successful finding confirmation restores keyboard focus to the stable report
+  heading after the fact cards are rebuilt.
+- `tests/browser/authoring/authoring.spec.js` contains focused browser coverage for
+  ZIP bytes, session detachment, failed report replacement, pending questions, and
+  keyboard focus restoration.
+
+Focused GREEN command:
+
+```sh
+npm run test:browser -- tests/browser/authoring/authoring.spec.js --grep 'preserves selected ZIP bytes|detaches session mutations|clears old report|presents pending entrypoint|restores focus'
+```
+
+Result: **5 passed (2.6s), 0 failed**.
+
+Full authoring GREEN command:
+
+```sh
+npm run test:browser -- tests/browser/authoring/authoring.spec.js
+```
+
+Result: **11 passed (3.9s), 0 failed**.
+
+`git diff --check` completed with exit status 0 and no output after the fix round.
+The browser suite observed intact ZIP bytes and `application/zip` content type,
+detached session status after project change, hidden stale reports after a failed
+new-project load, visible entrypoint recovery questions, and report-heading focus
+after keyboard confirmation. No Python, database, API, or design-document files
+were changed, and no evaluation-start request was added. The round-1 commit hash is
+returned in the handoff because the report is part of that commit.

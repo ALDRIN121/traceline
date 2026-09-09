@@ -13,6 +13,8 @@
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
   let knowledgeReport = null;
+  let knowledgeContextVersion = 0;
+  let knowledgeRequestToken = 0;
 
   const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "" });
   function loadDraft() {
@@ -77,7 +79,9 @@
   async function request(path, options = {}) {
     const headers = { Accept: "application/json", ...(options.headers || {}) };
     let body = options.body;
-    if (body && typeof body === "object") {
+    // Only plain records are JSON API payloads. File/Blob bodies must reach the
+    // upload endpoint unchanged so the server can validate the archive bytes.
+    if (body && Object.prototype.toString.call(body) === "[object Object]") {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(body);
     }
@@ -120,6 +124,21 @@
     if (!projectId && sourceStatus) sourceStatus.textContent = "Choose a project before importing a source.";
   }
 
+  function clearRenderedKnowledgeReport() {
+    const card = $("#knowledge-report-card");
+    if (card) card.hidden = true;
+    $("#knowledge-report-meta")?.replaceChildren();
+    $("#knowledge-review-state")?.replaceChildren();
+    $("#knowledge-questions")?.replaceChildren();
+    $("#knowledge-facts")?.replaceChildren();
+  }
+
+  function clearKnowledgeReport() {
+    knowledgeReport = null;
+    knowledgeContextVersion += 1;
+    clearRenderedKnowledgeReport();
+  }
+
   function factStatusLabel(status) {
     return {
       observed_static: "Found in source",
@@ -146,14 +165,37 @@
     const state = $("#knowledge-state");
     const meta = $("#knowledge-report-meta");
     const review = $("#knowledge-review-state");
+    const questions = $("#knowledge-questions");
     const facts = $("#knowledge-facts");
-    if (!card || !meta || !review || !facts) return;
+    if (!card || !meta || !review || !questions || !facts) return;
     card.hidden = false;
     if (state) state.textContent = report.review_needed ? "Review needed" : `Report revision ${report.revision}`;
     meta.textContent = `Source revision ${report.source_version_id} · report ${report.report_id}`;
     review.textContent = report.review_needed
       ? "A source change affects confirmed findings. Review each fact before using it in authoring."
       : "Facts retain their evidence status. Confirming one creates a new report revision.";
+    questions.replaceChildren();
+    const pendingQuestions = report.pending_questions || [];
+    if (report.needs_entrypoint_declaration || pendingQuestions.length > 0) {
+      const callout = document.createElement("div");
+      callout.className = "authoring-callout knowledge-question-callout";
+      if (report.needs_entrypoint_declaration) {
+        appendText(callout, "strong", "Entrypoint declaration required");
+        appendText(callout, "p", "The service could not identify a command that invokes this agent.");
+      }
+      if (pendingQuestions.length > 0) {
+        const list = document.createElement("ul");
+        list.className = "knowledge-question-list";
+        for (const question of pendingQuestions) {
+          const item = document.createElement("li");
+          appendText(item, "span", question.text || question.question || "The service needs more information.");
+          list.append(item);
+        }
+        callout.append(list);
+      }
+      appendText(callout, "p", "Answering these questions is unavailable in the current API.");
+      questions.append(callout);
+    }
     facts.replaceChildren();
     for (const fact of report.facts || []) {
       const item = document.createElement("article");
@@ -189,13 +231,22 @@
       if (state) state.textContent = "Project context required";
       return;
     }
+    const requestedProjectId = projectId;
+    const contextVersion = knowledgeContextVersion;
+    const requestToken = ++knowledgeRequestToken;
+    const isCurrentRequest = () => requestedProjectId === projectId
+      && contextVersion === knowledgeContextVersion
+      && requestToken === knowledgeRequestToken;
     if (state) state.textContent = "Loading project report…";
     try {
-      const report = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge`);
+      const report = await request(`/api/projects/${encodeURIComponent(requestedProjectId)}/knowledge`);
+      if (!isCurrentRequest()) return;
       renderKnowledgeReport(report);
       setActivity("Knowledge report loaded from the service.");
     } catch (error) {
+      if (!isCurrentRequest()) return;
       knowledgeReport = null;
+      clearRenderedKnowledgeReport();
       if (state) {
         state.textContent = error.code === "not_found"
           ? "Knowledge report unavailable — import source and wait for the worker"
@@ -207,10 +258,13 @@
 
   async function confirmFinding(factId, button) {
     if (!knowledgeReport || !projectId) return;
+    const requestedProjectId = projectId;
+    const contextVersion = knowledgeContextVersion;
+    const reportAtRequest = knowledgeReport;
     button.disabled = true;
     setActivity("Confirming the finding with the service…");
     try {
-      const report = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/confirm`, {
+      const report = await request(`/api/projects/${encodeURIComponent(requestedProjectId)}/knowledge/confirm`, {
         method: "POST",
         body: {
           expected_revision: knowledgeReport.revision,
@@ -218,7 +272,9 @@
           corrections: [{ fact_id: factId, status: "user_confirmed" }],
         },
       });
+      if (requestedProjectId !== projectId || contextVersion !== knowledgeContextVersion || reportAtRequest !== knowledgeReport) return;
       renderKnowledgeReport(report);
+      $("#knowledge-report-heading")?.focus();
       setActivity("Finding confirmed. The service returned a new knowledge report revision.");
     } catch (error) {
       button.disabled = false;
@@ -429,11 +485,22 @@
     const projectInput = $("#authoring-project-id");
     if (projectInput) {
       projectInput.value = projectId;
-      projectInput.addEventListener("input", () => setProjectContext(projectInput.value));
-      projectInput.addEventListener("change", () => {
-        knowledgeReport = null;
-        setProjectContext(projectInput.value);
-      });
+      const handleProjectContextInput = () => {
+        const nextProjectId = projectInput.value.trim();
+        const session = window.__tracelineAuthoringSession;
+        if (session?.project_id && session.project_id !== nextProjectId) {
+          window.__tracelineAuthoringSession = null;
+          const binding = $("#authoring-binding-status");
+          if (binding) binding.textContent = nextProjectId
+            ? `Session detached — project changed to ${nextProjectId}`
+            : "Session detached — project context cleared";
+          setActivity("Session actions detached. Attach a session for this project before sending authoring changes.");
+        }
+        if (nextProjectId !== projectId) clearKnowledgeReport();
+        setProjectContext(nextProjectId);
+      };
+      projectInput.addEventListener("input", handleProjectContextInput);
+      projectInput.addEventListener("change", handleProjectContextInput);
     }
     $("#load-project-report")?.addEventListener("click", loadKnowledgeReport);
     $("#refresh-knowledge-report")?.addEventListener("click", loadKnowledgeReport);

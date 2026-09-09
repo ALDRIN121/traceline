@@ -132,8 +132,9 @@
               <p id="source-import-status" class="source-import-status" role="status" aria-live="polite">Choose a project before importing a source.</p>
             </section>
             <section id="knowledge-report-card" class="knowledge-report" aria-live="polite" hidden>
-              <div class="knowledge-report-head"><div><h3>Knowledge report</h3><p id="knowledge-report-meta"></p></div><button id="refresh-knowledge-report" class="text-action" type="button">Refresh report</button></div>
+              <div class="knowledge-report-head"><div><h3 id="knowledge-report-heading" tabindex="-1">Knowledge report</h3><p id="knowledge-report-meta"></p></div><button id="refresh-knowledge-report" class="text-action" type="button">Refresh report</button></div>
               <div id="knowledge-review-state" class="authoring-callout"></div>
+              <div id="knowledge-questions" class="knowledge-questions"></div>
               <div id="knowledge-facts" class="reference-cards"></div>
             </section>
             <div class="authoring-callout"><strong>Correction-safe:</strong> confirmation creates a server revision. Text corrections are not available in the current API, so this UI preserves the report and names that recovery limit.</div>
