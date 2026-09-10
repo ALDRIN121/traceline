@@ -153,6 +153,7 @@ def run_containment_probe(
     created_network = False
     created_server = False
     created_client = False
+    server_started = False
     in_network_http = "not_observed"
     direct_egress = "not_observed"
     state = "containment_probe_failed"
@@ -165,7 +166,7 @@ def run_containment_probe(
             _probe_command(prefix, "network", "create", "--internal", network), command_runner
         )
         if created_network:
-            created_server = _probe_succeeded(
+            server_returncode = _probe_returncode(
                 _probe_command(
                     prefix,
                     "run",
@@ -177,6 +178,7 @@ def run_containment_probe(
                     "--network-alias",
                     "probe",
                     PROBE_IMAGE,
+                    "busybox",
                     "httpd",
                     "-f",
                     "-p",
@@ -184,7 +186,13 @@ def run_containment_probe(
                 ),
                 command_runner,
             )
-        if created_server:
+            server_started = server_returncode == 0
+            created_server = server_started
+            if server_returncode is not None and not server_started:
+                created_server = _probe_succeeded(
+                    _probe_command(prefix, "container", "exists", server), command_runner
+                )
+        if server_started:
             created_client = _probe_succeeded(
                 _probe_command(
                     prefix,

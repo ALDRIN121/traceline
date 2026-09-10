@@ -95,11 +95,13 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
             "--network-alias",
             "probe",
             IMAGE,
+            "busybox",
             "httpd",
             "-f",
             "-p",
             "8080",
         ),
+        "server_exists": (*prefix, "container", "exists", server),
         "client_run": (
             *prefix,
             "run",
@@ -142,6 +144,30 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
     }
 
 
+def legacy_server_run(suffix: str, *, socket: str | None = None) -> Command:
+    """Represent the invalid witness vector so this contract fails before its fix."""
+    server_run = commands(suffix, socket=socket)["server_run"]
+    busybox_index = server_run.index("busybox")
+    return (*server_run[:busybox_index], "httpd", *server_run[busybox_index + 2 :])
+
+
+def successful_call_order(suffix: str, *, socket: str | None = None) -> list[Command]:
+    probe_commands = commands(suffix, socket=socket)
+    return [
+        probe_commands[key]
+        for key in (
+            "network_create",
+            "server_run",
+            "client_run",
+            "in_network_wget",
+            "direct_wget",
+            "client_remove",
+            "server_remove",
+            "network_remove",
+        )
+    ]
+
+
 def runner_for(
     suffix: str,
     *,
@@ -151,6 +177,7 @@ def runner_for(
 ) -> FakePodman:
     probe_commands = commands(suffix, socket=socket)
     responses = {command: 0 for command in probe_commands.values()}
+    responses[legacy_server_run(suffix, socket=socket)] = 0
     responses[probe_commands["direct_wget"]] = direct_returncode
     responses[probe_commands["network_remove"]] = network_remove_returncode
     return FakePodman(responses)
@@ -182,7 +209,7 @@ def test_probe_observes_internal_http_and_blocked_direct_egress() -> None:
     assert result.in_network_http == "reachable"
     assert result.direct_egress == "blocked"
     assert result.cleanup == "complete"
-    assert runner.calls == list(commands("unit").values())
+    assert runner.calls == successful_call_order("unit")
     forbidden = {"docker", "docker-compose", "--volume", "--mount", "ENGINE_SOCKET"}
     assert all(call[0] == "podman" for call in runner.calls)
     assert all(not (forbidden & set(call)) for call in runner.calls)
@@ -200,6 +227,18 @@ def test_probe_uses_the_preflight_validated_explicit_socket_for_every_command() 
 
     assert result.state == "containment_probe_observed"
     assert all(call[:3] == ("podman", "--url", socket) for call in runner.calls)
+
+
+def test_probe_starts_witness_with_alpine_busybox_httpd() -> None:
+    """Catches Alpine's invalid bare ``httpd`` entrypoint."""
+    runner = SuccessfulPodman()
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="busybox"
+    )
+
+    assert result.state == "containment_probe_observed"
+    assert commands("busybox")["server_run"] in runner.calls
 
 
 def test_probe_generates_an_opaque_name_when_no_suffix_is_supplied() -> None:
@@ -242,6 +281,7 @@ def test_probe_does_not_treat_direct_probe_execution_failure_as_blocked(
     """Catches exceptions being collapsed into a false direct-egress result."""
     probe_commands = commands("direct-error")
     responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[legacy_server_run("direct-error")] = 0
     responses[probe_commands["direct_wget"]] = direct_failure
     runner = FakePodman(responses)
 
@@ -254,7 +294,7 @@ def test_probe_does_not_treat_direct_probe_execution_failure_as_blocked(
     assert result.in_network_http == "reachable"
     assert result.direct_egress == "not_observed"
     assert result.cleanup == "complete"
-    assert runner.calls == list(probe_commands.values())
+    assert runner.calls == successful_call_order("direct-error")
 
 
 def test_probe_reports_cleanup_failure_without_losing_boundary_observations() -> None:
@@ -275,6 +315,7 @@ def test_probe_classifies_cleanup_failure_after_a_partial_lifecycle_failure() ->
     probe_commands = commands("partial")
     responses = {command: 0 for command in probe_commands.values()}
     responses[probe_commands["server_run"]] = 1
+    responses[legacy_server_run("partial")] = 1
     responses[probe_commands["network_remove"]] = 1
     runner = FakePodman(responses)
 
@@ -289,6 +330,8 @@ def test_probe_classifies_cleanup_failure_after_a_partial_lifecycle_failure() ->
     assert runner.calls == [
         probe_commands["network_create"],
         probe_commands["server_run"],
+        probe_commands["server_exists"],
+        probe_commands["server_remove"],
         probe_commands["network_remove"],
     ]
 
@@ -297,6 +340,7 @@ def test_probe_attempts_every_exact_cleanup_after_a_client_remove_failure() -> N
     """Catches cleanup short-circuiting and leaking later exact resources."""
     probe_commands = commands("all-cleanup")
     responses = {command: 0 for command in probe_commands.values()}
+    responses[legacy_server_run("all-cleanup")] = 0
     responses[probe_commands["direct_wget"]] = 1
     responses[probe_commands["client_remove"]] = 1
     runner = FakePodman(responses)
@@ -307,4 +351,50 @@ def test_probe_attempts_every_exact_cleanup_after_a_client_remove_failure() -> N
 
     assert result.code == "cleanup_failed"
     assert result.cleanup == "failed"
-    assert runner.calls == list(probe_commands.values())
+    assert runner.calls == successful_call_order("all-cleanup")
+
+
+def test_probe_removes_a_named_server_that_exists_after_failed_start() -> None:
+    """Catches leaking a named partial server after its run command exits nonzero."""
+    probe_commands = commands("partial-server")
+    responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[probe_commands["server_run"]] = 1
+    responses[legacy_server_run("partial-server")] = 1
+    runner = FakePodman(responses)
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="partial-server"
+    )
+
+    assert result.code == "containment_probe_failed"
+    assert result.cleanup == "complete"
+    assert runner.calls == [
+        probe_commands["network_create"],
+        probe_commands["server_run"],
+        probe_commands["server_exists"],
+        probe_commands["server_remove"],
+        probe_commands["network_remove"],
+    ]
+
+
+def test_probe_does_not_remove_an_absent_server_after_failed_start() -> None:
+    """Catches a false cleanup target when a named server never materialized."""
+    probe_commands = commands("absent-server")
+    responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[probe_commands["server_run"]] = 1
+    responses[probe_commands["server_exists"]] = 1
+    responses[legacy_server_run("absent-server")] = 1
+    runner = FakePodman(responses)
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="absent-server"
+    )
+
+    assert result.code == "containment_probe_failed"
+    assert result.cleanup == "complete"
+    assert runner.calls == [
+        probe_commands["network_create"],
+        probe_commands["server_run"],
+        probe_commands["server_exists"],
+        probe_commands["network_remove"],
+    ]
