@@ -138,4 +138,4 @@ Result: `10 passed in 0.02s`; the live macOS result remains the ready JSON
 recorded above. Both explicit-socket missing-binary paths now retain
 `runtime_unavailable` and the Podman-install action.
 
-Fix implementation commit: `PENDING`.
+Fix implementation commit: `6a88bcc24171d468cb7289fa4e8b7fd081ae1081`.
