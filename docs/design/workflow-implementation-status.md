@@ -45,11 +45,12 @@ predicates, durable harness sessions with a LiteLLM SDK gateway (no LiteLLM Prox
 in the run path), versioned dataset import with label provenance, deterministic
 synthetic dashboard previews from a built-in skill, and hosted synchronous JSON
 target verification behind an exact test-only endpoint allowlist. Rootless
-sandbox/proxy and shipping PostgreSQL RLS deployment remain later workflow-plan
-work. T10 has a browser-verified static authoring slice, but its durable API
-onboarding and end-to-end acceptance criteria remain incomplete. The locked v3
-architecture continues to govern those tasks; this record does not relax its
-invariants.
+sandbox/proxy proof and shipping PostgreSQL RLS deployment remain later
+workflow-plan work. T10 has a browser-verified onboarding slice, but its
+durable API onboarding and end-to-end acceptance criteria remain incomplete.
+T12 has a rootless Podman setup preflight, not a verified containment boundary.
+The locked v3 architecture continues to govern those tasks; this record does
+not relax its invariants.
 
 ## T01 — Truthful source and verification state
 
@@ -243,3 +244,24 @@ complete.
   reconciliation, free-text corrections, dataset mapping/label review, canonical
   preview save/revision/undo, cross-tab conflict recovery, real API visual
   checks, and the required desktop/mobile/accessibility acceptance scenarios.
+
+## T12a — Rootless runtime preflight
+
+**Status:** partial, reviewed on 2026-09-10; do not treat as containment
+verification.
+
+- `AGENT_RUNTIME` accepts only the approved `runc`, `runsc`, and `vm` tiers.
+  The preflight uses bounded Podman CLI argument vectors and emits typed JSON
+  states. It rejects a missing binary, invalid tier, rootful runtime/root socket,
+  credential-bearing socket URI, and `runsc` outside Linux; Docker and the
+  trusted subprocess runner are never selected as fallbacks.
+- On this macOS host, a newly installed Podman 6.1.1 Machine exposes its rootless
+  user connection and preflight reports `ready_for_containment_experiment`.
+  Explicit sockets are checked independently of an unrelated default connection.
+- Evidence: `tests/test_runtime_preflight.py` **10 passed**; the live preflight
+  reports engine/API `6.1.1`. Independent review and two scoped fix rounds found
+  no remaining P0–P2 issue.
+- Remaining: actual internal case network/proxy topology, egress-bypass proofs,
+  per-install CA generation/trust injection, packet/connection evidence,
+  read-only roots and bounded scratch, cleanup verification, and fresh-case
+  execution. These are required before any uploaded agent can run.
