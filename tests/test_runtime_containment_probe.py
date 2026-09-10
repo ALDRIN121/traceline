@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import subprocess
 
+import pytest
+
 from llm_agent_eval.runtime.podman import (
     ContainmentProbeResult,
     RuntimePreflight,
@@ -13,20 +15,24 @@ from llm_agent_eval.runtime.podman import (
 
 
 Command = tuple[str, ...]
+Response = int | BaseException
 IMAGE = "docker.io/library/alpine:3.20"
 
 
 class FakePodman:
     """A deterministic subprocess seam that records complete Podman vectors."""
 
-    def __init__(self, responses: dict[Command, int]):
+    def __init__(self, responses: dict[Command, Response]):
         self.responses = responses
         self.calls: list[Command] = []
 
     def __call__(self, args: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         command = tuple(args)
         self.calls.append(command)
-        return subprocess.CompletedProcess(args, self.responses[command], stdout="", stderr="")
+        response = self.responses[command]
+        if isinstance(response, BaseException):
+            raise response
+        return subprocess.CompletedProcess(args, response, stdout="", stderr="")
 
 
 class SuccessfulPodman:
@@ -219,6 +225,36 @@ def test_probe_marks_reachable_direct_egress_as_security_failure() -> None:
 
     assert result.code == "egress_boundary_failed"
     assert result.direct_egress == "reachable"
+
+
+@pytest.mark.parametrize(
+    "direct_failure",
+    [
+        FileNotFoundError(),
+        OSError("Podman connection failed"),
+        subprocess.TimeoutExpired(["podman", "exec"], 10),
+    ],
+    ids=["missing_podman", "runner_error", "timeout"],
+)
+def test_probe_does_not_treat_direct_probe_execution_failure_as_blocked(
+    direct_failure: BaseException,
+) -> None:
+    """Catches exceptions being collapsed into a false direct-egress result."""
+    probe_commands = commands("direct-error")
+    responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[probe_commands["direct_wget"]] = direct_failure
+    runner = FakePodman(responses)
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="direct-error"
+    )
+
+    assert result.state == "containment_probe_failed"
+    assert result.code == "containment_probe_failed"
+    assert result.in_network_http == "reachable"
+    assert result.direct_egress == "not_observed"
+    assert result.cleanup == "complete"
+    assert runner.calls == list(probe_commands.values())
 
 
 def test_probe_reports_cleanup_failure_without_losing_boundary_observations() -> None:

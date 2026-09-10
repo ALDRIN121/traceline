@@ -86,11 +86,16 @@ def _probe_command(prefix: list[str], *arguments: str) -> list[str]:
     return [*prefix, *arguments]
 
 
-def _probe_succeeded(command: list[str], runner: CommandRunner) -> bool:
+def _probe_returncode(command: list[str], runner: CommandRunner) -> int | None:
+    """Return an observed exit status; execution failures have no observation."""
     try:
-        return runner(command, timeout=PODMAN_TIMEOUT_SECONDS).returncode == 0
+        return runner(command, timeout=PODMAN_TIMEOUT_SECONDS).returncode
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return False
+        return None
+
+
+def _probe_succeeded(command: list[str], runner: CommandRunner) -> bool:
+    return _probe_returncode(command, runner) == 0
 
 
 def run_containment_probe(
@@ -211,7 +216,7 @@ def run_containment_probe(
             command_runner,
         ):
             in_network_http = "reachable"
-            if _probe_succeeded(
+            direct_returncode = _probe_returncode(
                 _probe_command(
                     prefix,
                     "exec",
@@ -225,12 +230,13 @@ def run_containment_probe(
                     "http://203.0.113.1:81",
                 ),
                 command_runner,
-            ):
+            )
+            if direct_returncode == 0:
                 direct_egress = "reachable"
                 state = "containment_probe_failed"
                 code = "egress_boundary_failed"
                 message = "The internal-network client unexpectedly reached direct egress."
-            else:
+            elif direct_returncode is not None:
                 direct_egress = "blocked"
                 state = "containment_probe_observed"
                 code = "containment_observed"
