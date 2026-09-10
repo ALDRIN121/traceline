@@ -160,6 +160,80 @@ test("authoring workspace preserves selected ZIP bytes during upload", async ({ 
   });
 });
 
+for (const scenario of [
+  { phase: "upload", outcome: "success", currentProject: "project-b" },
+  { phase: "upload", outcome: "success", currentProject: "project-a" },
+  { phase: "upload", outcome: "error", currentProject: "project-b" },
+  { phase: "import", outcome: "success", currentProject: "project-b" },
+  { phase: "import", outcome: "error", currentProject: "project-b" },
+]) {
+  test(`authoring workspace ignores stale ZIP ${scenario.phase} ${scenario.outcome} after switching to ${scenario.currentProject}`, async ({ page }, testInfo) => {
+    await page.addInitScript(({ phase, outcome }) => {
+      window.__imports = [];
+      const json = (body, status = 200) => new Response(JSON.stringify(body), {
+        status, headers: { "content-type": "application/json" },
+      });
+      const delayed = (body) => new Promise((resolve) => {
+        window.__finishSourceRequest = () => resolve(outcome === "success"
+          ? json(body)
+          : json({ error: { message: "Original project request failed" } }, 500));
+      });
+      window.fetch = async (input, init = {}) => {
+        const path = String(input);
+        if (path === "/api/uploads") {
+          const upload = { state: "uploaded", upload_id: "archive-for-project-a" };
+          return phase === "upload" ? delayed(upload) : json(upload);
+        }
+        if (path.endsWith("/imports")) {
+          const body = JSON.parse(init.body);
+          window.__imports.push({ path, body });
+          const queued = { state: "queued", job_id: body.kind === "zip" ? "original-project-job" : "current-project-job" };
+          return phase === "import" && body.kind === "zip" ? delayed(queued) : json(queued);
+        }
+        if (path.endsWith("/knowledge")) return json({
+          report_id: path, revision: 1, source_version_id: "current-source", facts: [], pending_questions: [],
+        });
+        return json({ error: { code: "not_found", message: "not found" } }, 404);
+      };
+    }, scenario);
+    await page.goto(`${authoringPage}?project_id=project-a`);
+    await page.getByRole("radio", { name: "ZIP archive" }).check();
+    await page.locator("#source-zip-file").setInputFiles({
+      name: "project-a.zip", mimeType: "application/zip", buffer: Buffer.from([80, 75, 3, 4]),
+    });
+    await page.getByRole("button", { name: "Queue source import" }).click();
+    await expect.poll(() => page.evaluate(() => typeof window.__finishSourceRequest)).toBe("function");
+
+    await page.getByLabel("Existing project ID").fill("project-b");
+    if (scenario.currentProject === "project-a") await page.getByLabel("Existing project ID").fill("project-a");
+    await page.getByRole("radio", { name: "Git repository" }).check();
+    await page.getByLabel("HTTPS Git URL").fill("https://example.com/current-project.git");
+    await page.getByLabel("Git ref").fill("main");
+    await page.getByRole("button", { name: "Queue source import" }).click();
+    await expect(page.locator("#source-import-status")).toContainText("current-project-job");
+    await page.getByRole("button", { name: "Load project report" }).click();
+    await expect(page.locator("#knowledge-state")).toHaveText("Report revision 1");
+    const currentStatus = await page.locator("#source-import-status").textContent();
+    const currentActivity = await page.locator("#authoring-activity-status").textContent();
+    const currentImports = await page.evaluate(() => window.__imports);
+
+    await page.evaluate(async () => {
+      window.__finishSourceRequest();
+      // Let the deferred response and its UI continuation settle before negative assertions.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+
+    expect(await page.evaluate(() => window.__imports)).toEqual(currentImports);
+    await expect(page.locator("#source-import-status")).toHaveText(currentStatus);
+    await expect(page.locator("#authoring-activity-status")).toHaveText(currentActivity);
+    await expect(page.locator("#knowledge-state")).toHaveText("Report revision 1");
+    await expect(page.getByLabel("Existing project ID")).toHaveValue(scenario.currentProject);
+    if (scenario.phase === "upload" && scenario.outcome === "success" && scenario.currentProject === "project-b") {
+      await page.screenshot({ path: testInfo.outputPath("project-b-after-delayed-upload.png"), fullPage: true });
+    }
+  });
+}
+
 test("authoring workspace detaches session mutations after switching projects", async ({ page }) => {
   await page.addInitScript(() => {
     window.__turns = [];

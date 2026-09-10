@@ -300,6 +300,10 @@
       if (status) status.textContent = "Project context required — use an existing project ID before importing.";
       return;
     }
+    const requestedProjectId = projectId;
+    const contextVersion = knowledgeContextVersion;
+    const isCurrentContext = () => requestedProjectId === projectId
+      && contextVersion === knowledgeContextVersion;
     const kind = selectedSourceKind();
     let source;
     try {
@@ -319,17 +323,20 @@
         if (!url || !ref) throw new Error("Provide both an HTTPS Git URL and an explicit ref");
         source = { kind: "git", url, ref };
       }
+      if (!isCurrentContext()) return;
       if (status) status.textContent = "Queueing source import…";
-      const queued = await request(`/api/projects/${encodeURIComponent(projectId)}/imports`, {
+      const queued = await request(`/api/projects/${encodeURIComponent(requestedProjectId)}/imports`, {
         method: "POST",
         headers: { "Idempotency-Key": operationKey() },
         body: source,
       });
+      if (!isCurrentContext()) return;
       if (status) status.textContent = `Import ${queued.state}. Worker job ${queued.job_id} must finish before a report can load.`;
       const state = $("#knowledge-state");
       if (state) state.textContent = "Import queued — report pending";
       setActivity(`Source import ${queued.state}; no source claim has been made yet.`);
     } catch (error) {
+      if (!isCurrentContext()) return;
       if (status) status.textContent = reportError("Source import was not queued", error);
       setActivity(reportError("Source import recovery needed", error));
     }
