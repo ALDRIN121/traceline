@@ -17,6 +17,10 @@ from llm_agent_eval.runtime.podman import (
 Command = tuple[str, ...]
 Response = int | BaseException
 IMAGE = "docker.io/library/alpine:3.20"
+WITNESS_SCRIPT = (
+    'while true; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n'
+    'Connection: close\\r\\n\\r\\nok" | nc -l -p 8080; done'
+)
 
 
 class FakePodman:
@@ -95,11 +99,9 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
             "--network-alias",
             "probe",
             IMAGE,
-            "busybox",
-            "httpd",
-            "-f",
-            "-p",
-            "8080",
+            "/bin/sh",
+            "-c",
+            WITNESS_SCRIPT,
         ),
         "server_exists": (*prefix, "container", "exists", server),
         "client_run": (
@@ -144,11 +146,11 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
     }
 
 
-def legacy_server_run(suffix: str, *, socket: str | None = None) -> Command:
-    """Represent the invalid witness vector so this contract fails before its fix."""
+def previous_server_run(suffix: str, *, socket: str | None = None) -> Command:
+    """Represent the unavailable BusyBox witness vector before its replacement."""
     server_run = commands(suffix, socket=socket)["server_run"]
-    busybox_index = server_run.index("busybox")
-    return (*server_run[:busybox_index], "httpd", *server_run[busybox_index + 2 :])
+    shell_index = server_run.index("/bin/sh")
+    return (*server_run[:shell_index], "busybox", "httpd", "-f", "-p", "8080")
 
 
 def successful_call_order(suffix: str, *, socket: str | None = None) -> list[Command]:
@@ -177,7 +179,7 @@ def runner_for(
 ) -> FakePodman:
     probe_commands = commands(suffix, socket=socket)
     responses = {command: 0 for command in probe_commands.values()}
-    responses[legacy_server_run(suffix, socket=socket)] = 0
+    responses[previous_server_run(suffix, socket=socket)] = 0
     responses[probe_commands["direct_wget"]] = direct_returncode
     responses[probe_commands["network_remove"]] = network_remove_returncode
     return FakePodman(responses)
@@ -229,8 +231,8 @@ def test_probe_uses_the_preflight_validated_explicit_socket_for_every_command() 
     assert all(call[:3] == ("podman", "--url", socket) for call in runner.calls)
 
 
-def test_probe_starts_witness_with_alpine_busybox_httpd() -> None:
-    """Catches Alpine's invalid bare ``httpd`` entrypoint."""
+def test_probe_starts_witness_with_fixed_alpine_shell_nc_server() -> None:
+    """Catches a witness vector that is not the validated static shell/``nc`` server."""
     runner = SuccessfulPodman()
 
     result = run_containment_probe(
@@ -281,7 +283,7 @@ def test_probe_does_not_treat_direct_probe_execution_failure_as_blocked(
     """Catches exceptions being collapsed into a false direct-egress result."""
     probe_commands = commands("direct-error")
     responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
-    responses[legacy_server_run("direct-error")] = 0
+    responses[previous_server_run("direct-error")] = 0
     responses[probe_commands["direct_wget"]] = direct_failure
     runner = FakePodman(responses)
 
@@ -315,7 +317,7 @@ def test_probe_classifies_cleanup_failure_after_a_partial_lifecycle_failure() ->
     probe_commands = commands("partial")
     responses = {command: 0 for command in probe_commands.values()}
     responses[probe_commands["server_run"]] = 1
-    responses[legacy_server_run("partial")] = 1
+    responses[previous_server_run("partial")] = 1
     responses[probe_commands["network_remove"]] = 1
     runner = FakePodman(responses)
 
@@ -340,7 +342,7 @@ def test_probe_attempts_every_exact_cleanup_after_a_client_remove_failure() -> N
     """Catches cleanup short-circuiting and leaking later exact resources."""
     probe_commands = commands("all-cleanup")
     responses = {command: 0 for command in probe_commands.values()}
-    responses[legacy_server_run("all-cleanup")] = 0
+    responses[previous_server_run("all-cleanup")] = 0
     responses[probe_commands["direct_wget"]] = 1
     responses[probe_commands["client_remove"]] = 1
     runner = FakePodman(responses)
@@ -359,7 +361,7 @@ def test_probe_removes_a_named_server_that_exists_after_failed_start() -> None:
     probe_commands = commands("partial-server")
     responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
     responses[probe_commands["server_run"]] = 1
-    responses[legacy_server_run("partial-server")] = 1
+    responses[previous_server_run("partial-server")] = 1
     runner = FakePodman(responses)
 
     result = run_containment_probe(
@@ -383,7 +385,7 @@ def test_probe_does_not_remove_an_absent_server_after_failed_start() -> None:
     responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
     responses[probe_commands["server_run"]] = 1
     responses[probe_commands["server_exists"]] = 1
-    responses[legacy_server_run("absent-server")] = 1
+    responses[previous_server_run("absent-server")] = 1
     runner = FakePodman(responses)
 
     result = run_containment_probe(

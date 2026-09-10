@@ -22,6 +22,10 @@ PODMAN_TIMEOUT_SECONDS = 10.0
 SUPPORTED_RUNTIMES = frozenset({"runc", "runsc", "vm"})
 PROBE_IMAGE = "docker.io/library/alpine:3.20"
 _PROBE_SUFFIX = re.compile(r"[a-z0-9][a-z0-9-]{0,47}\Z")
+_WITNESS_SCRIPT = (
+    'while true; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n'
+    'Connection: close\\r\\n\\r\\nok" | nc -l -p 8080; done'
+)
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -178,11 +182,9 @@ def run_containment_probe(
                     "--network-alias",
                     "probe",
                     PROBE_IMAGE,
-                    "busybox",
-                    "httpd",
-                    "-f",
-                    "-p",
-                    "8080",
+                    "/bin/sh",
+                    "-c",
+                    _WITNESS_SCRIPT,
                 ),
                 command_runner,
             )
