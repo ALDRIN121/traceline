@@ -261,7 +261,31 @@ verification.
 - Evidence: `tests/test_runtime_preflight.py` **10 passed**; the live preflight
   reports engine/API `6.1.1`. Independent review and two scoped fix rounds found
   no remaining P0–P2 issue.
-- Remaining: actual internal case network/proxy topology, egress-bypass proofs,
+- Remaining: per-case agent network/proxy topology, egress-bypass proofs,
   per-install CA generation/trust injection, packet/connection evidence,
-  read-only roots and bounded scratch, cleanup verification, and fresh-case
-  execution. These are required before any uploaded agent can run.
+  read-only roots and bounded scratch, production-run cleanup verification,
+  and fresh-case execution. These are required before any uploaded agent can
+  run.
+
+## T12b — Internal-network containment probe
+
+**Status:** partial, observed on 2026-09-10; this is a narrow topology
+observation, not a containment certification.
+
+- On the observed macOS host, rootless Podman engine/API `6.1.1` passed the
+  preflight and containment-focused suite: **25 passed**. The explicitly
+  enabled live check, `LLM_AGENT_EVAL_RUN_CONTAINMENT_PROBE=1 ... -m live
+  tests/integration/test_egress_boundary.py`, then reported **1 passed**. The
+  enabled evidence runs reported no skips or failures.
+- That live pass observed one rootless internal Podman network where the client
+  reached its HTTP witness, the fixed direct dial was blocked, and the exact
+  temporary containers and network were removed. It is evidence for that
+  host/engine at that time only.
+- It does not prove proxy-only egress; CA generation or TLS interception;
+  DNS, IPv6, UDP, or redirect coverage; credential brokering; agent
+  image/source execution; fresh cases; packet-level enforcement; or broad
+  platform support. Those remain required before dispatching uploaded agents.
+- `scripts/spin_up.sh` now performs only the structured rootless setup
+  preflight. A ready result does not start an agent runtime or prove
+  containment; prototype API development remains separately documented in
+  `README.md`.

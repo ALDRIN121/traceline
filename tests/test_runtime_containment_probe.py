@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,18 @@ WITNESS_SCRIPT = (
     'while true; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n'
     'Connection: close\\r\\n\\r\\nok" | nc -l -p 8080; done'
 )
+
+
+def test_startup_script_never_selects_docker_or_local_execution_fallback() -> None:
+    """Catches the unsafe startup branches that bypass containment setup."""
+    script = (Path(__file__).resolve().parents[1] / "scripts/spin_up.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "docker compose" not in script
+    assert "docker info" not in script
+    assert "Falling back to local live execution" not in script
+    assert "runtime_preflight.py" in script
 
 
 class FakePodman:
