@@ -140,8 +140,8 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
             "-",
             "http://203.0.113.1:81",
         ),
-        "client_remove": (*prefix, "rm", "-f", client),
-        "server_remove": (*prefix, "rm", "-f", server),
+        "client_remove": (*prefix, "rm", "-f", "--time", "0", client),
+        "server_remove": (*prefix, "rm", "-f", "--time", "0", server),
         "network_remove": (*prefix, "network", "rm", network),
     }
 
@@ -241,6 +241,28 @@ def test_probe_starts_witness_with_fixed_alpine_shell_nc_server() -> None:
 
     assert result.state == "containment_probe_observed"
     assert commands("busybox")["server_run"] in runner.calls
+
+
+def test_probe_forces_exact_container_cleanup_without_a_stop_grace_period() -> None:
+    """Catches Podman's default stop grace period racing the command timeout."""
+    runner = SuccessfulPodman()
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="immediate-cleanup"
+    )
+
+    assert result.cleanup == "complete"
+    assert runner.calls[-3:] == [
+        (
+            "podman", "rm", "-f", "--time", "0",
+            "llm-agent-eval-containment-immediate-cleanup-client",
+        ),
+        (
+            "podman", "rm", "-f", "--time", "0",
+            "llm-agent-eval-containment-immediate-cleanup-server",
+        ),
+        ("podman", "network", "rm", "llm-agent-eval-containment-immediate-cleanup"),
+    ]
 
 
 def test_probe_generates_an_opaque_name_when_no_suffix_is_supplied() -> None:

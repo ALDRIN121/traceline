@@ -254,9 +254,9 @@ def run_containment_probe(
     finally:
         cleanup_commands: list[list[str]] = []
         if created_client:
-            cleanup_commands.append(_probe_command(prefix, "rm", "-f", client))
+            cleanup_commands.append(_probe_command(prefix, "rm", "-f", "--time", "0", client))
         if created_server:
-            cleanup_commands.append(_probe_command(prefix, "rm", "-f", server))
+            cleanup_commands.append(_probe_command(prefix, "rm", "-f", "--time", "0", server))
         if created_network:
             cleanup_commands.append(_probe_command(prefix, "network", "rm", network))
         cleanup_failed = False
