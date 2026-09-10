@@ -154,10 +154,10 @@ def run_containment_probe(
     network = f"llm-agent-eval-containment-{suffix}"
     server = f"{network}-server"
     client = f"{network}-client"
-    created_network = False
-    created_server = False
-    created_client = False
+    resource_attempts: list[tuple[str, str, bool]] = []
+    network_started = False
     server_started = False
+    client_started = False
     in_network_http = "not_observed"
     direct_egress = "not_observed"
     state = "containment_probe_failed"
@@ -166,11 +166,12 @@ def run_containment_probe(
     cleanup = "complete"
 
     try:
-        created_network = _probe_succeeded(
+        network_started = _probe_succeeded(
             _probe_command(prefix, "network", "create", "--internal", network), command_runner
         )
-        if created_network:
-            server_returncode = _probe_returncode(
+        resource_attempts.append(("network", network, network_started))
+        if network_started:
+            server_started = _probe_succeeded(
                 _probe_command(
                     prefix,
                     "run",
@@ -188,14 +189,9 @@ def run_containment_probe(
                 ),
                 command_runner,
             )
-            server_started = server_returncode == 0
-            created_server = server_started
-            if server_returncode is not None and not server_started:
-                created_server = _probe_succeeded(
-                    _probe_command(prefix, "container", "exists", server), command_runner
-                )
+            resource_attempts.append(("container", server, server_started))
         if server_started:
-            created_client = _probe_succeeded(
+            client_started = _probe_succeeded(
                 _probe_command(
                     prefix,
                     "run",
@@ -210,7 +206,8 @@ def run_containment_probe(
                 ),
                 command_runner,
             )
-        if created_client and _probe_succeeded(
+            resource_attempts.append(("container", client, client_started))
+        if client_started and _probe_succeeded(
             _probe_command(
                 prefix,
                 "exec",
@@ -246,21 +243,32 @@ def run_containment_probe(
                 state = "containment_probe_failed"
                 code = "egress_boundary_failed"
                 message = "The internal-network client unexpectedly reached direct egress."
-            elif direct_returncode is not None:
+            elif direct_returncode == 1:
+                # Only the validated wget denial status is evidence of a dial.
+                # Engine, launch, signal, and unexpected exits prove no boundary.
                 direct_egress = "blocked"
                 state = "containment_probe_observed"
                 code = "containment_observed"
                 message = "The internal network reached its witness and blocked the direct egress dial."
     finally:
-        cleanup_commands: list[list[str]] = []
-        if created_client:
-            cleanup_commands.append(_probe_command(prefix, "rm", "-f", "--time", "0", client))
-        if created_server:
-            cleanup_commands.append(_probe_command(prefix, "rm", "-f", "--time", "0", server))
-        if created_network:
-            cleanup_commands.append(_probe_command(prefix, "network", "rm", network))
         cleanup_failed = False
-        for command in cleanup_commands:
+        for resource_type, name, started in reversed(resource_attempts):
+            if not started:
+                # A failed/timed-out create can still leave its exact named resource.
+                # Existence errors must never be collapsed into confirmed absence.
+                exists_returncode = _probe_returncode(
+                    _probe_command(prefix, resource_type, "exists", name), command_runner
+                )
+                if exists_returncode == 1:
+                    continue
+                if exists_returncode != 0:
+                    cleanup_failed = True
+                    continue
+            command = (
+                _probe_command(prefix, "network", "rm", name)
+                if resource_type == "network"
+                else _probe_command(prefix, "rm", "-f", "--time", "0", name)
+            )
             if not _probe_succeeded(command, command_runner):
                 cleanup_failed = True
         if cleanup_failed:

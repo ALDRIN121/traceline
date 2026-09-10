@@ -101,6 +101,7 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
     prefix = ("podman",) if socket is None else ("podman", "--url", socket)
     return {
         "network_create": (*prefix, "network", "create", "--internal", network),
+        "network_exists": (*prefix, "network", "exists", network),
         "server_run": (
             *prefix,
             "run",
@@ -117,6 +118,7 @@ def commands(suffix: str, *, socket: str | None = None) -> dict[str, Command]:
             WITNESS_SCRIPT,
         ),
         "server_exists": (*prefix, "container", "exists", server),
+        "client_exists": (*prefix, "container", "exists", client),
         "client_run": (
             *prefix,
             "run",
@@ -332,6 +334,116 @@ def test_probe_does_not_treat_direct_probe_execution_failure_as_blocked(
     assert result.direct_egress == "not_observed"
     assert result.cleanup == "complete"
     assert runner.calls == successful_call_order("direct-error")
+
+
+@pytest.mark.parametrize("returncode", [2, 125, 126, 127, 137, 143, -9, -15])
+def test_probe_rejects_unexpected_direct_exec_status(returncode: int) -> None:
+    """Catches engine, launch, signal, and other errors becoming denial evidence."""
+    runner = runner_for("unexpected-status", direct_returncode=returncode)
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="unexpected-status"
+    )
+
+    assert result.state == "containment_probe_failed"
+    assert result.code == "containment_probe_failed"
+    assert result.in_network_http == "reachable"
+    assert result.direct_egress == "not_observed"
+    assert result.cleanup == "complete"
+    assert runner.calls == successful_call_order("unexpected-status")
+
+
+@pytest.mark.parametrize(
+    ("creation", "existence", "creation_order", "prior_cleanup"),
+    [
+        ("network_create", "network_exists", ["network_create"], []),
+        ("server_run", "server_exists", ["network_create", "server_run"], ["network_remove"]),
+        (
+            "client_run", "client_exists",
+            ["network_create", "server_run", "client_run"],
+            ["server_remove", "network_remove"],
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "creation_failure",
+    [1, 125, subprocess.TimeoutExpired(["podman"], 10), OSError("connection lost")],
+    ids=["nonzero", "engine-error", "timeout", "runner-error"],
+)
+@pytest.mark.parametrize("exists_status", [0, 1], ids=["exists", "absent"])
+def test_probe_reconciles_every_uncertain_creation_by_exact_name(
+    creation: str,
+    existence: str,
+    creation_order: list[str],
+    prior_cleanup: list[str],
+    creation_failure: Response,
+    exists_status: int,
+) -> None:
+    """Catches orphaned resources or continued probing after an uncertain create."""
+    socket = "unix:///Users/example/.local/share/containers/podman.sock"
+    probe_commands = commands("uncertain-create", socket=socket)
+    responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[probe_commands[creation]] = creation_failure
+    responses[probe_commands[existence]] = exists_status
+    runner = FakePodman(responses)
+
+    result = run_containment_probe(
+        ready_preflight(explicit_socket=socket), command_runner=runner,
+        probe_suffix="uncertain-create",
+    )
+
+    assert result.code == "containment_probe_failed"
+    assert result.cleanup == "complete"
+    assert result.in_network_http == result.direct_egress == "not_observed"
+    removal = existence.replace("_exists", "_remove")
+    expected_cleanup = ([removal] if exists_status == 0 else []) + prior_cleanup
+    assert runner.calls == [
+        probe_commands[key] for key in [*creation_order, existence, *expected_cleanup]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("creation", "existence", "creation_order", "prior_cleanup"),
+    [
+        ("network_create", "network_exists", ["network_create"], []),
+        ("server_run", "server_exists", ["network_create", "server_run"], ["network_remove"]),
+        (
+            "client_run", "client_exists",
+            ["network_create", "server_run", "client_run"],
+            ["server_remove", "network_remove"],
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "existence_failure",
+    [2, 125, subprocess.TimeoutExpired(["podman"], 10), OSError("connection lost")],
+    ids=["unexpected-status", "engine-error", "timeout", "runner-error"],
+)
+def test_probe_never_claims_complete_cleanup_when_exact_existence_is_unknown(
+    creation: str,
+    existence: str,
+    creation_order: list[str],
+    prior_cleanup: list[str],
+    existence_failure: Response,
+) -> None:
+    """Catches uncertain existence being mistaken for absence or stopping cleanup."""
+    probe_commands = commands("unknown-existence")
+    responses: dict[Command, Response] = {command: 0 for command in probe_commands.values()}
+    responses[probe_commands[creation]] = subprocess.TimeoutExpired(["podman"], 10)
+    responses[probe_commands[existence]] = existence_failure
+    runner = FakePodman(responses)
+
+    result = run_containment_probe(
+        ready_preflight(), command_runner=runner, probe_suffix="unknown-existence"
+    )
+
+    assert result.state == "containment_probe_failed"
+    assert result.code == "cleanup_failed"
+    assert result.cleanup == "failed"
+    assert result.in_network_http == result.direct_egress == "not_observed"
+    assert runner.calls == [
+        probe_commands[key] for key in [*creation_order, existence, *prior_cleanup]
+    ]
 
 
 def test_probe_reports_cleanup_failure_without_losing_boundary_observations() -> None:
