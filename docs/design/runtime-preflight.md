@@ -32,6 +32,33 @@ Podman command/API result, absent default connection, stopped macOS machine,
 root connection, or invalid `ENGINE_SOCKET` returns a typed `blocked_setup`
 result with an operator action.
 
+## Containment probe (T12b)
+
+The live containment check is deliberately opt-in. Run it only against a
+rootless Podman engine:
+
+```bash
+LLM_AGENT_EVAL_RUN_CONTAINMENT_PROBE=1 PYTHONPATH=src .venv/bin/python -m pytest -q -m live tests/integration/test_egress_boundary.py
+```
+
+Without `LLM_AGENT_EVAL_RUN_CONTAINMENT_PROBE=1`, collection reports one
+explicit skip and provides no containment evidence. A ready run may pull the
+fixed `docker.io/library/alpine:3.20` image. It creates one short-lived
+`--internal` network, an HTTP witness container, and a client container using
+the rootless engine identity accepted by preflight.
+
+A pass observes the selected rootless engine/API identity, HTTP reachability
+from the client to the witness on that internal network, a blocked direct dial
+to the fixed external test address, and removal of the exact returned network
+after both containers are removed. It is evidence only for that engine and
+host at that time. It does not prove proxy-only egress, per-install CA creation
+or trust, DNS or IPv6 bypass resistance, UDP behavior, redirects, TLS
+interception, authoritative trace-source capture, credential brokering,
+packet-level enforcement, or equivalent behavior on another platform.
+
+Docker Desktop and trusted subprocess execution are unsupported runtime paths;
+neither is a fallback for this probe.
+
 ## What a passing result does not prove
 
 `ready_for_containment_experiment` is necessary setup readiness, not a security
