@@ -168,3 +168,33 @@ def test_explicit_rootless_socket_is_not_blocked_by_a_root_default_connection() 
         "socket": socket,
     }
     assert ("podman", "--url", socket, "info", "--format", "json") in runner.calls
+
+
+def test_missing_podman_with_explicit_socket_on_macos_returns_install_action() -> None:
+    socket = "unix:///Users/example/.local/share/containers/podman.sock"
+    runner = FakePodman({
+        ("podman", "machine", "inspect"): FileNotFoundError(),
+    })
+
+    result = preflight(
+        environment={"ENGINE_SOCKET": socket}, system="Darwin", command_runner=runner
+    )
+
+    assert result.state == "blocked_setup"
+    assert result.code == "runtime_unavailable"
+    assert "Install Podman" in result.next_action
+
+
+def test_missing_podman_with_explicit_socket_on_linux_returns_install_action() -> None:
+    socket = "unix:///run/user/501/podman/podman.sock"
+    runner = FakePodman({
+        ("podman", "--url", socket, "info", "--format", "json"): FileNotFoundError(),
+    })
+
+    result = preflight(
+        environment={"ENGINE_SOCKET": socket}, system="Linux", command_runner=runner
+    )
+
+    assert result.state == "blocked_setup"
+    assert result.code == "runtime_unavailable"
+    assert "Install Podman" in result.next_action

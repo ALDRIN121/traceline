@@ -107,3 +107,35 @@ credential can reach an output surface. An explicit valid socket is queried
 directly; default discovery is only required when no override was supplied.
 
 Fix implementation commit: `3838a4001fb63693da88b5f9ed8298f1bf6c64fa`.
+
+## Explicit-socket missing-binary repair evidence
+
+The explicit-socket path bypasses default connection discovery, so its first
+Podman command is `podman machine inspect` on macOS and `podman --url … info`
+on Linux. The initial branch collapsed the `missing` command result into the
+generic machine/connection recovery action rather than preserving the required
+Podman-install action.
+
+RED:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_runtime_preflight.py
+```
+
+Result: `2 failed, 8 passed`. Both explicit-socket seams produced
+`runtime_unavailable` but the macOS action said to initialize a machine and the
+Linux action said to repair a connection, instead of instructing the operator
+to install Podman.
+
+GREEN:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_runtime_preflight.py
+.venv/bin/python scripts/runtime_preflight.py
+```
+
+Result: `10 passed in 0.02s`; the live macOS result remains the ready JSON
+recorded above. Both explicit-socket missing-binary paths now retain
+`runtime_unavailable` and the Podman-install action.
+
+Fix implementation commit: `PENDING`.

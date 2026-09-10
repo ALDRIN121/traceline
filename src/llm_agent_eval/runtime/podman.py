@@ -227,6 +227,13 @@ def preflight(
         machine, error = _command_json(
             ["podman", "machine", "inspect"], command_runner
         )
+        if error == "missing":
+            return _blocked(
+                "runtime_unavailable",
+                "Podman is not installed or is not available on PATH.",
+                runtime_tier,
+                "Install Podman and configure a rootless connection before continuing.",
+            )
         if error or not _machine_is_running(machine):
             return _blocked(
                 "runtime_unavailable",
@@ -240,6 +247,13 @@ def preflight(
         info_command.extend(["--url", socket])
     info_command.extend(["info", "--format", "json"])
     info, error = _command_json(info_command, command_runner)
+    if error == "missing":
+        return _blocked(
+            "runtime_unavailable",
+            "Podman is not installed or is not available on PATH.",
+            runtime_tier,
+            "Install Podman and configure a rootless connection before continuing.",
+        )
     if error or not isinstance(info, dict):
         return _blocked(
             "runtime_unavailable",
