@@ -332,7 +332,7 @@ def test_litellm_gateway_allows_keyless_local_profiles():
         return _LiteLLMResponse("pong", model="ollama/llama3")
 
     gateway = LiteLLMGateway(
-        ModelConfig(provider="ollama", model="ollama/llama3", base_url="http://127.0.0.1:11434", allow_keyless=True),
+        ModelConfig(provider="ollama", model="ollama/llama3", api_key="", base_url="http://127.0.0.1:11434", allow_keyless=True),
         completion=completion,
     )
     assert gateway.chat([]).content == "pong"
