@@ -39,6 +39,7 @@ The engine is the single-threaded, deterministic driver. Its invariants:
 from __future__ import annotations
 
 import logging
+import hashlib
 import shlex
 import tempfile
 import uuid
@@ -826,10 +827,13 @@ class Engine:
             repeat_index=repeat_index,
             attempt=attempt,
         )
-        work_dir = (
-            self.work_root / "runs" / run.run_id / case.case_id
-            / f"repeat{repeat_index}_attempt{attempt}"
-        )
+        # Case IDs are user-authored data.  They remain the evidence identity,
+        # but never become a filesystem path component.
+        case_token = hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:32]
+        run_root = (self.work_root / "runs" / run.run_id).resolve()
+        work_dir = (run_root / case_token / f"repeat{repeat_index}_attempt{attempt}").resolve()
+        if not work_dir.is_relative_to(run_root):  # defensive even if tokens change
+            raise EngineError("generated attempt directory escapes its run root")
         work_dir.mkdir(parents=True, exist_ok=True)
         self.storage.set_attempt_status(
             record.attempt_id, workspace_id, AttemptStatus.RUNNING

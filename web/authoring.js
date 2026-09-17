@@ -8,29 +8,68 @@
   const all = (selector) => [...document.querySelectorAll(selector)];
   const params = new URLSearchParams(location.search);
   const sessionId = params.get("session_id");
-  const STORAGE_KEY = `traceline.authoring-draft.v1:${sessionId || "unsaved"}`;
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
   let knowledgeReport = null;
   let knowledgeContextVersion = 0;
   let knowledgeRequestToken = 0;
+  let draftStorageKey = null;
+  const jobPollers = new Map();
+  let pendingSessionMutation = false;
 
   const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "" });
-  function loadDraft() {
+  let draft = emptyDraft();
+  function draftKey() {
+    const boundSessionId = window.__tracelineAuthoringSession?.session_id || sessionId || "";
+    // A context-free page must not leave a draft that another project can inherit.
+    if (!projectId && !boundSessionId) return null;
+    return `traceline.authoring-draft.v2:project:${projectId || "none"}:session:${boundSessionId || "none"}`;
+  }
+
+  function loadDraft(key) {
+    if (!key) return emptyDraft();
     try {
-      const draft = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-      return draft && Array.isArray(draft.selected) ? { ...emptyDraft(), ...draft } : emptyDraft();
+      const saved = JSON.parse(localStorage.getItem(key) || "null");
+      return saved && Array.isArray(saved.selected) ? { ...emptyDraft(), ...saved } : emptyDraft();
     } catch (_) {
       return emptyDraft();
     }
   }
-  let draft = loadDraft();
 
   function saveDraft(message = "Draft saved in this browser") {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+    if (draftStorageKey) {
+      try { localStorage.setItem(draftStorageKey, JSON.stringify(draft)); } catch (_) { /* storage unavailable */ }
+    }
     const status = $("#authoring-save-state");
-    if (status) status.textContent = message;
+    if (status) status.textContent = draftStorageKey ? message : "Choose a project or saved session to retain a browser draft";
+  }
+
+  function applyDraftToControls() {
+    all(".metric-option input:not(:disabled)").forEach((input) => { input.checked = draft.selected.includes(input.value); });
+    const intent = $("#authoring-custom-intent");
+    const missing = $("#metric-on-missing");
+    const error = $("#metric-on-error");
+    if (intent) intent.value = draft.customIntent;
+    if (missing) missing.value = draft.onMissing;
+    if (error) error.value = draft.onError;
+    updateSummary();
+  }
+
+  function activateDraftScope() {
+    const nextKey = draftKey();
+    if (nextKey === draftStorageKey && draft) return;
+    draftStorageKey = nextKey;
+    draft = loadDraft(nextKey);
+    applyDraftToControls();
+  }
+
+  function clearActiveDraft() {
+    if (draftStorageKey) {
+      try { localStorage.removeItem(draftStorageKey); } catch (_) { /* storage unavailable */ }
+    }
+    draft = emptyDraft();
+    applyDraftToControls();
   }
 
   function selected() {
@@ -43,7 +82,7 @@
     const count = $("#metric-selection-count");
     if (count) count.textContent = `${values.length} selected`;
     const save = $("#save-metric-decisions");
-    if (save) save.disabled = values.length === 0 || !draft.onMissing || !draft.onError;
+    if (save) save.disabled = pendingSessionMutation || values.length === 0 || !draft.onMissing || !draft.onError;
     const inspect = $("#definition-inspector");
     if (inspect && !inspect.hidden) inspect.textContent = definitionText();
   }
@@ -110,8 +149,86 @@
     if (status) status.textContent = message;
   }
 
+  function setSessionMutationPending(pending) {
+    pendingSessionMutation = pending;
+    const send = $("#send-authoring-note");
+    if (send) send.disabled = pending;
+    updateSummary();
+  }
+
+  function jobFailure(job) {
+    const detail = job?.error?.message || job?.error?.detail || job?.error?.code;
+    return detail ? String(detail) : "The worker did not complete the job.";
+  }
+
+  function watchJob(jobId, isCurrentContext, onTerminal) {
+    if (!jobId || jobPollers.has(jobId)) return;
+    const watcher = { stopped: false, timer: null };
+    jobPollers.set(jobId, watcher);
+    const stop = () => {
+      watcher.stopped = true;
+      if (watcher.timer) clearTimeout(watcher.timer);
+      jobPollers.delete(jobId);
+    };
+    const tick = async () => {
+      if (watcher.stopped || !isCurrentContext()) return stop();
+      try {
+        const job = await request(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (watcher.stopped || !isCurrentContext()) return stop();
+        if (["completed", "failed", "cancelled"].includes(job.status)) {
+          stop();
+          await onTerminal(job);
+          return;
+        }
+      } catch (_) {
+        // A worker can be briefly unavailable during startup. Keep the local
+        // draft and retry instead of presenting a queued change as completed.
+      }
+      if (!watcher.stopped) watcher.timer = setTimeout(tick, 500);
+    };
+    watcher.timer = setTimeout(tick, 500);
+  }
+
+  async function refreshBoundSession(sessionAtQueue) {
+    const current = window.__tracelineAuthoringSession;
+    if (!current || current.session_id !== sessionAtQueue.session_id || projectId !== sessionAtQueue.project_id) return null;
+    const session = await request(`/api/sessions/${encodeURIComponent(sessionAtQueue.session_id)}`);
+    if (!window.__tracelineAuthoringSession || window.__tracelineAuthoringSession.session_id !== sessionAtQueue.session_id
+      || projectId !== session.project_id) return null;
+    window.__tracelineAuthoringSession = session;
+    activateDraftScope();
+    const binding = $("#authoring-binding-status");
+    if (binding) binding.textContent = `Resumed session · revision ${session.revision}`;
+    return session;
+  }
+
+  function watchSessionJob(queued, sessionAtQueue, onCompleted) {
+    watchJob(queued.job_id,
+      () => window.__tracelineAuthoringSession?.session_id === sessionAtQueue.session_id && projectId === sessionAtQueue.project_id,
+      async (job) => {
+        if (job.status === "completed") {
+          try {
+            const fresh = await refreshBoundSession(sessionAtQueue);
+            if (fresh) await onCompleted(fresh);
+          } catch (error) {
+            setActivity(reportError("The completed authoring change could not refresh its session", error));
+          } finally {
+            setSessionMutationPending(false);
+          }
+          return;
+        }
+        // Refresh after a conflict too: the server owns the current revision.
+        if (job?.error?.code === "revision_conflict") {
+          try { await refreshBoundSession(sessionAtQueue); } catch (_) { /* retain the actionable worker error below */ }
+        }
+        setActivity(`Authoring change ${job.status}: ${jobFailure(job)} Your local draft is retained.`);
+        setSessionMutationPending(false);
+      });
+  }
+
   function setProjectContext(value) {
     projectId = value.trim();
+    activateDraftScope();
     const input = $("#authoring-project-id");
     const load = $("#load-project-report");
     const importButton = $("#queue-source-import");
@@ -335,6 +452,15 @@
       const state = $("#knowledge-state");
       if (state) state.textContent = "Import queued — report pending";
       setActivity(`Source import ${queued.state}; no source claim has been made yet.`);
+      watchJob(queued.job_id, isCurrentContext, async (job) => {
+        if (job.status === "completed") {
+          if (status) status.textContent = "Import completed. Loading the new project report…";
+          await loadKnowledgeReport();
+          return;
+        }
+        if (status) status.textContent = `Import ${job.status}: ${jobFailure(job)}`;
+        setActivity(`Source import ${job.status}: ${jobFailure(job)}`);
+      });
     } catch (error) {
       if (!isCurrentContext()) return;
       if (status) status.textContent = reportError("Source import was not queued", error);
@@ -354,16 +480,25 @@
       setActivity("Write an authoring note before sending it.");
       return;
     }
+    if (pendingSessionMutation) {
+      setActivity("An authoring change is still awaiting the worker. Wait for the session revision to refresh.");
+      return;
+    }
     setActivity("Sending authoring note…");
+    setSessionMutationPending(true);
     try {
       const queued = await request(`/api/sessions/${encodeURIComponent(session.session_id)}/turns`, {
         method: "POST",
         headers: { "Idempotency-Key": operationKey() },
         body: { expected_revision: session.revision, message },
       });
-      if (note) note.value = "";
       setActivity(`Authoring note ${queued.state}. Job ${queued.job_id} is awaiting the worker.`);
+      watchSessionJob(queued, session, async (fresh) => {
+        if (note) note.value = "";
+        setActivity(`Authoring note completed. Session revision ${fresh.revision} is now current.`);
+      });
     } catch (error) {
+      setSessionMutationPending(false);
       setActivity(reportError("Authoring note was not sent", error));
     }
   }
@@ -399,9 +534,14 @@
       if (help) help.textContent = "Draft retained. Attach a persisted session before submitting these choices to the evaluation service.";
       return;
     }
+    if (pendingSessionMutation) {
+      if (help) help.textContent = "An authoring change is still awaiting the worker. Your local draft is retained.";
+      return;
+    }
     const button = $("#save-metric-decisions");
     if (button) button.disabled = true;
     if (help) help.textContent = "Saving the reviewed proposal…";
+    setSessionMutationPending(true);
     try {
       const queued = await request(`/api/sessions/${encodeURIComponent(session.session_id)}/turns`, {
         method: "POST",
@@ -419,7 +559,12 @@
       });
       if (help) help.textContent = `Proposal ${queued.state}. The service will report the observed result before this draft changes.`;
       saveDraft("Reviewed proposal queued");
+      watchSessionJob(queued, session, async (fresh) => {
+        clearActiveDraft();
+        if (help) help.textContent = `Proposal completed. Session revision ${fresh.revision} is now current.`;
+      });
     } catch (error) {
+      setSessionMutationPending(false);
       if (help) help.textContent = `The proposal was not saved: ${error.message}. Your local draft is retained.`;
     } finally {
       updateSummary();

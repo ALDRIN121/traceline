@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import settings
-from .auth import Actor
+from .auth import Actor, create_install_auth_resolver
 from .contracts import WorkflowError
 from .gateway import LiteLLMGateway, ModelGateway
 from .dashboard import (
@@ -343,6 +343,7 @@ def create_app(
     auth_resolver: Any = None,
     artifact_root: Path | None = None,
     gateway: ModelGateway | None = None,
+    release_mode: bool = False,
 ) -> FastAPI:
     """Build the application. Pass ``storage``/``engine`` to pin the store and
     engine (tests, ``eval-engine serve``); when omitted, the app lazily opens
@@ -355,6 +356,9 @@ def create_app(
     _default_storage: Storage | None = storage
     _default_engine: Engine | None = engine
     ws = workspace_id
+    artifact_root = artifact_root or Path(settings.artifact_root)
+    if release_mode and auth_resolver is None:
+        auth_resolver = create_install_auth_resolver(artifact_root / "install-owner.token", ws)
 
     #: Background run workers: run_id -> thread, and run_id -> cancel event.
     #: Guarded by _registry_lock (worker threads and request threads race).
@@ -402,6 +406,13 @@ def create_app(
             or request.headers.get("x-correlation-id")
             or uuid.uuid4().hex
         )
+        # Health is intentionally public so local orchestration can determine
+        # liveness before it has the install owner credential. It exposes no
+        # workspace data and accepts no mutation.
+        if request.url.path == "/health":
+            response = await call_next(request)
+            response.headers["x-correlation-id"] = request.state.correlation_id
+            return response
         try:
             actor = auth_resolver(request) if auth_resolver else Actor("local-owner", ws, "owner")
             if not isinstance(actor, Actor):
@@ -1051,10 +1062,9 @@ def create_app(
     @app.post("/api/harness/author")
     def author_evaluation_spec(body: AuthorSpecRequest, request: Request) -> dict[str, Any]:
         """Author an evaluation spec from natural language intent (§10B/§31A)."""
-        from .gateway import DeepSeekGateway
         from .harness import author_spec
 
-        if not settings.model.has_key:
+        if not settings.model.can_authenticate:
             template = {
                 "spec_version": "0.1.0",
                 "name": "authored-suite",
@@ -1097,11 +1107,10 @@ def create_app(
                 "expected_count": 1,
                 "inferred_expected": 0,
                 "inferred_share": 0.0,
-                "notice": "Offline authoring template generated (set DEEPSEEK_API_KEY for dynamic LLM drafting).",
+                "notice": "Offline authoring template generated (configure an LLM_AGENT_EVAL_MODEL profile for dynamic drafting).",
             }
 
-        gateway = DeepSeekGateway(settings.model)
-        res = author_spec(body.intent, gateway, repair_attempts=body.repair_attempts)
+        res = author_spec(body.intent, model_gateway, repair_attempts=body.repair_attempts)
         if not res.validated or res.spec is None:
             return {
                 "state": res.state,
@@ -1414,7 +1423,7 @@ def get_app() -> FastAPI:
     if _APP is None:
         with _APP_LOCK:
             if _APP is None:
-                _APP = create_app()
+                _APP = create_app(release_mode=True)
     return _APP
 
 

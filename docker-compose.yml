@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: eval_maint
       POSTGRES_PASSWORD: ${POSTGRES_MAINT_PASSWORD:?set POSTGRES_MAINT_PASSWORD in .env}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - eval_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -38,18 +38,18 @@ services:
     container_name: eval-engine
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       DATABASE_URL: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
       LLM_AGENT_EVAL_DB: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
+      LLM_AGENT_EVAL_ARTIFACT_ROOT: "/var/lib/llm-agent-eval"
       PYTHONUNBUFFERED: "1"
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
     volumes:
-      - ./fixtures:/app/fixtures
-      - ./web:/app/web
-      - ./src:/app/src
+      - eval_artifacts:/var/lib/llm-agent-eval
 
 volumes:
   eval_pgdata:
+  eval_artifacts:

@@ -12,6 +12,9 @@ def test_production_policy_rejects_loopback_and_metadata():
     assert denied.value.code == "disallowed_destination"
     with pytest.raises(PolicyDenied):
         policy.authorize("http://169.254.169.254/latest/meta-data/")
+    credential_policy = EndpointPolicy(resolver=lambda *args, **kwargs: [(None, None, None, None, ("8.8.8.8", 443))])
+    with pytest.raises(PolicyDenied):
+        credential_policy.authorize("https://user:password@agent.example/invoke")
 
 
 def test_exact_test_allowlist_permits_only_that_loopback_port():
@@ -31,3 +34,10 @@ def test_dns_rebinding_to_loopback_is_blocked(monkeypatch):
     with pytest.raises(PolicyDenied) as denied:
         policy.authorize("http://agent.example/invoke")
     assert denied.value.code == "dns_rebinding"
+
+
+@pytest.mark.parametrize("address", ["0.0.0.0", "::ffff:127.0.0.1", "fe80::1"])
+def test_production_policy_rejects_unspecified_mapped_and_link_local_addresses(address):
+    policy = EndpointPolicy(resolver=lambda *args, **kwargs: [(None, None, None, None, (address, 443))])
+    with pytest.raises(PolicyDenied):
+        policy.authorize("https://agent.example/invoke")

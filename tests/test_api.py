@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_agent_eval.api import create_app
+from llm_agent_eval.auth import create_install_auth_resolver
 from llm_agent_eval.engine import Engine
 from llm_agent_eval.lifecycle import SmokeState
 from llm_agent_eval.storage import Storage
@@ -123,6 +124,18 @@ def run_to_complete(client, n_cases=2, **body_kwargs):
 
 
 class TestHealthAndEnvelope:
+    def test_release_mode_rejects_anonymous_requests_and_accepts_install_token(self, tmp_path):
+        db = Storage(tmp_path / "release.db")
+        db.create_schema()
+        token_path = tmp_path / "install" / "owner.token"
+        resolver = create_install_auth_resolver(token_path, WORKSPACE)
+        app = create_app(storage=db, engine=Engine(db, work_root=tmp_path / "work"),
+                         workspace_id=WORKSPACE, auth_resolver=resolver, release_mode=True)
+        with TestClient(app) as client:
+            assert client.get("/runs").status_code == 401
+            token = token_path.read_text(encoding="utf-8").strip()
+            assert client.get("/runs", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+        db.close()
     def test_app_factory_registers_health_and_archive_upload_routes(self, tmp_path):
         """A temporary database can build the API, including multipart ZIP intake.
 
