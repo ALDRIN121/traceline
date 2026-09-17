@@ -116,6 +116,12 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         job = importer._queue(request.state.actor).get(job_id)
         return {"job_id": job.job_id, "status": job.status, "result": job.result, "error": job.error}
 
+    @router.get("/jobs/{job_id}")
+    def get_job(job_id: str, request: Request):
+        """Read one workspace-scoped workflow job without exposing its command."""
+        job = worker.queue(request.state.actor).get(job_id)
+        return {"job_id": job.job_id, "status": job.status, "result": job.result, "error": job.error}
+
     @router.post("/import-jobs/{job_id}/drain")
     def drain_import_job(job_id: str, request: Request):
         """Worker dispatch boundary; leases exactly the requested durable job."""

@@ -416,7 +416,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     db_path = args.db or settings.db_path
     store = _open_store(db_path)
-    app = create_app(storage=store, workspace_id=args.workspace)
+    app = create_app(storage=store, workspace_id=args.workspace, release_mode=True)
     print(f"serve: starting on http://{args.host}:{args.port} (db {db_path})")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return EXIT_OK

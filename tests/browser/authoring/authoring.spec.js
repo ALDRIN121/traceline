@@ -3,7 +3,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 
 const authoringPage = pathToFileURL(path.resolve(__dirname, "../../../web/index.html")).href;
-const legacyFileOriginApiFailure = /^Fetch API cannot load file:\/\/(?:\/health|\/api\/evals|\/runs\?limit=500)\. URL scheme "file" is not supported\.$/;
+const legacyFileOriginApiFailure = /^Fetch API cannot load file:\/\/(?:\/health|\/api\/evals|\/runs\?limit=500|\/api\/projects\/project-a\/knowledge)\. URL scheme "file" is not supported\.$/;
 
 function expectOnlyKnownFileOriginErrors(errors) {
   expect(errors.every((message) => legacyFileOriginApiFailure.test(message))).toBe(true);
@@ -35,13 +35,34 @@ test("authoring workspace retains a draft locally when the page reloads", async 
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  await page.goto(authoringPage);
+  await page.goto(`${authoringPage}?project_id=project-a`);
   await page.getByRole("tab", { name: "Metrics" }).click();
   await page.getByRole("checkbox", { name: /Response is valid/i }).check();
   await page.reload();
   await page.getByRole("tab", { name: "Metrics" }).click();
   await expect(page.getByRole("checkbox", { name: /Response is valid/i })).toBeChecked();
   expectOnlyKnownFileOriginErrors(errors);
+});
+
+test("authoring workspace does not share drafts between projects or persist an unscoped draft", async ({ page }) => {
+  await page.goto(`${authoringPage}?project_id=project-a`);
+  await page.getByRole("tab", { name: "Metrics" }).click();
+  await page.getByRole("checkbox", { name: /Response is valid/i }).check();
+
+  await page.goto(`${authoringPage}?project_id=project-b`);
+  await page.getByRole("tab", { name: "Metrics" }).click();
+  await expect(page.getByRole("checkbox", { name: /Response is valid/i })).not.toBeChecked();
+
+  await page.goto(`${authoringPage}?project_id=project-a`);
+  await page.getByRole("tab", { name: "Metrics" }).click();
+  await expect(page.getByRole("checkbox", { name: /Response is valid/i })).toBeChecked();
+
+  await page.goto(authoringPage);
+  await page.getByRole("tab", { name: "Metrics" }).click();
+  await page.getByRole("checkbox", { name: /Response is valid/i }).check();
+  await page.reload();
+  await page.getByRole("tab", { name: "Metrics" }).click();
+  await expect(page.getByRole("checkbox", { name: /Response is valid/i })).not.toBeChecked();
 });
 
 test("authoring workspace names the missing project context before source import", async ({ page }) => {
@@ -120,6 +141,55 @@ test("authoring workspace queues an explicit Git import with keyboard activation
 
   await expect(page.getByText("Import queued. Worker job import-job-7 must finish before a report can load.")).toBeVisible();
   await expect(page.getByText("Import queued — report pending")).toBeVisible();
+});
+
+test("authoring workspace polls an import job and loads its completed report", async ({ page }) => {
+  await page.addInitScript(() => {
+    let polls = 0;
+    window.fetch = async (input) => {
+      const path = String(input);
+      const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      if (path === "/api/projects/project-a/imports") return json({ state: "queued", job_id: "import-job-7" });
+      if (path === "/api/jobs/import-job-7") return json({ job_id: "import-job-7", status: ++polls === 1 ? "leased" : "completed" });
+      if (path === "/api/projects/project-a/knowledge") return json({ report_id: "knowledge-a", revision: 2, source_version_id: "source-a", facts: [], pending_questions: [] });
+      return json({ error: { code: "not_found", message: "not found" } }, 404);
+    };
+  });
+  await page.goto(`${authoringPage}?project_id=project-a`);
+  await page.getByLabel("HTTPS Git URL").fill("https://example.com/support-agent.git");
+  await page.getByLabel("Git ref").fill("main");
+  await page.getByRole("button", { name: "Queue source import" }).click();
+
+  await expect(page.getByText("Report revision 2")).toBeVisible({ timeout: 4_000 });
+  await expect(page.locator("#source-import-status")).toHaveText("Import completed. Loading the new project report…");
+});
+
+test("authoring workspace refreshes the session revision only after its job completes", async ({ page }) => {
+  await page.addInitScript(() => {
+    let polls = 0;
+    window.fetch = async (input, init = {}) => {
+      const path = String(input);
+      const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      if (path === "/api/sessions/session-a") return json({ session_id: "session-a", project_id: "project-a", revision: polls >= 2 ? 2 : 1 });
+      if (path === "/api/projects/project-a/knowledge") return json({ report_id: "knowledge-a", revision: 1, source_version_id: "source-a", facts: [], pending_questions: [] });
+      if (path === "/api/sessions/session-a/turns") {
+        window.__turn = JSON.parse(init.body);
+        return json({ state: "queued", job_id: "turn-job-1" });
+      }
+      if (path === "/api/jobs/turn-job-1") return json({ job_id: "turn-job-1", status: ++polls === 1 ? "leased" : "completed" });
+      return json({ error: { code: "not_found", message: "not found" } }, 404);
+    };
+  });
+  await page.goto(`${authoringPage}?session_id=session-a`);
+  await expect(page.getByText("Resumed session · revision 1")).toBeVisible();
+  await page.getByLabel("Authoring note").fill("Add a required tool metric");
+  await page.getByRole("button", { name: "Send note" }).click();
+
+  await expect.poll(() => page.evaluate(() => window.__turn.expected_revision)).toBe(1);
+  await expect(page.getByRole("button", { name: "Send note" })).toBeDisabled();
+  await expect(page.getByText("Resumed session · revision 2")).toBeVisible({ timeout: 4_000 });
+  await expect(page.getByRole("button", { name: "Send note" })).toBeEnabled();
+  await expect(page.getByText("Authoring note completed. Session revision 2 is now current.")).toBeVisible();
 });
 
 test("authoring workspace keeps source controls reachable at a narrow viewport", async ({ page }) => {

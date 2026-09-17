@@ -59,14 +59,25 @@ _load_dotenv()
 class ModelConfig:
     """Outbound model access for the harness and judges (ModelGateway)."""
 
-    provider: str = "deepseek"
-    base_url: str = field(default_factory=lambda: _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
-    api_key: str = field(default_factory=lambda: _env("DEEPSEEK_API_KEY", ""))
-    model: str = field(default_factory=lambda: _env("DEEPSEEK_MODEL", "deepseek-v4-flash"))
+    # Generic profile variables are the release interface. The DEEPSEEK names
+    # remain aliases so existing self-hosted installs do not silently change.
+    provider: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_MODEL_PROVIDER", "deepseek"))
+    base_url: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_MODEL_BASE_URL", _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com")))
+    api_key: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_MODEL_API_KEY", _env("DEEPSEEK_API_KEY", "")))
+    model: str = field(default_factory=lambda: _env("LLM_AGENT_EVAL_MODEL", _env("DEEPSEEK_MODEL", "deepseek-v4-flash")))
+    #: LiteLLM uses this for Azure deployments and compatible gateways.  It is
+    #: deliberately optional because most providers do not accept it.
+    api_version: str | None = field(default_factory=lambda: os.environ.get("LLM_AGENT_EVAL_MODEL_API_VERSION"))
+    #: Local endpoints (for example Ollama) must opt in to keyless operation.
+    allow_keyless: bool = field(default_factory=lambda: _env("LLM_AGENT_EVAL_MODEL_ALLOW_KEYLESS", "false").lower() == "true")
 
     @property
     def has_key(self) -> bool:
         return bool(self.api_key) and not self.api_key.startswith("sk-your-")
+
+    @property
+    def can_authenticate(self) -> bool:
+        return self.has_key or self.allow_keyless
 
 
 @dataclass(frozen=True)

@@ -305,3 +305,36 @@ def test_litellm_gateway_offline_without_key():
     gateway = LiteLLMGateway(ModelConfig(api_key=""))
     with pytest.raises(GatewayError, match="API key"):
         gateway.chat([{"role": "user", "content": "hi"}])
+
+
+def test_litellm_gateway_uses_profile_endpoint_api_version_and_schema():
+    captured = {}
+
+    def completion(**kwargs):
+        captured.update(kwargs)
+        return _LiteLLMResponse('{"ok": true}', model="azure/deployment")
+
+    gateway = LiteLLMGateway(
+        ModelConfig(provider="azure", model="azure/deployment", api_key="secret", base_url="https://azure.example", api_version="2025-01-01"),
+        completion=completion,
+    )
+    assert gateway.chat_json([], {"type": "object", "properties": {"ok": {"type": "boolean"}}}) == {"ok": True}
+    assert captured["api_base"] == "https://azure.example"
+    assert captured["api_version"] == "2025-01-01"
+    assert captured["response_format"]["type"] == "json_schema"
+
+
+def test_litellm_gateway_allows_keyless_local_profiles():
+    captured = {}
+
+    def completion(**kwargs):
+        captured.update(kwargs)
+        return _LiteLLMResponse("pong", model="ollama/llama3")
+
+    gateway = LiteLLMGateway(
+        ModelConfig(provider="ollama", model="ollama/llama3", base_url="http://127.0.0.1:11434", allow_keyless=True),
+        completion=completion,
+    )
+    assert gateway.chat([]).content == "pong"
+    assert captured["api_base"] == "http://127.0.0.1:11434"
+    assert "api_key" not in captured

@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address
 from urllib.parse import urlparse
 import socket
 
 from ..contracts import WorkflowError
 
-PROTECTED = (
-    ip_network("127.0.0.0/8"),
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("169.254.0.0/16"),
-    ip_network("::1/128"),
-    ip_network("fc00::/7"),
-)
+# Only globally-routable unicast addresses are valid production targets.  This
+# deliberately covers unspecified, loopback, link-local, multicast, reserved,
+# documentation, IPv4-mapped loopback, and private ranges without relying on
+# an incomplete denylist.
 
 
 class PolicyDenied(WorkflowError):
@@ -33,6 +28,8 @@ class EndpointPolicy:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise PolicyDenied("disallowed_destination", "Only http and https targets are supported")
+        if parsed.username is not None or parsed.password is not None:
+            raise PolicyDenied("disallowed_destination", "Target URL must not contain credentials")
         if not parsed.hostname:
             raise PolicyDenied("disallowed_destination", "Target URL is missing a host")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -52,7 +49,7 @@ class EndpointPolicy:
             raise PolicyDenied("dns_failure", "Target hostname could not be resolved")
         for address in addresses:
             parsed_ip = ip_address(address.split("%", 1)[0])
-            if any(parsed_ip in network for network in PROTECTED):
+            if not parsed_ip.is_global:
                 raise PolicyDenied("dns_rebinding" if parsed.hostname != address else "disallowed_destination",
                                    "Target resolves to a protected destination")
         return {"pinned_host": parsed.hostname, "pinned_port": port, "scheme": parsed.scheme, "addresses": addresses}

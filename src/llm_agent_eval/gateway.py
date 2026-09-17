@@ -26,6 +26,7 @@ observes and meters those (§12A). Two surfaces are never conflated.
 from __future__ import annotations
 
 import json
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -33,6 +34,11 @@ from typing import Any, Callable
 import httpx
 
 from .config import ModelConfig
+
+# LiteLLM otherwise fetches its model-cost map remotely during import. The
+# engine's pricing must be versioned and local, and this project never phones
+# home from a self-hosted install.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
 __all__ = [
     "GatewayError",
@@ -313,15 +319,29 @@ class LiteLLMGateway(ModelGateway):
         return self._config.model
 
     def _complete(self, messages, *, json_mode: bool):
-        if not self._config.has_key:
+        if not self._config.can_authenticate:
             raise GatewayError("no API key configured — the gateway is offline")
         completion = self._completion
         if completion is None:
             import litellm
+            litellm.telemetry = False
             completion = litellm.completion
-        body: dict[str, Any] = {"model": self._config.model, "messages": messages, "api_key": self._config.api_key}
+        body: dict[str, Any] = {"model": self._config.model, "messages": messages}
+        if self._config.has_key:
+            body["api_key"] = self._config.api_key
+        if self._config.base_url:
+            body["api_base"] = self._config.base_url
+        if self._config.api_version:
+            body["api_version"] = self._config.api_version
         if json_mode:
-            body["response_format"] = {"type": "json_object"}
+            body["response_format"] = (
+                {"type": "json_object"}
+                if self._json_schema_hint is None
+                else {
+                    "type": "json_schema",
+                    "json_schema": {"name": "structured_response", "schema": self._json_schema_hint, "strict": True},
+                }
+            )
         try:
             response = completion(**body)
         except GatewayError:
@@ -345,6 +365,7 @@ class LiteLLMGateway(ModelGateway):
         return GatewayResponse(content, model or self.model, input_tokens, output_tokens)
 
     def chat_json(self, messages, json_schema_hint=None) -> dict[str, Any]:
+        self._json_schema_hint = json_schema_hint
         content, _, _, _ = self._usage(self._complete(messages, json_mode=True))
         try:
             parsed = json.loads(content)

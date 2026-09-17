@@ -433,6 +433,17 @@ class TestFreshProcessPerCase:
             assert payload["leak_len"] == 1, "agent state leaked between cases"
             assert payload["case_id"] == case.case_id
 
+    def test_case_identifier_cannot_escape_its_generated_attempt_directory(self, engine):
+        project = make_evaluable_project(engine)
+        spec = make_spec(n_cases=1)
+        spec["cases"][0]["case_id"] = "../../outside"
+        run = create_run(engine, project, spec=spec)
+        result = run_with_env(engine, run.run_id, {})
+        assert result.case_results[0].status == "completed"
+        run_root = engine.work_root / "runs" / run.run_id
+        assert all(path.resolve().is_relative_to(run_root.resolve()) for path in run_root.rglob("*"))
+        assert not (engine.work_root / "outside").exists()
+
 
 class TestRepeatsAndRetries:
     def _run(self, engine, project, *, repeats=1, retry_max=0, extra_env=None,
