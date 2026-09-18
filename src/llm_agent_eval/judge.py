@@ -34,6 +34,7 @@ __all__ = [
     "JudgeVerdict",
     "JudgeEvaluator",
     "NoopJudge",
+    "UnconfiguredJudge",
     "ScriptedJudge",
     "JudgeReadiness",
     "JudgeReadinessRegistry",
@@ -112,11 +113,26 @@ class JudgeEvaluator(ABC):
         as evidence refs. Raises JudgmentError on contract violations."""
 
 
+class UnconfiguredJudge(JudgeEvaluator):
+    """Fail-closed production default: missing configuration is not a score."""
+
+    def __init__(self, binding: JudgeBinding):
+        self._binding = binding
+
+    @property
+    def binding(self) -> JudgeBinding:
+        return self._binding
+
+    def evaluate(self, metric: Metric, case: TestCase, evidence: tuple[str, ...]) -> JudgeVerdict:
+        raise JudgmentError("judge model profile, immutable rubric and attempt evidence must be configured")
+
+
 class NoopJudge(JudgeEvaluator):
-    """The provisional no-op judge: deterministic, no model, no network, no
-    randomness. Returns a fixed score (default 0.5, the midpoint of [0, 1])
-    with an UNCALIBRATED badge. This is the shipped behavior until a provider
-    is wired — every score it produces is provisional by construction."""
+    """Explicit test-only fixture. Never select this as a production default.
+
+    Returns a fixed score without invoking a model; retained solely for older
+    deterministic evaluator tests.
+    """
 
     def __init__(
         self,

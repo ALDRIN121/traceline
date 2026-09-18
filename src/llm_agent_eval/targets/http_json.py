@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import math
 from typing import Any
 
 import httpx
 
 from ..contracts import CancellationResult, InvocationResult, VerificationRecord, WorkflowError
 from .network_policy import EndpointPolicy, PolicyDenied
+from .transport import PinnedTransport
 
 GOLDEN_KEYS = frozenset({"expected", "gold", "label", "reference", "golden"})
 UNSUPPORTED_MODES = frozenset({"streaming", "stateful", "async", "session"})
@@ -104,7 +107,13 @@ class HttpJsonAdapter:
         if stored.get("addresses") and pin.get("addresses") and set(stored["addresses"]) != set(pin["addresses"]):
             return InvocationResult(outcome="dns_rebinding", output=None, capabilities=capabilities,
                                     remote_uncertainty="blocked")
-        timeout = float(target.get("timeout_seconds") or 5)
+        try:
+            timeout = float(target.get("timeout_seconds", 5))
+            limit = target.get("max_response_bytes", MAX_RESPONSE_BYTES)
+            if not math.isfinite(timeout) or timeout <= 0 or type(limit) is not int or not 0 < limit <= MAX_RESPONSE_BYTES:
+                raise ValueError("invalid HTTP limits")
+        except (TypeError, ValueError):
+            return InvocationResult(outcome="invalid_limits", output=None, capabilities=capabilities)
         mapping = target.get("request_mapping") or {}
         try:
             body = apply_request_mapping(case_input, mapping) if mapping else (
@@ -112,8 +121,12 @@ class HttpJsonAdapter:
             )
         except WorkflowError:
             return InvocationResult(outcome="mapping_error", output=None, capabilities=capabilities)
-        headers = {"Content-Type": "application/json"}
+        # Identity encoding avoids an unbounded decompressor allocation before
+        # the decoded-byte limit can be checked. Noncompliant servers fail closed.
+        headers = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
         auth = target.get("auth") or {"type": "none"}
+        if auth.get("type", "none") != "none" and pin["scheme"] != "https":
+            return InvocationResult(outcome="https_required", output=None, capabilities=capabilities)
         header_name = (auth.get("header") or "X-API-Key")
         if header_name.lower() in FORBIDDEN_HEADERS:
             return InvocationResult(outcome="auth_denied", output=None, capabilities=capabilities)
@@ -122,23 +135,29 @@ class HttpJsonAdapter:
         elif auth.get("type") == "api_key":
             headers[header_name] = execution_context.get("secret") or ""
         try:
-            with httpx.Client(follow_redirects=False, timeout=timeout, verify=True) as client:
-                response = client.request(target.get("method") or "POST", target["url"], json=body, headers=headers)
+            with httpx.Client(transport=PinnedTransport(pin), follow_redirects=False,
+                              timeout=timeout, verify=True, trust_env=False) as client:
+                with client.stream(target.get("method") or "POST", target["url"], json=body, headers=headers) as response:
+                    if 300 <= response.status_code < 400:
+                        return InvocationResult(outcome="redirect_blocked", output=None, capabilities=capabilities,
+                                                remote_uncertainty="redirect")
+                    if response.status_code in {401, 403}:
+                        return InvocationResult(outcome="auth_denied", output=None, capabilities=capabilities)
+                    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        return InvocationResult(outcome="unsupported_content_encoding", output=None, capabilities=capabilities)
+                    content = bytearray()
+                    for chunk in response.iter_raw():
+                        if len(chunk) > limit - len(content):
+                            return InvocationResult(outcome="oversized_response", output=None, capabilities=capabilities)
+                        content.extend(chunk)
         except httpx.TimeoutException:
             return InvocationResult(outcome="timeout", output=None, capabilities=capabilities,
                                     remote_uncertainty="timeout_after_possible_action")
         except httpx.HTTPError:
             return InvocationResult(outcome="transport_error", output=None, capabilities=capabilities,
                                     remote_uncertainty="transport")
-        if 300 <= response.status_code < 400:
-            return InvocationResult(outcome="redirect_blocked", output=None, capabilities=capabilities,
-                                    remote_uncertainty="redirect")
-        if response.status_code in {401, 403}:
-            return InvocationResult(outcome="auth_denied", output=None, capabilities=capabilities)
-        if len(response.content) > int(target.get("max_response_bytes") or MAX_RESPONSE_BYTES):
-            return InvocationResult(outcome="oversized_response", output=None, capabilities=capabilities)
         try:
-            payload = response.json()
+            payload = json.loads(content)
         except ValueError:
             return InvocationResult(outcome="mapping_error", output=None, capabilities=capabilities)
         if response.status_code == 200 and isinstance(payload, dict) and payload.get("error"):

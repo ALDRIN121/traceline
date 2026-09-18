@@ -50,10 +50,25 @@ __all__ = [
 ]
 
 class GatewayError(Exception):
-    """A gateway call failed: unreachable provider, HTTP error, unparseable
-    response, or an unregistered mock handler. Never carries credentials and
-    never carries provider error bodies (providers may echo the key in auth
-    errors)."""
+    """Normalized provider failure; never include provider response bodies."""
+
+    def __init__(self, message: str, *, code: str = "provider_error"):
+        super().__init__(message)
+        self.code = code
+
+
+def _provider_error(exc: Exception) -> GatewayError:
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)) or name in {"Timeout", "APITimeoutError"}:
+        code = "timeout"
+    elif status in {401, 403} or name in {"AuthenticationError", "PermissionDeniedError"}:
+        code = "auth_denied"
+    elif status == 429 or name == "RateLimitError":
+        code = "rate_limited"
+    else:
+        code = "provider_error"
+    return GatewayError(f"provider request failed ({code})", code=code)
 
 
 @dataclass(frozen=True)
@@ -298,17 +313,30 @@ class MockGateway(ModelGateway):
 
 
 class LiteLLMGateway(ModelGateway):
-    """Platform model calls via the LiteLLM SDK — never LiteLLM Proxy server.
+    """Platform calls through LiteLLM SDK, with explicit immutable profile policy.
 
-    Sampling parameters are never set. Structured JSON is requested when
-    json mode is true; the returned dict remains untrusted until the caller
-    validates it. ``completion`` is injectable for tests.
+    ModelConfig construction remains for development compatibility. Release
+    services should use from_profile, which resolves only the pinned secret
+    reference and never falls back to another model or retries silently.
     """
 
     def __init__(self, config: ModelConfig, *, completion=None, provider: str | None = None):
         self._config = config
         self._completion = completion
         self._provider = provider or config.provider
+        self._profile = None
+
+    @classmethod
+    def from_profile(cls, profile, *, resolve_secret, completion=None):
+        from .profiles import ModelProfile
+        profile = ModelProfile.model_validate(profile.model_dump())
+        secret = resolve_secret(profile.secret_ref) if profile.secret_ref else ""
+        gateway = cls(ModelConfig(provider=profile.provider, model=profile.model,
+                                  api_key=secret, base_url=profile.base_url or "",
+                                  api_version=profile.api_version, allow_keyless=profile.keyless),
+                      completion=completion)
+        gateway._profile = profile
+        return gateway
 
     @property
     def provider(self) -> str:
@@ -318,61 +346,80 @@ class LiteLLMGateway(ModelGateway):
     def model(self) -> str:
         return self._config.model
 
-    def _complete(self, messages, *, json_mode: bool):
+    def _complete(self, messages, *, json_mode: bool, json_schema_hint=None):
         if not self._config.can_authenticate:
-            raise GatewayError("no API key configured — the gateway is offline")
+            raise GatewayError("no API key configured — the gateway is offline", code="auth_denied")
+        profile = self._profile
+        if json_mode and profile and profile.structured_output == "none":
+            raise GatewayError("profile does not support structured output", code="unsupported_capability")
         completion = self._completion
         if completion is None:
             import litellm
             litellm.telemetry = False
             completion = litellm.completion
-        body: dict[str, Any] = {"model": self._config.model, "messages": messages}
+        body: dict[str, Any] = {
+            "model": profile.litellm_model if profile else self._config.model,
+            "messages": messages,
+            "timeout": profile.timeout_seconds if profile else 60,
+            "num_retries": 0,
+        }
         if self._config.has_key:
             body["api_key"] = self._config.api_key
+        elif profile and profile.keyless:
+            # Prevent provider SDKs from discovering a real ambient credential.
+            body["api_key"] = "eval-engine-keyless"
         if self._config.base_url:
             body["api_base"] = self._config.base_url
         if self._config.api_version:
             body["api_version"] = self._config.api_version
+        if profile:
+            body.update(profile.parameters)
         if json_mode:
+            schema_mode = json_schema_hint is not None and (not profile or profile.structured_output == "json_schema")
             body["response_format"] = (
-                {"type": "json_object"}
-                if self._json_schema_hint is None
-                else {
-                    "type": "json_schema",
-                    "json_schema": {"name": "structured_response", "schema": self._json_schema_hint, "strict": True},
-                }
+                {"type": "json_schema", "json_schema": {"name": "structured_response", "schema": json_schema_hint, "strict": True}}
+                if schema_mode else {"type": "json_object"}
             )
+            if json_schema_hint and not schema_mode:
+                body["messages"] = [*messages, {"role": "user", "content": "Return JSON matching this schema: " + json.dumps(json_schema_hint)}]
         try:
-            response = completion(**body)
+            return completion(**body)
         except GatewayError:
             raise
         except Exception as exc:
-            raise GatewayError(f"provider request failed ({exc.__class__.__name__})") from exc
-        return response
+            raise _provider_error(exc) from None
 
     @staticmethod
     def _usage(response) -> tuple[str, str, int, int]:
-        message = response.choices[0].message
-        content = getattr(message, "content", None) or ""
-        usage = getattr(response, "usage", None)
-        input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
-        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
-        model = getattr(response, "model", None) or ""
-        return content, str(model), input_tokens, output_tokens
+        try:
+            choice = response.choices[0]
+            message = choice.message
+            if getattr(message, "refusal", None) or getattr(choice, "finish_reason", None) == "content_filter":
+                raise GatewayError("provider refused the request", code="refusal")
+            content = getattr(message, "content", None)
+            if not isinstance(content, str):
+                raise ValueError("missing content")
+            usage = getattr(response, "usage", None)
+            counts = [getattr(usage, field, 0) or 0 for field in ("prompt_tokens", "completion_tokens")]
+            if any(type(value) is not int or value < 0 for value in counts):
+                raise ValueError("invalid usage")
+            return content, str(getattr(response, "model", None) or ""), counts[0], counts[1]
+        except GatewayError:
+            raise
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise GatewayError("provider response violates the completion contract", code="provider_error") from None
 
     def chat(self, messages, *, json_schema_hint=None) -> GatewayResponse:
         content, model, input_tokens, output_tokens = self._usage(self._complete(messages, json_mode=False))
         return GatewayResponse(content, model or self.model, input_tokens, output_tokens)
 
     def chat_json(self, messages, json_schema_hint=None) -> dict[str, Any]:
-        self._json_schema_hint = json_schema_hint
-        content, _, _, _ = self._usage(self._complete(messages, json_mode=True))
+        # Schema is call-local: concurrent harness/judge calls cannot exchange it.
+        content, _, _, _ = self._usage(self._complete(messages, json_mode=True, json_schema_hint=json_schema_hint))
         try:
-            parsed = json.loads(content)
-        except (TypeError, ValueError) as exc:
-            raise GatewayError("provider returned content that is not valid JSON") from exc
+            parsed = json.loads(content, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+        except (TypeError, ValueError):
+            raise GatewayError("provider returned content that is not valid JSON", code="malformed_json") from None
         if not isinstance(parsed, dict):
-            raise GatewayError(
-                f"provider returned a JSON {type(parsed).__name__}, expected an object"
-            )
+            raise GatewayError("provider returned JSON that is not an object", code="malformed_json")
         return parsed

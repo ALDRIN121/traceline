@@ -70,10 +70,12 @@ class SessionStore:
             if int(row["revision"]) != expected_revision:
                 raise RevisionConflict(int(row["revision"]))
             evaluation_version_id = fields.get("evaluation_version_id", row["evaluation_version_id"])
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE harness_sessions SET evaluation_version_id=?, revision=?, updated_at=? "
                 "WHERE workspace_id=? AND session_id=? AND revision=?",
                 (evaluation_version_id, expected_revision + 1, now,
                  actor.workspace_id, session_id, expected_revision),
             )
+            if updated.rowcount != 1:
+                raise RevisionConflict(expected_revision)
         return self.get(actor, session_id)

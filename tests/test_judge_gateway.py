@@ -15,7 +15,8 @@ import pytest
 
 from llm_agent_eval.gateway import GatewayError, MockGateway
 from llm_agent_eval.judge import JudgmentError, ReadinessState
-from llm_agent_eval.judge_gateway import GatewayJudge, JUDGE_OUTPUT_SCHEMA
+from llm_agent_eval.judge_gateway import GatewayJudge, JudgmentContext, JUDGE_OUTPUT_SCHEMA
+from llm_agent_eval.rubric_store import RubricContent
 # TestCase aliased so pytest does not attempt to collect the pydantic class.
 from llm_agent_eval.spec import Metric, TestCase as SpecTestCase
 
@@ -26,10 +27,21 @@ def make_gateway(json_handler, **gateway_kwargs):
     return MockGateway({"chat_json": json_handler}, **gateway_kwargs)
 
 
+RUBRIC = RubricContent(rubric_id="rubric_v1", instructions="Judge quality.", candidate_fields=["final_output"], evidence_ids=["evt_1", "evt_2", "evt_3"])
+
+
 def make_judge(json_handler=None, **judge_kwargs):
     handler = json_handler or (lambda m, h: {"score": 0.87, "justification": "good", "evidence_refs": []})
     gateway = make_gateway(handler, **BINDING_KWARGS)
-    return GatewayJudge(gateway, **judge_kwargs), gateway
+    kwargs = {
+        "rubric_resolver": lambda rubric_id: RUBRIC,
+        "context_resolver": lambda metric, case, evidence: JudgmentContext(
+            candidate_output="the candidate response",
+            evidence={"evt_1": "tool call", "evt_2": "provider reply", "evt_3": "final answer"},
+        ),
+    }
+    kwargs.update(judge_kwargs)
+    return GatewayJudge(gateway, **kwargs), gateway
 
 
 def make_metric(**overrides):
@@ -90,12 +102,12 @@ def test_non_model_gateway_rejected():
 
 def test_verdict_shape():
     judge, gateway = make_judge(
-        lambda m, h: {"score": 0.87, "justification": "good", "evidence_refs": ["evt_9"]}
+        lambda m, h: {"score": 0.87, "justification": "good", "evidence_refs": ["evt_1"]}
     )
     verdict = judge.evaluate(make_metric(), make_case(), ("evt_1", "evt_2"))
     assert verdict.score == 0.87
     assert verdict.justification == "good"
-    assert verdict.evidence_refs == ("evt_9",)
+    assert verdict.evidence_refs == ("evt_1",)
 
 
 def test_rubric_comes_from_the_metric():
@@ -116,7 +128,10 @@ def test_evidence_is_the_cases_matched_events():
     judge.evaluate(make_metric(), make_case(), ("evt_1", "evt_2", "evt_3"))
     unit = json.loads(gateway.calls[0][1][1]["content"])
     assert unit["evidence_refs"] == ["evt_1", "evt_2", "evt_3"]
-    assert unit["content"]["input"] == {"order_id": "123"}
+    assert json.loads(unit["content"]["input"]["text"]) == {"order_id": "123"}
+    assert unit["rubric"]["instructions"] == "Judge quality."
+    assert json.loads(unit["candidate_output"]["text"]) == "the candidate response"
+    assert json.loads(unit["evidence"]["evt_1"]["text"]) == "tool call"
 
 
 def test_out_of_scale_score_raises_never_coerced():
@@ -148,11 +163,10 @@ def test_missing_fields_rejected():
         judge.evaluate(make_metric(), make_case(), ())
 
 
-def test_empty_model_evidence_falls_back_to_case_evidence():
-    # The model returned no refs — the case's matched events must not vanish.
+def test_empty_model_evidence_does_not_fabricate_citations():
     judge, _ = make_judge(lambda m, h: {"score": 0.6, "justification": "x", "evidence_refs": []})
     verdict = judge.evaluate(make_metric(), make_case(), ("evt_1", "evt_2"))
-    assert verdict.evidence_refs == ("evt_1", "evt_2")
+    assert verdict.evidence_refs == ()
 
 
 def test_gateway_failure_is_judgment_error():

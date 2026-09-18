@@ -39,15 +39,39 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-    environment:
+    environment: &engine-environment
       DATABASE_URL: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
       LLM_AGENT_EVAL_DB: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
       LLM_AGENT_EVAL_ARTIFACT_ROOT: "/var/lib/llm-agent-eval"
+      LLM_AGENT_EVAL_MODEL_PROVIDER: ${LLM_AGENT_EVAL_MODEL_PROVIDER:-deepseek}
+      LLM_AGENT_EVAL_MODEL_BASE_URL: ${LLM_AGENT_EVAL_MODEL_BASE_URL:-https://api.deepseek.com}
+      LLM_AGENT_EVAL_MODEL: ${LLM_AGENT_EVAL_MODEL:-deepseek-v4-flash}
+      LLM_AGENT_EVAL_MODEL_API_KEY: ${LLM_AGENT_EVAL_MODEL_API_KEY:-}
+      LLM_AGENT_EVAL_MODEL_API_VERSION: ${LLM_AGENT_EVAL_MODEL_API_VERSION:-}
+      LLM_AGENT_EVAL_MODEL_ALLOW_KEYLESS: ${LLM_AGENT_EVAL_MODEL_ALLOW_KEYLESS:-false}
       PYTHONUNBUFFERED: "1"
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
     volumes:
+      - eval_artifacts:/var/lib/llm-agent-eval
+
+  # Workflow jobs only. This image has no Podman socket or agent execution path;
+  # enabling sandbox evaluation needs a separately constrained runtime topology.
+  eval-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["eval-engine", "worker"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    environment: *engine-environment
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      # Artifacts, fingerprint/secret keys, and future install CA survive restarts.
       - eval_artifacts:/var/lib/llm-agent-eval
 
 volumes:

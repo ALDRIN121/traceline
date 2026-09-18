@@ -34,7 +34,14 @@ class AuthoringService:
         self.storage, self.gateway = storage, gateway
 
     def execute(self, actor: Actor, command: dict) -> dict:
+        return self.publish(actor, command, self.prepare(actor, command))
+
+    def prepare(self, actor: Actor, command: dict) -> dict:
+        """Call the provider outside publication transactions; bind to read revision."""
         session = SessionStore(self.storage).get(actor, command["session_id"])
+        if session["revision"] != command["expected_revision"]:
+            from .contracts import RevisionConflict
+            raise RevisionConflict(session["revision"])
         versions = VersionStore(self.storage)
         current = versions.get(session["evaluation_version_id"], actor)
         spec = dict(current.content["spec"])
@@ -84,22 +91,41 @@ class AuthoringService:
                 "proposal": {},
             }
 
-        listing = versions.list("evaluation", session["evaluation_id"], actor)
-        record = versions.create(
-            "evaluation", session["evaluation_id"],
-            {"spec": validated.model_dump(mode="json")}, listing["active_revision"], actor,
-        )
-        SessionStore(self.storage).advance(
-            actor, session["session_id"], command["expected_revision"],
-            evaluation_version_id=record.version_id,
-        )
+        return {
+            "evaluation_id": session["evaluation_id"],
+            "evaluation_version_id": prior_version_id,
+            "base_revision": current.revision,
+            "state": "prepared",
+            "spec": validated.model_dump(mode="json"),
+            "proposal": proposal.model_dump(),
+            "repairs": repairs,
+        }
+
+    def publish(self, actor: Actor, command: dict, prepared: dict) -> dict:
+        if prepared["state"] != "prepared":
+            return prepared
+        versions = VersionStore(self.storage)
+        with self.storage.workspace_transaction(actor.workspace_id):
+            session = SessionStore(self.storage).get(actor, command["session_id"])
+            if (session["revision"] != command["expected_revision"]
+                    or session["evaluation_version_id"] != prepared["evaluation_version_id"]):
+                from .contracts import RevisionConflict
+                raise RevisionConflict(session["revision"])
+            record = versions.create(
+                "evaluation", session["evaluation_id"], {"spec": prepared["spec"]},
+                prepared["base_revision"], actor,
+            )
+            SessionStore(self.storage).advance(
+                actor, session["session_id"], command["expected_revision"],
+                evaluation_version_id=record.version_id,
+            )
         return {
             "evaluation_id": session["evaluation_id"],
             "evaluation_version_id": record.version_id,
             "state": "validated",
             "verification_id": None,
-            "proposal": proposal.model_dump(),
-            "repairs": repairs,
+            "proposal": prepared["proposal"],
+            "repairs": prepared["repairs"],
         }
 
 

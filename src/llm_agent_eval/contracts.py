@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-VersionKind = Literal["source", "knowledge", "evaluation", "dataset", "target", "connection", "dashboard"]
-VERSION_KINDS = frozenset(("source", "knowledge", "evaluation", "dataset", "target", "connection", "dashboard"))
+VersionKind = Literal["source", "knowledge", "evaluation", "dataset", "target", "connection", "dashboard", "model_profile", "model_selection", "judge_rubric"]
+VERSION_KINDS = frozenset(("source", "knowledge", "evaluation", "dataset", "target", "connection", "dashboard", "model_profile", "model_selection", "judge_rubric"))
 
 
 class WorkflowError(Exception):

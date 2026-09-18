@@ -463,6 +463,9 @@ def create_app(
     app.state.import_service = router.import_service
     app.state.workflow_worker = router.worker
     app.state.workflow_actor = Actor("local-owner", ws, "owner")
+    if release_mode:
+        router.routes[:] = [route for route in router.routes
+                            if getattr(route, "path", None) != "/api/import-jobs/{job_id}/drain"]
     app.include_router(router)
 
     @app.exception_handler(RequestValidationError)
@@ -1401,6 +1404,21 @@ def create_app(
                 "verification_message": (result.project_data or {}).get("verification_message"),
             }
         return payload
+
+    if release_mode:
+        # Prototype mutations accept mutable paths/commands or execute inside
+        # API threads. They are not release entrypoints, including /drain.
+        legacy_mutations = {
+            "/api/projects/analyze", "/api/projects/upload", "/api/harness/chat",
+            "/api/harness/author", "/api/runs/sample", "/api/evals/{eval_id}/run",
+            "/runs", "/runs/{run_id}/start", "/runs/{run_id}/resume",
+            "/api/import-jobs/{job_id}/drain",
+        }
+        app.router.routes[:] = [
+            route for route in app.router.routes
+            if not (getattr(route, "path", None) in legacy_mutations
+                    and "POST" in getattr(route, "methods", set()))
+        ]
 
     # The dashboard UI is a static single-page app; mount it only when
     # present — the backend is fully usable headless (the API is the contract).

@@ -80,9 +80,19 @@ class TurnRequest(BaseModel):
     card_action: dict[str, Any] | None = None
 
 
+#: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
+#: the generic route must never publish attacker-shaped JSON for them.
+PROTECTED_VERSION_KINDS = frozenset({"model_profile", "model_selection", "judge_rubric"})
+
+
 def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> APIRouter:
     router = APIRouter(prefix="/api")
-    worker = WorkflowWorker(store(), artifact_root, gateway)
+    from pathlib import Path
+    from .install_state import load_fingerprint_key
+    worker = WorkflowWorker(
+        store(), artifact_root, gateway,
+        fingerprint_key_source=lambda: load_fingerprint_key(Path(artifact_root) / "install-fingerprint.key"),
+    )
     importer = worker.importer
     knowledge = KnowledgeStore(store(), artifact_root)
     datasets = DatasetService(store(), artifact_root)
@@ -226,6 +236,11 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
 
     @router.post("/objects/{kind}/{parent_id}/versions", status_code=201)
     def create_version(kind: str, parent_id: str, body: VersionRequest, request: Request):
+        if kind in PROTECTED_VERSION_KINDS:
+            raise WorkflowError(
+                "This version kind requires its dedicated validated creation path",
+                code="protected_version_kind",
+            )
         version = VersionStore(store()).create(kind, parent_id, body.content, body.expected_revision, request.state.actor)
         return {"state": "draft", "version": asdict(version)}
 

@@ -289,3 +289,88 @@ observation, not a containment certification.
   preflight. A ready result does not start an agent runtime or prove
   containment; prototype API development remains separately documented in
   `README.md`.
+
+## Release blockers 1–5 (2026-09-17/18 branch work)
+
+**Status:** partial, implemented and unit-verified on `feat/release-blockers`;
+this is component evidence, not a completed release path. Nothing here is
+merged or released, and the end-to-end acceptance item (blocker 10) remains
+open.
+
+- **Sandbox (blocker 1).** `src/llm_agent_eval/runtime/sandbox.py` builds a
+  per-case rootless Podman command vector: digest-pinned image, `--pull=never`,
+  `--network=none`, read-only root, dropped capabilities, no-new-privileges,
+  empty environment, bounded tmpfs output, read-only bind mounts of
+  engine-owned staging copies, digest re-verification, and exists-then-remove
+  cleanup. Evidence: `tests/runtime/test_sandbox.py` (policy/argument-vector and
+  fail-closed tests) passes. A manual synthetic smoke on Podman 6.1.1 ran
+  two cases from the locally installed Alpine image ID: both returned
+  `completed`, produced the expected `result.json`, used distinct container
+  names, and reported cleanup `complete`. This proves that narrow offline
+  path on this host, not adversarial containment or platform portability.
+  **Not yet proven:** any proxy-only egress topology — `SandboxRequest`
+  still rejects every `egress` value except `none`.
+- **Recording egress proxy (blocker 2).** `src/llm_agent_eval/egress/` provides
+  the per-install interception CA (0600 persistence, repository-parent guard,
+  self-signature verification, short-lived per-host leaves) and a
+  metadata-only recording forwarder with dummy→real credential substitution,
+  observed-usage metering, and worst-case budget reservation. Evidence:
+  `tests/test_egress_foundations.py` with injected synthetic transport responses;
+  no network listener or live provider call was exercised. **Not yet built:** the
+  network listener/topology that makes the proxy the sandbox's sole route, CA
+  trust injection into a real container, and live TLS interception. Until that
+  exists, the sole-egress invariant is unverified.
+- **Durable worker (blocker 3).** Continuous claims, heartbeat leases,
+  cancellation, stale-worker fencing, and fenced publication are implemented in
+  `worker_service.py`/`jobs.py` with a `worker` CLI subcommand and
+  `eval-engine worker` Compose service. Evidence:
+  `tests/workflow/test_worker_service.py` plus `tests/test_worker_cli.py` pass.
+  The PostgreSQL recovery integration suite
+  (`tests/integration/test_worker_recovery.py`) requires an explicit disposable
+  `TEST_DATABASE_URL` and **skipped in all observed runs** — it is not credited
+  as execution evidence. The recovery test simulates lease expiry with an
+  injected clock on one process; it does not kill and restart a real worker
+  process.
+- **Outbound HTTP/SSRF hardening (blocker 4).** DNS-pinned connect with the
+  original TLS hostname, streamed bounded bodies, no ambient proxies, HTTPS for
+  auth-bearing requests. Evidence: `tests/workflow/test_pinned_http.py`.
+- **AEAD secret encryption (blocker 5).** Versioned AES-GCM envelopes bound to
+  workspace/secret identity via AAD, legacy decode-only migration gated on
+  process service identity, persisted random install/fingerprint keys with
+  `0600` enforcement. Evidence: `tests/workflow/test_secrets.py`.
+  `cryptography` is declared in `pyproject.toml` and pinned in both regenerated
+  lockfiles; the clean-install smoke passes.
+- **Model profiles and judges (blockers 6/7).** `profiles.py`,
+  `rubric_store.py`, `judge_gateway.py` add provider profiles, immutable
+  rubrics, and a gateway judge that validates evidence membership; the engine's
+  default judge is now fail-closed (`UnconfiguredJudge`) instead of the
+  deterministic fixture, so unconfigured judge metrics error rather than
+  fabricate scores. Evidence: `tests/test_profiles.py`, `tests/test_rubric_store.py`,
+  `tests/test_judge_gateway.py`, `tests/test_engine_judge_default.py`.
+  **Not yet wired:** no run path constructs `GatewayJudge` with real rubric/
+  context resolvers, or selects persisted profiles in release services.
+  Generic API writes for profile, selection and rubric kinds now return
+  `protected_version_kind` without publication; dedicated validated creation
+  endpoints remain to be added.
+- **Legacy path lockdown (blocker 8).** In release mode the API filters legacy
+  mutation routes (`/api/projects/analyze`, `/runs*` mutations, harness chat/
+  author, sample runs, eval runs, import drain). Evidence:
+  `tests/test_release_routes.py`.
+- **Deployment (blocker 9).** Compose gains a continuous `eval-worker` service
+  sharing the persistent artifact volume; CI gains fail-closed test, dependency
+  audit, and secret-scan jobs with a disposable PostgreSQL service. Evidence:
+  `tests/test_release_deployment.py` and `docker compose config` structure
+  checks with placeholder secrets. The CI workflow is not executed on GitHub,
+  and `compose up` was not run — neither is claimed.
+- **Suite state at recording time:** default suite **801 passed, 9 skipped,
+  4 deselected**; the 9 skips are PostgreSQL-dependent tests (no
+  `TEST_DATABASE_URL`/local server) and are not release evidence.
+
+**Remaining release gaps (all ten blockers re-checked 2026-09-18):** no
+`evaluation_run` worker handler or container-target admission (source versions
+stay `readiness="blocked"`; run creation still freezes host paths); no
+proxy listener, trust injection, or provider transport, so proxy-only egress is
+unproven; `GatewayJudge` has no run-path resolver wiring; the engine still runs
+agents as host subprocesses outside the workflow worker; end-to-end acceptance
+(upload → isolated execution → authoritative capture → scoring → restart
+recovery) has not been exercised even with synthetic fixtures.

@@ -427,6 +427,39 @@ def cmd_serve(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def cmd_worker(args: argparse.Namespace) -> int:
+    import signal
+    import threading
+    from .auth import Actor
+    from .gateway import LiteLLMGateway
+    from .install_state import load_fingerprint_key
+    from .worker import WorkflowWorker
+
+    root = Path(args.artifact_root or settings.artifact_root)
+    store = _open_store(args.db or settings.db_path)
+    gateway = LiteLLMGateway(settings.model)
+    stop = threading.Event()
+    previous = {}
+    try:
+        worker = WorkflowWorker(
+            store, root, gateway,
+            fingerprint_key_source=lambda: load_fingerprint_key(root / "install-fingerprint.key"),
+        )
+        actor = Actor("workflow-service", args.workspace, "owner")
+        if args.once:
+            worker.run_once(actor, stop_event=stop)
+        else:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                previous[sig] = signal.signal(sig, lambda *_: stop.set())
+            worker.run_forever(actor, stop_event=stop)
+        return EXIT_OK
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        gateway.close()
+        store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="eval-engine",
@@ -493,6 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8000)
     add_common(p)
     p.set_defaults(handler=cmd_serve)
+
+    p = sub.add_parser("worker", help="run the durable workflow worker service")
+    p.add_argument("--once", action="store_true", help="drain one eligible job and exit")
+    p.add_argument("--artifact-root", default=None, help="install state/artifact root")
+    add_common(p)
+    p.set_defaults(handler=cmd_worker)
 
     return parser
 

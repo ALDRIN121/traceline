@@ -18,6 +18,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "cel-python==0.5.0",
     "litellm>=1.63.0",
+    "cryptography>=44.0.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +40,7 @@ where = ["src"]
     "migrations/0003_source_imports.sql",
     "migrations/0004_datasets.sql",
     "migrations/0005_targets.sql",
+    "migrations/0006_model_profile_kinds.sql",
 ]
 "share/llm-agent-eval/skills/dashboard-authoring" = [
     "skills/dashboard-authoring/SKILL.md",

@@ -8,11 +8,6 @@ import socket
 
 from ..contracts import WorkflowError
 
-# Only globally-routable unicast addresses are valid production targets.  This
-# deliberately covers unspecified, loopback, link-local, multicast, reserved,
-# documentation, IPv4-mapped loopback, and private ranges without relying on
-# an incomplete denylist.
-
 
 class PolicyDenied(WorkflowError):
     def __init__(self, code: str, message: str):
@@ -25,31 +20,48 @@ class EndpointPolicy:
         self.resolver = resolver
 
     def authorize(self, url: str) -> dict:
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        except (ValueError, TypeError) as exc:
+            raise PolicyDenied("disallowed_destination", "Target URL is invalid") from exc
         if parsed.scheme not in {"http", "https"}:
             raise PolicyDenied("disallowed_destination", "Only http and https targets are supported")
         if parsed.username is not None or parsed.password is not None:
             raise PolicyDenied("disallowed_destination", "Target URL must not contain credentials")
-        if not parsed.hostname:
-            raise PolicyDenied("disallowed_destination", "Target URL is missing a host")
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        exact = f"{parsed.hostname}:{port}".lower()
-        if exact in self.allow_exact:
-            return {"pinned_host": parsed.hostname, "pinned_port": port, "scheme": parsed.scheme}
+        if not host or not 1 <= port <= 65535 or any(c in url for c in "\\\r\n\t") or "%" in host:
+            raise PolicyDenied("disallowed_destination", "Target host or port is invalid")
+        try:
+            host = host.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise PolicyDenied("disallowed_destination", "Target hostname is invalid") from exc
+        exact = f"{host}:{port}"
+        allowed = exact in self.allow_exact
         resolver = self.resolver or socket.getaddrinfo
         try:
-            records = resolver(parsed.hostname, port, type=socket.SOCK_STREAM)
+            records = resolver(host, port, type=socket.SOCK_STREAM)
         except OSError as exc:
             raise PolicyDenied("dns_failure", "Target hostname could not be resolved") from exc
         addresses = []
         for item in records:
-            sockaddr = item[4]
-            addresses.append(sockaddr[0])
+            address = item[4][0]
+            try:
+                if "%" in address:
+                    raise ValueError("scoped address")
+                parsed_ip = ip_address(address)
+            except ValueError as exc:
+                raise PolicyDenied("disallowed_destination", "Target resolved to an invalid address") from exc
+            # Mapped/scoped addresses are ambiguous across socket families;
+            # multicast is_global may be true, but it is never a HTTP target.
+            if parsed_ip.is_multicast or getattr(parsed_ip, "ipv4_mapped", None) is not None or (
+                not allowed and not parsed_ip.is_global
+            ):
+                raise PolicyDenied("dns_rebinding" if host != address else "disallowed_destination",
+                                   "Target resolves to a protected destination")
+            normalized = str(parsed_ip)
+            if normalized not in addresses:
+                addresses.append(normalized)
         if not addresses:
             raise PolicyDenied("dns_failure", "Target hostname could not be resolved")
-        for address in addresses:
-            parsed_ip = ip_address(address.split("%", 1)[0])
-            if not parsed_ip.is_global:
-                raise PolicyDenied("dns_rebinding" if parsed.hostname != address else "disallowed_destination",
-                                   "Target resolves to a protected destination")
-        return {"pinned_host": parsed.hostname, "pinned_port": port, "scheme": parsed.scheme, "addresses": addresses}
+        return {"pinned_host": host, "pinned_port": port, "scheme": parsed.scheme, "addresses": addresses}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -52,6 +53,13 @@ LeasedJob = JobRecord
 class StaleLease(WorkflowError):
     def __init__(self):
         super().__init__("Job lease is stale or no longer active", code="stale_lease", status=409)
+
+
+class WorkerCancelled(WorkflowError):
+    """A guarded worker publication observed a cancellation request."""
+
+    def __init__(self):
+        super().__init__("Job was cancelled during execution", code="job_cancelled", status=409)
 
 
 class JobQueue:
@@ -132,8 +140,9 @@ class JobQueue:
             return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, job_id)).fetchone())
 
     def _expire_and_cancel(self, conn: Any, now: str) -> None:
+        suffix = " FOR UPDATE SKIP LOCKED" if self.storage._is_postgres else ""
         rows = conn.execute(
-            "SELECT job_id,attempts,max_attempts,cancellation_requested FROM jobs WHERE workspace_id=? AND status='leased' AND lease_expires_at<=?",
+            "SELECT job_id,attempts,max_attempts,cancellation_requested FROM jobs WHERE workspace_id=? AND status='leased' AND lease_expires_at<=?" + suffix,
             (self.workspace_id, now),
         ).fetchall()
         for row in rows:
@@ -156,7 +165,8 @@ class JobQueue:
         with self.storage.workspace_transaction(self.workspace_id) as conn:
             self._expire_and_cancel(conn, now)
             row = conn.execute(
-                "SELECT * FROM jobs WHERE workspace_id=? AND status='queued' AND cancellation_requested=0 ORDER BY created_at,job_id LIMIT 1",
+                "SELECT * FROM jobs WHERE workspace_id=? AND status='queued' AND cancellation_requested=0 ORDER BY created_at,job_id LIMIT 1"
+                + (" FOR UPDATE SKIP LOCKED" if self.storage._is_postgres else ""),
                 (self.workspace_id,),
             ).fetchone()
             if row is None:
@@ -189,6 +199,78 @@ class JobQueue:
                 return None
             self._outbox(conn, job_id, "leased", now)
             return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?", (self.workspace_id, job_id)).fetchone())
+
+    def assert_active(self, lease: LeasedJob, conn=None, *, lock: bool = False) -> LeasedJob:
+        """Validate the fencing token before any worker-owned database effect."""
+        self.actor.require(write=True, workspace_id=self.workspace_id)
+        if conn is None:
+            with self.storage.workspace_transaction(self.workspace_id) as conn:
+                return self.assert_active(lease, conn, lock=lock)
+        suffix = " FOR UPDATE" if lock and self.storage._is_postgres else ""
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE workspace_id=? AND job_id=?" + suffix,
+            (self.workspace_id, lease.job_id),
+        ).fetchone()
+        if row is None:
+            raise StaleLease()
+        current = self._row(row)
+        if (current.status != "leased" or current.fence != lease.fence
+                or current.lease_worker_id != lease.lease_worker_id
+                or current.lease_expires_at <= self.clock()):
+            raise StaleLease()
+        if current.cancellation_requested:
+            raise WorkerCancelled()
+        return current
+
+    @contextmanager
+    def publication(self, lease: LeasedJob, *, completing: bool = False):
+        """Fence a short publication transaction; never hold across network IO.
+
+        The job row lock serializes cancellation/reclaim against publication on
+        PostgreSQL. A second check at commit rolls back writes if time expired.
+        """
+        with self.storage.workspace_transaction(self.workspace_id) as conn:
+            self.assert_active(lease, conn, lock=True)
+            yield conn
+            if completing:
+                current = self._row(conn.execute(
+                    "SELECT * FROM jobs WHERE workspace_id=? AND job_id=?",
+                    (self.workspace_id, lease.job_id),
+                ).fetchone())
+                if current.status != "completed" or current.fence != lease.fence:
+                    raise StaleLease()
+            else:
+                self.assert_active(lease, conn)
+
+    def acknowledge_cancel(self, job_id: str, fence: int) -> JobRecord:
+        self.actor.require(write=True)
+        now = self.clock()
+        with self.storage.workspace_transaction(self.workspace_id) as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET status='cancelled',lease_worker_id=NULL,lease_expires_at=NULL,updated_at=? "
+                "WHERE workspace_id=? AND job_id=? AND status='leased' AND fence=? AND cancellation_requested=1",
+                (now, self.workspace_id, job_id, fence),
+            )
+            if not updated.rowcount:
+                raise StaleLease()
+            self._outbox(conn, job_id, "cancelled", now)
+            return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?",
+                                         (self.workspace_id, job_id)).fetchone())
+
+    def abandon(self, job_id: str, fence: int) -> JobRecord:
+        """Stop dispatch without replaying an in-flight effect in this process."""
+        self.actor.require(write=True)
+        now = self.clock()
+        with self.storage.workspace_transaction(self.workspace_id) as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET lease_expires_at=?,updated_at=? WHERE workspace_id=? AND job_id=? "
+                "AND status='leased' AND fence=?",
+                (now, now, self.workspace_id, job_id, fence),
+            )
+            if not updated.rowcount:
+                raise StaleLease()
+            return self._row(conn.execute("SELECT * FROM jobs WHERE workspace_id=? AND job_id=?",
+                                         (self.workspace_id, job_id)).fetchone())
 
     def heartbeat(self, job_id: str, fence: int) -> LeasedJob:
         self.actor.require(write=True, workspace_id=self.workspace_id)
@@ -226,7 +308,7 @@ class JobQueue:
         safe = redact(error)
         with self.storage.workspace_transaction(self.workspace_id) as conn:
             updated = conn.execute(
-                "UPDATE jobs SET status='failed',error_json=?,result_redaction_json=?,lease_worker_id=NULL,lease_expires_at=NULL,updated_at=? WHERE workspace_id=? AND job_id=? AND status='leased' AND fence=? AND lease_expires_at>?",
+                "UPDATE jobs SET status='failed',error_json=?,result_redaction_json=?,lease_worker_id=NULL,lease_expires_at=NULL,updated_at=? WHERE workspace_id=? AND job_id=? AND status='leased' AND fence=? AND lease_expires_at>? AND cancellation_requested=0",
                 (_canonical(safe.content), _canonical(self._redaction_data(safe)), now, self.workspace_id, job_id, fence, now),
             )
             if not updated.rowcount:

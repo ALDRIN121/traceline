@@ -24,9 +24,9 @@ The engine is the single-threaded, deterministic driver. Its invariants:
 - **``on_missing`` / ``on_error`` are consumed from the spec**, never
   re-implemented here (the spec model enforces their presence).
 - **Judge metrics require an explicit ``JudgeEvaluator``** (via
-  ``judge_factory``; the shipped default is the deterministic NoopJudge —
-  usable-but-provisional, §15A.1). Judge bindings are verified against the
-  metric's declared binding (§15A.5).
+  ``judge_factory``; the default fails closed until configured). Configured
+  judge scores remain provisional (§15A.1). Judge bindings are verified against
+  the metric's declared binding (§15A.5).
 - **Redaction is verified at ingestion**: every ingested event must carry an
   explicit ``redaction_state`` (capture contract §12A.6) and must claim the
   run/case/attempt it is being ingested under — cross-case contamination is
@@ -60,7 +60,7 @@ from .evaluators import (
     gate_safe,
     score_attempt,
 )
-from .judge import JudgeBinding, JudgeEvaluator, NoopJudge
+from .judge import JudgeBinding, JudgeEvaluator, UnconfiguredJudge
 from .lifecycle import (
     AttemptStatus,
     RunCaseStatus,
@@ -185,10 +185,10 @@ class Engine:
         tiers: Any = None,
     ):
         self.storage = storage
-        # The shipped judge: deterministic, no model, no network — every score
-        # it produces is provisional (§15A.1, owner decision 4J).
+        # Missing judge configuration is an evaluator error, never a fabricated
+        # score. Callers must explicitly supply a configured judge factory.
         self.judge_factory = judge_factory if judge_factory is not None else (
-            lambda binding: NoopJudge(binding)
+            lambda binding: UnconfiguredJudge(binding)
         )
         root = Path(work_root) if work_root is not None else (
             Path(tempfile.gettempdir()) / "llm_agent_eval"
