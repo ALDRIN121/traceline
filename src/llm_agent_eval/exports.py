@@ -62,6 +62,25 @@ class ExportService:
             for case in self.storage.list_cases(run_id, workspace_id)
             if not case_filter or case.case_id in case_filter
         ]
+        case_metrics = [
+            {
+                "case_id": row.case_id,
+                "metric_id": row.metric_id,
+                "score_revision": row.score_revision,
+                "status": row.status,
+                "score": row.score,
+                "raw_value": row.raw_value,
+                "evidence_event_ids": list(row.evidence_event_ids),
+                "judge_binding": row.judge_binding,
+                "is_authoritative": row.is_authoritative,
+                "on_retry_override": row.on_retry_override,
+                "overridden": row.overridden,
+                "computed_at": row.computed_at,
+            }
+            for row in self.storage.get_case_scores(run_id=run_id, workspace_id=workspace_id)
+            if (not case_filter or row.case_id in case_filter)
+            and (not metric_filter or row.metric_id in metric_filter)
+        ]
         payload = {
             "schema_version": 1,
             "run": {
@@ -85,6 +104,7 @@ class ExportService:
             },
             "metrics": metrics,
             "cases": cases,
+            "case_metrics": case_metrics,
             "provenance": {
                 "score_source": "engine",
                 "trace_redaction": "capture_time",
@@ -140,18 +160,48 @@ class ExportService:
     def _csv_bytes(manifest: dict[str, Any]) -> bytes:
         output = io.StringIO(newline="")
         writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(["case_id", "case_key", "status", "classification"])
+        writer.writerow([
+            "record_type", "case_id", "case_key", "metric_id", "status", "score",
+            "raw_value", "evidence_event_ids", "classification", "error_category",
+        ])
         for case in manifest["cases"]:
-            writer.writerow([_formula_safe(case[key]) for key in ("case_id", "case_key", "status", "classification")])
+            writer.writerow([
+                "case", _formula_safe(case["case_id"]), _formula_safe(case["case_key"]), "",
+                _formula_safe(case["status"]), "", "", "",
+                _formula_safe(case["classification"]), _formula_safe(case["error_category"]),
+            ])
+        case_keys = {case["case_id"]: case["case_key"] for case in manifest["cases"]}
+        for metric in manifest.get("case_metrics", []):
+            writer.writerow([
+                "metric", _formula_safe(metric["case_id"]),
+                _formula_safe(case_keys.get(metric["case_id"], "")),
+                _formula_safe(metric["metric_id"]), _formula_safe(metric["status"]),
+                _formula_safe(metric["score"]),
+                _formula_safe(json.dumps(metric["raw_value"], sort_keys=True, ensure_ascii=False)),
+                _formula_safe(";".join(metric["evidence_event_ids"])),
+                "", "",
+            ])
         return output.getvalue().encode("utf-8")
 
     @staticmethod
     def _html_text(manifest: dict[str, Any]) -> str:
-        return "<table><tr><th>Case</th><th>Status</th></tr>" + "".join(
+        cases = "".join(
             f"<tr><td>{html.escape(str(case['case_id']))}</td>"
             f"<td>{html.escape(str(case['status']))}</td></tr>"
             for case in manifest["cases"]
-        ) + "</table>"
+        )
+        metrics = "".join(
+            f"<tr><td>{html.escape(str(metric['case_id']))}</td>"
+            f"<td>{html.escape(str(metric['metric_id']))}</td>"
+            f"<td>{html.escape(str(metric['status']))}</td>"
+            f"<td>{html.escape(';'.join(metric['evidence_event_ids']))}</td></tr>"
+            for metric in manifest.get("case_metrics", [])
+        )
+        return (
+            "<table><tr><th>Case</th><th>Status</th></tr>" + cases +
+            "</table><table><tr><th>Case</th><th>Metric</th><th>Status</th>"
+            "<th>Evidence</th></tr>" + metrics + "</table>"
+        )
 
     def frozen_bytes(self, workspace_id: str, export_id: str, format_name: str) -> tuple[bytes, str]:
         manifest = self.frozen(workspace_id, export_id)["manifest"]

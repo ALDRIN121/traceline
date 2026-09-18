@@ -436,7 +436,9 @@ It is not an R1 release declaration.
   cross-process recovery rehearsal remain open. The authenticated run now has
   CSV and HTML export routes; `POST /api/exports` persists workspace-scoped
   frozen manifests with JSON/CSV/HTML hashes, and `ci-status` exposes the
-  documented 0/1/2 contract. Export/preview TTLs and full evidence bundles
+  documented 0/1/2 contract. Frozen exports now retain per-case metric scores,
+  raw values, evidence event IDs, authority/retry markers, and richer CSV/HTML
+  evidence rows. Export/preview TTLs and the full bundle/CI acceptance scenario
   remain open. Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
