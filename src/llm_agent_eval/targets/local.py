@@ -8,6 +8,7 @@ import tempfile
 from typing import Any
 
 from ..contracts import CancellationResult, InvocationResult, VerificationRecord
+from ..events import TraceEvent
 from ..runtime.sandbox import (
     PodmanSandbox,
     SandboxDenied,
@@ -110,10 +111,23 @@ class LocalTargetAdapter:
         if not isinstance(output, dict):
             return InvocationResult(outcome="invalid_output", output=None,
                                     capabilities={"final_output": "unavailable", "tool_execution": "unavailable", "provider_cost": "unavailable"})
+        trace_events: list[TraceEvent] = []
+        raw_trace = result.output_files.get("trace.jsonl")
+        if raw_trace is not None:
+            try:
+                for line in raw_trace.decode("utf-8").splitlines():
+                    if line.strip():
+                        trace_events.append(TraceEvent.model_validate_json(line))
+            except (UnicodeDecodeError, ValueError):
+                return InvocationResult(
+                    outcome="invalid_trace", output=None,
+                    capabilities={"final_output": "unavailable", "tool_execution": "unavailable", "provider_cost": "unavailable"},
+                )
         return InvocationResult(
             outcome="ok", output=output,
             capabilities={"final_output": "observed", "tool_execution": "declared", "provider_cost": "unavailable"},
             connector_observations={"container_name": result.container_name, "cleanup": result.cleanup},
+            trace_events=tuple(trace_events),
         )
 
     def cancel(self, invocation_id, execution_context) -> CancellationResult:

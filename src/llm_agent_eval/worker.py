@@ -8,6 +8,7 @@ from typing import Callable
 from .auth import Actor
 from .authoring import AuthoringService
 from .contracts import WorkflowError
+from .execution import RunExecutionService
 from .gateway import ModelGateway
 from .ingestion import ImportService
 from .jobs import JobQueue
@@ -22,7 +23,8 @@ class WorkflowWorker:
     def __init__(self, storage, artifact_root, gateway: ModelGateway, *,
                  fingerprint_key: bytes | None = None,
                  fingerprint_key_source: Callable[[], bytes] | None = None,
-                 handlers: dict[str, Callable] | None = None, lease_seconds: int = 30):
+                 handlers: dict[str, Callable] | None = None, lease_seconds: int = 30,
+                 execution_target_factory: Callable | None = None):
         material = fingerprint_key
         if material is None and fingerprint_key_source is not None:
             material = fingerprint_key_source()
@@ -40,6 +42,7 @@ class WorkflowWorker:
         self.importer = ImportService(storage, artifact_root)
         self.previews = PreviewService(storage, artifact_root)
         self.connections = ConnectionService(storage, self.artifact_root / "install-secret.key")
+        self.execution_target_factory = execution_target_factory
 
     def queue(self, actor: Actor) -> JobQueue:
         return JobQueue(self.storage, actor, fingerprint_key=self.fingerprint_key,
@@ -77,10 +80,9 @@ class WorkflowWorker:
                 actor, command["target_id"], command,
             )
         if kind == "evaluation_run":
-            raise WorkflowError(
-                "evaluation execution runtime is not installed",
-                code="execution_not_ready", status=409,
-            )
+            return RunExecutionService(
+                storage, self.artifact_root, target_factory=self.execution_target_factory,
+            ).execute(actor, command, context)
         raise WorkflowError("Unknown job kind", code="unknown_job_kind")
 
     def drain(self, actor: Actor, job_id: str):

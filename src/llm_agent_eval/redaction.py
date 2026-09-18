@@ -12,7 +12,12 @@ _CANARY = re.compile(r"sk-test-do-not-persist-[A-Za-z0-9_-]+")
 _PROVIDER_TOKEN = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _ASSIGNED_SECRET = re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+")
-_SENSITIVE_KEY = re.compile(r"(?i)(authorization|api[_-]?key|access[_-]?token|password|secret|credential)")
+# Identifiers such as ``authorization_id`` and ``secret_ref`` are control-plane
+# references, not secret material. Redacting them breaks durable worker replay.
+# Secret-bearing fields remain exact header/value keys and are still redacted.
+_SENSITIVE_KEY = re.compile(
+    r"(?i)^(authorization|api[_-]?key|access[_-]?token|password|secret|credential|x-api-key)$"
+)
 
 
 @dataclass(frozen=True)

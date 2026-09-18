@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from llm_agent_eval.contracts import InvocationResult, VerificationRecord
+from llm_agent_eval.events import make_event
 from llm_agent_eval.targets.local import LocalTargetAdapter
 from llm_agent_eval.runtime.sandbox import SandboxResult
 
@@ -99,3 +100,27 @@ def test_local_adapter_preserves_timeout_as_a_typed_outcome(tmp_path):
     }, {"q": "hi"}, {"workspace_id": "ws"})
 
     assert result.outcome == "timeout"
+
+
+def test_local_adapter_parses_only_validated_trace_events(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("print('ok')")
+    event = make_event(
+        event_type="tool_call", run_id="run", workspace_id="ws", case_id="case",
+        attempt_id="attempt", tool="lookup", payload={"id": "1"},
+    )
+    sandbox = FakeSandbox(SandboxResult(
+        state="completed", exit_code=0,
+        output_files={"result.json": b'{"status":"completed"}',
+                      "trace.jsonl": (event.model_dump_json() + "\n").encode()},
+        cleanup="complete",
+    ))
+    result = LocalTargetAdapter(sandbox=sandbox).invoke({
+        "image": "sha256:" + "a" * 64,
+        "source_dir": str(source), "entrypoint": ["/bin/sh"],
+    }, {"q": "hi"}, {"run_id": "run", "case_id": "case", "attempt_id": "attempt", "workspace_id": "ws"})
+
+    assert result.outcome == "ok"
+    assert len(result.trace_events) == 1
+    assert result.trace_events[0].type.value == "tool_call"

@@ -115,9 +115,13 @@ class RunPlanService:
                     raise NotFound()
                 continue
             try:
-                self.versions.get(value, actor)
+                version = self.versions.get(value, actor)
             except NotFound:
                 raise WorkflowError(f"{key} was not found in this workspace", code="version_not_found", status=404) from None
+            if key == "source_version_id":
+                readiness = version.content.get("readiness")
+                if readiness != "executable":
+                    blockers.append("source_runtime_not_ready")
 
         normalized_limits = json.loads(_canonical(dict(limits)))
         tier = normalized_limits.get("tier")

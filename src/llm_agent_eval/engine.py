@@ -46,7 +46,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .config import settings
 from .events import CostBlock, TraceEvent
@@ -72,6 +72,7 @@ from .runner import (
     NO_TRACE,
     PROVIDER_UNREACHABLE,
     TIMED_OUT,
+    InvocationResult as RunnerInvocationResult,
     invoke_agent,
 )
 from .spec import RUN_TIERS, EvaluationSpec, TestCase, validate_spec
@@ -183,6 +184,7 @@ class Engine:
         work_root: str | Path | None = None,
         price_version: str | None = None,
         tiers: Any = None,
+        target_adapter: Any = None,
     ):
         self.storage = storage
         # Missing judge configuration is an evaluator error, never a fabricated
@@ -197,6 +199,7 @@ class Engine:
         self.work_root = root
         self.price_version = price_version if price_version is not None else settings.price_version
         self.tiers = tiers if tiers is not None else settings.run_tiers
+        self.target_adapter = target_adapter
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
@@ -353,6 +356,7 @@ class Engine:
         cwd: str | Path | None = None,
         timeout_seconds: float = 120.0,
         entrypoint: Sequence[str] | None = None,
+        invocation_manifest: Mapping[str, Any] | None = None,
     ) -> RunRecord:
         """Validate and persist a run: pydantic spec validation, the project
         smoke gate (§32A.2), the tier cap (§11B.9), idempotency-key guard
@@ -422,6 +426,8 @@ class Engine:
             "cwd": str(cwd) if cwd is not None else None,
             "timeout_seconds": float(timeout_seconds),
         }
+        if invocation_manifest is not None:
+            agent_version["invocation_manifest"] = dict(invocation_manifest)
         judge_binding = {
             m.metric_id: m.judge_binding.model_dump()
             for m in validated.metrics
@@ -839,19 +845,23 @@ class Engine:
             record.attempt_id, workspace_id, AttemptStatus.RUNNING
         )
         try:
-            result = invoke_agent(
-                agent_command=run.entrypoint,
-                run_id=run.run_id,
-                workspace_id=workspace_id,
-                case=case,
-                attempt_id=record.attempt_id,
-                repeat_index=repeat_index,
-                attempt=attempt,
-                spec=run.spec,
-                timeout_seconds=run.timeout_seconds,
-                work_dir=work_dir,
-                cwd=run.cwd,
-            )
+            if self.target_adapter is None:
+                result = invoke_agent(
+                    agent_command=run.entrypoint,
+                    run_id=run.run_id,
+                    workspace_id=workspace_id,
+                    case=case,
+                    attempt_id=record.attempt_id,
+                    repeat_index=repeat_index,
+                    attempt=attempt,
+                    spec=run.spec,
+                    timeout_seconds=run.timeout_seconds,
+                    work_dir=work_dir,
+                    cwd=run.cwd,
+                )
+            else:
+                result = self._invoke_target(run, case, workspace_id, record.attempt_id,
+                                             repeat_index, attempt)
         except Exception as exc:  # an engine bug/crash, not an agent outcome
             self.storage.set_attempt_status(
                 record.attempt_id, workspace_id, AttemptStatus.ERRORED,
@@ -920,6 +930,33 @@ class Engine:
             record.attempt_id, repeat_index, attempt, AttemptStatus.COMPLETED.value,
             result.exit_code, len(kept), truncated, None, tuple(scores),
             result.result_payload,
+        )
+
+    def _invoke_target(self, run: RunRecord, case: TestCase, workspace_id: str,
+                       attempt_id: str, repeat_index: int, attempt: int) -> RunnerInvocationResult:
+        """Normalize a target adapter result into the engine's attempt contract."""
+        manifest = run.agent_version.get("invocation_manifest")
+        if not isinstance(manifest, dict):
+            return RunnerInvocationResult(
+                INVOCATION_FAILED, None,
+                error="run has no worker-owned invocation manifest",
+            )
+        context = {
+            "run_id": run.run_id, "workspace_id": workspace_id,
+            "case_id": case.case_id, "attempt_id": attempt_id,
+            "repeat_index": repeat_index, "attempt": attempt,
+        }
+        adapter_result = self.target_adapter.invoke(manifest, case.input, context)
+        status = {
+            "ok": "completed", "no_trace": NO_TRACE, "timeout": TIMED_OUT,
+            "provider_unreachable": PROVIDER_UNREACHABLE,
+        }.get(adapter_result.outcome, INVOCATION_FAILED)
+        return RunnerInvocationResult(
+            status=status,
+            exit_code=0 if status in ("completed", NO_TRACE) else None,
+            trace_events=tuple(adapter_result.trace_events),
+            result_payload=adapter_result.output if isinstance(adapter_result.output, dict) else None,
+            error=(None if status in ("completed", NO_TRACE) else adapter_result.outcome),
         )
 
     def _ingest_events(

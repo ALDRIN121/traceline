@@ -39,3 +39,10 @@ def test_redact_removes_unstructured_provider_tokens():
 
     assert "sk-live-actual-provider-token-1234567890" not in str(result.content)
     assert "token" in result.detector_flags
+
+
+def test_redact_preserves_nonsecret_control_plane_references():
+    result = redact({"authorization_id": "auth-1", "plan_id": "plan-1", "secret_ref": "vault-1"})
+    assert result.content == {
+        "authorization_id": "auth-1", "plan_id": "plan-1", "secret_ref": "vault-1",
+    }

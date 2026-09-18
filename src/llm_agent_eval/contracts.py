@@ -71,6 +71,7 @@ class InvocationResult:
     evidence_refs: tuple[str, ...] = ()
     remote_uncertainty: str | None = None
     remote_cost: str = "unknown"
+    trace_events: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
