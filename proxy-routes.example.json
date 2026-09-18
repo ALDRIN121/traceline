@@ -1,0 +1,19 @@
+{
+  "routes": [
+    {
+      "host": "api.openai.com",
+      "origin": "https://api.openai.com",
+      "path": "/v1/chat/completions",
+      "provider": "openai",
+      "model": "gpt-4.1-mini",
+      "secret_ref": "<workspace-secret-id>",
+      "dummy_key": "dummy-case-key",
+      "max_input_tokens": 8192,
+      "max_output_tokens": 1024,
+      "input_micros_per_token": 0,
+      "output_micros_per_token": 0,
+      "price_version": "<release-price-table-version>",
+      "input_token_counter": "trusted_chat_messages"
+    }
+  ]
+}

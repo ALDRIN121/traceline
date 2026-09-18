@@ -1105,6 +1105,62 @@ class Storage:
         ).fetchall()
         return [_schedule_slot_from_row(row) for row in rows]
 
+    @_workspace_scoped
+    def get_schedule_daily_cost_usage(
+        self, schedule_id: str, workspace_id: str, *, reservation_usd_micros: int,
+    ) -> dict[str, dict[str, int | bool]]:
+        """Reconcile schedule budget against authoritative run cost rows.
+
+        Queued/leased slots reserve the plan's worst-case budget. Completed
+        slots release that reservation and charge the measured
+        ``cost_summaries`` ledger instead. A terminal job without a measured
+        cost row is explicitly unknown so a USD-capped schedule fails closed.
+        """
+        if type(reservation_usd_micros) is not int or reservation_usd_micros < 0:
+            raise ValueError("reservation_usd_micros must be a nonnegative integer")
+        rows = self._conn.execute(
+            "SELECT ss.slot_at, ss.state, ss.job_id, j.status AS job_status, j.result_json "
+            "FROM schedule_slots ss LEFT JOIN jobs j "
+            "ON j.workspace_id=ss.workspace_id AND j.job_id=ss.job_id "
+            "WHERE ss.workspace_id=? AND ss.schedule_id=? ORDER BY ss.slot_at,ss.slot_key",
+            (workspace_id, schedule_id),
+        ).fetchall()
+        usage: dict[str, dict[str, int | bool]] = {}
+        for row in rows:
+            if row["state"] == "failed":
+                continue
+            day = str(row["slot_at"])[:10]
+            bucket = usage.setdefault(day, {
+                "actual_usd_micros": 0,
+                "reserved_usd_micros": 0,
+                "unknown": False,
+            })
+            job_status = row["job_status"]
+            if job_status == "completed":
+                run_id = None
+                try:
+                    result = json.loads(row["result_json"] or "null")
+                    run_id = result.get("run_id") if isinstance(result, dict) else None
+                except (TypeError, ValueError):
+                    pass
+                measured = self._conn.execute(
+                    "SELECT COALESCE(SUM(usd_micros), 0), COUNT(*) FROM cost_summaries "
+                    "WHERE workspace_id=? AND run_id=?",
+                    (workspace_id, run_id),
+                ).fetchone() if isinstance(run_id, str) and run_id else None
+                if measured is None or int(measured[1]) == 0:
+                    bucket["unknown"] = True
+                else:
+                    bucket["actual_usd_micros"] = int(bucket["actual_usd_micros"]) + int(measured[0])
+            elif job_status in {"queued", "leased"}:
+                bucket["reserved_usd_micros"] = int(bucket["reserved_usd_micros"]) + reservation_usd_micros
+            else:
+                # A failed/cancelled job may have reached a remote provider
+                # before its durable result was published; retain an explicit
+                # unknown rather than silently releasing the schedule cap.
+                bucket["unknown"] = True
+        return usage
+
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
     # ------------------------------------------------------------------

@@ -149,7 +149,13 @@ class ProviderRoute:
         else:
             if body.get("model") != self.model:
                 raise EgressDenied("model_not_allowed")
-            declared = body.get("max_tokens")
+            output_fields = [
+                field for field in ("max_tokens", "max_completion_tokens")
+                if field in body
+            ]
+            if len(output_fields) > 1:
+                raise EgressDenied("conflicting_max_tokens")
+            declared = body.get(output_fields[0]) if output_fields else None
         if body.get("stream") is True:
             raise EgressDenied("streaming_not_supported")
         if type(declared) is not int or declared <= 0:

@@ -377,7 +377,7 @@ recovery) has not been exercised even with synthetic fixtures.
 
 ## R1/R2 follow-up on `codex/r1-r2-complete`
 
-**Status:** partial, verified on 2026-09-18; this section supersedes the
+**Status:** partial, verified on 2026-09-19; this section supersedes the
 historical “remaining gaps” wording above only for the evidence listed here.
 It is not an R1 release declaration.
 
@@ -410,6 +410,13 @@ It is not an R1 release declaration.
   container proof uses a raw HTTP relay client because the pinned Alpine
   BusyBox client does not implement the required HTTPS CONNECT flow; a real
   provider-client HTTPS proof from inside the case remains open.
+- **Production proxy admission:** the default workflow worker now constructs
+  a trusted `ProxyRunSession` factory from an installation-owned
+  `proxy-routes.json`; route files reject unsafe permissions, duplicates,
+  missing metadata, untrusted token counters, and embedded secret fields.
+  The worker resolves encrypted secret references only at the outbound proxy
+  boundary. Actual provider route configuration and the full containerized
+  runtime topology remain deployment evidence requirements.
 - **Durable judge calibration:** calibration rows and label lineage now persist
   by workspace and exact binding `(provider, model, schema, rubric)`, with
   generation-based reset and `UNCALIBRATED → CALIBRATING → CALIBRATED`
@@ -418,16 +425,18 @@ It is not an R1 release declaration.
   UX and a complete calibrated run acceptance scenario remain open.
 - **Provider protocol coverage:** the recording proxy now validates and meters
   tested OpenAI, Anthropic, and Google request/usage shapes with provider-
-  specific dummy-key substitution. Full stream-aware provider interception,
-  LiteLLM-backed outbound integration, and repaired CrewAI/provider fixtures
-  remain open.
+  specific dummy-key substitution. Supported HTTPS routes now use the
+  embedded LiteLLM Router outbound seam, while generic/local HTTP remains an
+  explicit fixture fallback. Full stream-aware provider interception, live
+  provider-route proof, and repaired CrewAI/provider fixtures remain open.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
-  backup/restore, retention enforcement, export/preview TTLs, actual proxy-ledger
-  reconciliation for schedule USD limits, and a real cross-process recovery
-  rehearsal remain open. Scheduled slots now use distinct per-slot run
-  idempotency keys instead of collapsing into one plan-level run.
+  backup/restore, retention enforcement, export/preview TTLs, and a real
+  cross-process recovery rehearsal remain open. Schedule USD limits now
+  reconcile completed slots from authoritative run cost ledgers and reserve
+  worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
+  run idempotency keys instead of collapsing into one plan-level run.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
@@ -439,22 +448,24 @@ It is not an R1 release declaration.
   without a second submit. Async/stream cancellation lands as a cancelled
   attempt with explicit remote uncertainty, and proxy evidence is retained
   even when the adapter ends in cancellation, timeout, or provider failure.
+  Stateful session targets now have a full worker-path acceptance case covering
+  verification, scripted approval, multi-turn invocation, cleanup, and scoring.
   Retrieval now also has an explicit `retrieval` target over authoritative
   ranked-chunk events; missing retrieval follows `on_missing`. Schedules
   enforce the implemented frozen-version policy rather than accepting an
-  unimplemented refresh policy. Full stateful multi-turn acceptance,
-  retrieval adapter/framework conformance, and actual ledger-based schedule
-  USD reconciliation remain open.
-- **Observed suite:** the default suite is **877 passed, 9 skipped, 7
+  unimplemented refresh policy. Retrieval adapter/framework conformance
+  remains open.
+- **Observed suite:** the default suite is **888 passed, 9 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
 
 **Still release-blocking:** the specialist-owned authoring/results UI is not
-complete; production workflow construction still has no configured trusted
-proxy-route/session factory for `egress=proxy`; worker restart recovery is
-covered at the adapter/engine seam but not by a killed-process live acceptance
-run; provider-client HTTPS interception from inside the case and
+complete; the trusted proxy-route/session factory exists, but its configured
+route file, credential setup, and full containerized deployment topology are
+not yet release-proven; worker restart recovery is covered at the
+adapter/engine seam but not by a killed-process live acceptance run;
+provider-client HTTPS interception from inside the case and
 direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
 Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
 TTL, fairness, and compose readiness are not rehearsed; LiteLLM

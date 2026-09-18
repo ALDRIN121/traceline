@@ -15,13 +15,12 @@ what teams actually need to check can be stated exactly.
 
 ## Current implementation status
 
-This repository is actively implementing the v3 design. The installed package is a useful
-prototype for local evaluation semantics and API experimentation; it is not yet the complete
-v3 platform. In particular, the planned rootless per-case sandbox, recording egress proxy,
-credential brokerage, durable worker queue, PostgreSQL RLS deployment, secure source-ingestion
-pipeline, and hosted-agent connector are not shipping in this package yet. The FastAPI ZIP upload
-route is present for prototype intake only and is not the final bounded, quarantined ingestion
-service.
+This repository is actively implementing the v3 design. The installed package now contains
+verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
+and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
+production provider-route setup, the full UI, PostgreSQL operations rehearsal, repaired reference
+fixture, and the complete release acceptance matrix remain open. The implementation status is the
+source of truth for what has actually been verified.
 
 See the [workflow implementation plan](docs/design/workflow-implementation-plan.md) and the
 [implementation status](docs/design/workflow-implementation-status.md) for the verified boundary
@@ -72,6 +71,13 @@ docker compose up --build
 The Compose file's local database values are development-only defaults. Supply deployment
 credentials through your environment or deployment secret manager; the image and lockfiles do not
 contain database or provider credentials.
+
+Proxy-enabled local runs also require an install-owned `proxy-routes.json` under the configured
+artifact root. Start from [`proxy-routes.example.json`](proxy-routes.example.json), replace the
+workspace secret reference and release price-table values, and keep the file non-writable by other
+users. The file contains routing metadata only; provider keys stay in encrypted secret references
+and are resolved by the worker's trusted proxy identity. The Compose worker sets that identity to
+`proxy`; missing or unsafe route configuration fails a proxy run closed.
 
 ## The reference fixture
 

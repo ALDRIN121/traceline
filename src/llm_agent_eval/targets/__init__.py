@@ -135,6 +135,11 @@ class ConnectionService:
             raise WorkflowError("smoke_input is required")
         auth = version.content.get("auth") or {"type": "none"}
         context = {"workspace_id": actor.workspace_id, "job_id": body.get("job_id")}
+        # Stateful targets need a bounded verification script just like a run
+        # case. Keep it in the ephemeral verification context; it is not part
+        # of the target version or a stored credential-bearing manifest.
+        if isinstance(smoke.get("interaction_script"), list):
+            context["interaction_script"] = smoke["interaction_script"]
         if auth.get("type") in {"bearer", "api_key"}:
             secrets = SecretStore(self.storage, actor, self.secret_key_path)
             context["secret"] = secrets.resolve(auth["secret_ref"])

@@ -151,19 +151,27 @@ class DurableScheduleService:
                 day = slot.slot_at[:10]
                 daily_counts[day] = daily_counts.get(day, 0) + 1
         plan_budget = int((plan.content.get("limits") or {}).get("budget_usd_micros", 0))
-        daily_spend: dict[str, int] = {
-            day: count * plan_budget for day, count in daily_counts.items()
-        }
+        daily_usage = self.storage.get_schedule_daily_cost_usage(
+            schedule_id, actor.workspace_id, reservation_usd_micros=plan_budget,
+        )
         queued = []
         for slot in slots:
             slot_key = ScheduleStore().enqueue_key(schedule_shape, slot)
             day = slot.strftime("%Y-%m-%d")
             if daily_counts.get(day, 0) >= schedule.daily_request_limit:
                 continue
-            if schedule.daily_budget_usd_micros and (
-                daily_spend.get(day, 0) + plan_budget > schedule.daily_budget_usd_micros
-            ):
-                continue
+            if schedule.daily_budget_usd_micros:
+                usage = daily_usage.get(day, {
+                    "actual_usd_micros": 0,
+                    "reserved_usd_micros": 0,
+                    "unknown": False,
+                })
+                if usage["unknown"] or (
+                    int(usage["actual_usd_micros"])
+                    + int(usage["reserved_usd_micros"])
+                    + plan_budget > schedule.daily_budget_usd_micros
+                ):
+                    continue
             # A single atomic insert is the distributed lock and idempotency
             # record; a second worker gets False and does no enqueue.
             if not self.storage.claim_schedule_slot(
@@ -195,5 +203,10 @@ class DurableScheduleService:
             )
             queued.append(job)
             daily_counts[day] = daily_counts.get(day, 0) + 1
-            daily_spend[day] = daily_spend.get(day, 0) + plan_budget
+            usage = daily_usage.setdefault(day, {
+                "actual_usd_micros": 0,
+                "reserved_usd_micros": 0,
+                "unknown": False,
+            })
+            usage["reserved_usd_micros"] = int(usage["reserved_usd_micros"]) + plan_budget
         return queued

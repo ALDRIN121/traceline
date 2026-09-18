@@ -86,6 +86,33 @@ def test_unsupported_traffic_denied_before_secret_resolution(change):
         proxy.forward(route().path, {"Authorization": "Bearer dummy-case-key"}, body)
 
 
+def test_openai_completion_token_alias_is_bounded_and_metered():
+    records = []
+    proxy = RecordingEgress(
+        route(provider="openai"), Budget(500), lambda _ref: "fixture",
+        records.append,
+        send=lambda *_args: (200, {"usage": {"prompt_tokens": 10, "completion_tokens": 4}}),
+    )
+    status, _ = proxy.forward(
+        route().path,
+        {"Authorization": "Bearer dummy-case-key"},
+        {"model": "fixture-model", "messages": [], "max_completion_tokens": 20},
+    )
+    assert status == 200
+    assert records[-1]["cost_usd_micros"] == 32
+
+
+def test_conflicting_openai_output_token_fields_are_denied():
+    proxy = RecordingEgress(route(), Budget(500), lambda _ref: "fixture", lambda _row: None,
+                            send=lambda *_args: pytest.fail("conflicting bounds must not send"))
+    with pytest.raises(EgressDenied, match="max_tokens"):
+        proxy.forward(
+            route().path,
+            {"Authorization": "Bearer dummy-case-key"},
+            {"model": "fixture-model", "max_tokens": 2, "max_completion_tokens": 2},
+        )
+
+
 def test_unknown_usage_stops_subsequent_provider_requests():
     proxy = RecordingEgress(route(), Budget(1000), lambda ref: "fixture", lambda record: None,
                              send=lambda *args: (200, {"choices": []}))

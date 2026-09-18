@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .artifacts import ArtifactStore
 from .calibration import JudgeCalibrationService
 from .contracts import WorkflowError
+from .egress.recording import Budget
+from .egress.routes import ProviderRouteRegistry
+from .egress.session import ProxyRunSession
 from .datasets import DatasetService
 from .previews import PreviewService
 from .profiles import ModelProfile, ProfileStore
@@ -23,6 +26,7 @@ from .spec import JudgeBinding
 from .targets import ConnectionService
 from .versions import VersionStore
 from .worker import WorkflowWorker
+from .secrets import SecretStore
 
 
 class VersionRequest(BaseModel):
@@ -180,6 +184,41 @@ def _readiness_payload(readiness) -> dict[str, Any]:
     }
 
 
+def _default_proxy_session_factory(store, artifact_root):
+    """Build trusted per-run proxy sessions from install-owned configuration.
+
+    Route metadata is loaded only when a proxy run is dispatched. Missing or
+    unsafe configuration therefore fails the run closed, while ordinary
+    hosted/API workflows remain usable without local-provider setup.
+    """
+    from pathlib import Path
+
+    root = Path(artifact_root)
+    route_path = root / "proxy-routes.json"
+    install_root = root / "install"
+    secret_key = root / "install-secret.key"
+
+    def factory(actor, run_id, plan, _context):
+        routes = ProviderRouteRegistry(route_path).load()
+        limits = plan.content.get("limits") or {}
+        budget_usd_micros = limits.get("budget_usd_micros", 0)
+        if type(budget_usd_micros) is not int or budget_usd_micros < 0:
+            raise WorkflowError(
+                "proxy run budget is invalid", code="proxy_budget_invalid", status=409,
+            )
+        secrets = SecretStore(store(), actor, secret_key)
+        return ProxyRunSession(
+            run_id=run_id,
+            install_root=install_root,
+            routes=routes,
+            budget=Budget(budget_usd_micros),
+            secret_resolver=secrets.resolve,
+            record=lambda _record: None,
+        )
+
+    return factory
+
+
 def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> APIRouter:
     router = APIRouter(prefix="/api")
     from pathlib import Path
@@ -187,6 +226,7 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
     worker = WorkflowWorker(
         store(), artifact_root, gateway,
         fingerprint_key_source=lambda: load_fingerprint_key(Path(artifact_root) / "install-fingerprint.key"),
+        proxy_session_factory=_default_proxy_session_factory(store, artifact_root),
     )
     importer = worker.importer
     knowledge = KnowledgeStore(store(), artifact_root)
