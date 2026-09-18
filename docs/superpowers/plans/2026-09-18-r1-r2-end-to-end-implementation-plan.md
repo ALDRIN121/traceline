@@ -27,7 +27,7 @@
 **Files:**
 - Create: `src/llm_agent_eval/run_plans.py`
 - Create: `src/llm_agent_eval/authorization.py`
-- Modify: `src/llm_agent_eval/contracts.py`, `src/llm_agent_eval/storage.py`, `src/llm_agent_eval/migrations/0007_runs.sql`, `src/llm_agent_eval/workflow_api.py`, `src/llm_agent_eval/worker.py`
+- Modify: `src/llm_agent_eval/contracts.py`, `src/llm_agent_eval/storage.py`, `migrations/0007_runs.sql`, `src/llm_agent_eval/workflow_api.py`, `src/llm_agent_eval/worker.py`
 - Test: `tests/workflow/test_run_plans.py`, `tests/workflow/test_target_runs.py`, `tests/integration/test_worker_resume.py`
 
 **Interfaces:**
