@@ -1,4 +1,4 @@
-"""Connection and hosted-target verification jobs."""
+"""Connection and hosted/local target services."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from ..versions import VersionStore
 from .http_json import FORBIDDEN_HEADERS, HttpJsonAdapter, UNSUPPORTED_MODES, reject_golden_mapping
 from .network_policy import EndpointPolicy
 from .openapi import import_openapi
+from .local import LocalTargetAdapter
+
+__all__ = ["ConnectionService", "LocalTargetAdapter"]
 
 
 def _allow_exact() -> set[str]:
