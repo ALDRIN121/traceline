@@ -660,6 +660,30 @@ class ScoreRevisionRecord:
 
 
 @dataclass(frozen=True)
+class RunPlanRecord:
+    plan_id: str
+    workspace_id: str
+    content_digest: str
+    state: str
+    content: dict[str, Any]
+    blockers: tuple[str, ...]
+    actor_id: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class RunAuthorizationRecord:
+    authorization_id: str
+    workspace_id: str
+    plan_id: str
+    plan_hash: str
+    actor_id: str
+    state: str
+    expires_at: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class CustomEvalRecord:
     eval_id: str
     workspace_id: str
@@ -831,7 +855,7 @@ class Storage:
             finally:
                 self._scope_workspace = previous
 
-    def create_schema(self) -> None:
+    def create_schema(self, *, migrate: bool = False) -> None:
         """Create tables under maintenance credentials, or open a ready app DB.
 
         The running API uses a non-bypass role.  PostgreSQL checks CREATE
@@ -839,21 +863,88 @@ class Storage:
         must only verify that its already-migrated schema exists rather than
         attempting the bootstrap DDL at every startup.
         """
-        if self._is_postgres:
+        if self._is_postgres and not migrate:
             existing_base = self._conn.execute("SELECT to_regclass('projects')").fetchone()[0] is not None
             existing_workflow = self._conn.execute("SELECT to_regclass('object_versions')").fetchone()[0] is not None
             existing_jobs = self._conn.execute("SELECT to_regclass('jobs')").fetchone()[0] is not None
-            if existing_base and existing_workflow and existing_jobs:
+            existing_plans = self._conn.execute("SELECT to_regclass('run_plans')").fetchone()[0] is not None
+            if existing_base and existing_workflow and existing_jobs and existing_plans:
                 return
+            if existing_base and existing_workflow and existing_jobs and not existing_plans:
+                raise RuntimeError("database migration required; run the maintenance bootstrap")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         from .migrations import install_workflow_schema
-        exists = self._is_postgres and self._conn.execute(
-            "SELECT to_regclass('jobs')"
-        ).fetchone()[0] is not None
-        if not exists:
+        exists = self._is_postgres and self._conn.execute("SELECT to_regclass('jobs')").fetchone()[0] is not None
+        if not exists or migrate or not self._is_postgres:
             install_workflow_schema(self._conn, postgres=self._is_postgres)
             self._conn.commit()
+
+    @_workspace_scoped
+    def create_run_plan(self, *, workspace_id: str, plan_id: str, content_digest: str,
+                        state: str, content: dict[str, Any], blockers: Sequence[str],
+                        actor_id: str, created_at: str | None = None) -> RunPlanRecord:
+        if state not in {"validated", "blocked"}:
+            raise ValueError("invalid run plan state")
+        created_at = created_at or _now()
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO run_plans (workspace_id,plan_id,content_digest,state,content_json,blockers_json,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (workspace_id, plan_id, content_digest, state, json.dumps(content, sort_keys=True),
+                 json.dumps(list(blockers)), actor_id, created_at),
+            )
+        return self.get_run_plan(plan_id, workspace_id)
+
+    @_workspace_scoped
+    def get_run_plan(self, plan_id: str, workspace_id: str) -> RunPlanRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM run_plans WHERE workspace_id=? AND plan_id=?", (workspace_id, plan_id)
+        ).fetchone()
+        if row is None:
+            return None
+        return RunPlanRecord(
+            plan_id=row["plan_id"], workspace_id=row["workspace_id"],
+            content_digest=row["content_digest"], state=row["state"],
+            content=json.loads(row["content_json"]),
+            blockers=tuple(json.loads(row["blockers_json"])),
+            actor_id=row["actor_id"], created_at=row["created_at"],
+        )
+
+    @_workspace_scoped
+    def create_run_authorization(self, *, workspace_id: str, authorization_id: str,
+                                 plan_id: str, plan_hash: str, actor_id: str,
+                                 state: str, expires_at: str, created_at: str | None = None) -> RunAuthorizationRecord:
+        if state not in {"authorized", "expired", "revoked"}:
+            raise ValueError("invalid authorization state")
+        created_at = created_at or _now()
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO run_authorizations (workspace_id,authorization_id,plan_id,plan_hash,actor_id,state,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (workspace_id, authorization_id, plan_id, plan_hash, actor_id, state, expires_at, created_at),
+            )
+        return self.get_run_authorization(authorization_id, workspace_id)
+
+    @_workspace_scoped
+    def get_run_authorization(self, authorization_id: str, workspace_id: str) -> RunAuthorizationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM run_authorizations WHERE workspace_id=? AND authorization_id=?",
+            (workspace_id, authorization_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunAuthorizationRecord(
+            authorization_id=row["authorization_id"], workspace_id=row["workspace_id"],
+            plan_id=row["plan_id"], plan_hash=row["plan_hash"], actor_id=row["actor_id"],
+            state=row["state"], expires_at=row["expires_at"], created_at=row["created_at"],
+        )
+
+    @_workspace_scoped
+    def expire_run_authorization(self, authorization_id: str, workspace_id: str) -> None:
+        with self._tx():
+            self._conn.execute(
+                "UPDATE run_authorizations SET state='expired' WHERE workspace_id=? AND authorization_id=? AND state='authorized'",
+                (workspace_id, authorization_id),
+            )
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)

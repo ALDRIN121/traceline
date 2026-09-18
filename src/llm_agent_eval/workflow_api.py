@@ -11,6 +11,7 @@ from .artifacts import ArtifactStore
 from .contracts import WorkflowError
 from .datasets import DatasetService
 from .previews import PreviewService
+from .run_plans import RunPlanService
 from .knowledge import KnowledgeStore
 from .sessions import SessionStore
 from .targets import ConnectionService
@@ -80,6 +81,25 @@ class TurnRequest(BaseModel):
     card_action: dict[str, Any] | None = None
 
 
+class RunPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version_refs: dict[str, str]
+    limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunAuthorizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_hash: str
+    ttl_seconds: int = Field(default=600, ge=1, le=3600, strict=True)
+
+
+class RunSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_id: str
+    plan_hash: str
+    authorization_id: str
+
+
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
 #: the generic route must never publish attacker-shaped JSON for them.
 PROTECTED_VERSION_KINDS = frozenset({"model_profile", "model_selection", "judge_rubric"})
@@ -98,6 +118,7 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
     datasets = DatasetService(store(), artifact_root)
     previews = PreviewService(store(), artifact_root)
     connections = worker.connections
+    run_plans = RunPlanService(store())
 
     def artifacts(request):
         return ArtifactStore(store(), artifact_root, request.state.actor)
@@ -140,6 +161,34 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
 
     router.import_service = importer
     router.worker = worker
+
+    @router.post("/run-plans", status_code=201)
+    def create_run_plan(body: RunPlanRequest, request: Request):
+        plan = run_plans.plan_run(request.state.actor, body.version_refs, body.limits)
+        return {"state": plan.state, "plan": asdict(plan)}
+
+    @router.get("/run-plans/{plan_id}")
+    def get_run_plan(plan_id: str, request: Request):
+        plan = run_plans.get_plan(request.state.actor, plan_id)
+        return {"state": plan.state, "plan": asdict(plan)}
+
+    @router.post("/run-plans/{plan_id}/authorize", status_code=201)
+    def authorize_run_plan(plan_id: str, body: RunAuthorizationRequest, request: Request):
+        authorization = run_plans.authorize(
+            request.state.actor, plan_id, body.plan_hash, ttl_seconds=body.ttl_seconds,
+        )
+        return {"state": authorization.state, "authorization": asdict(authorization)}
+
+    @router.post("/runs", status_code=202)
+    def enqueue_run(body: RunSubmissionRequest, request: Request):
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            raise WorkflowError("An Idempotency-Key is required")
+        job = run_plans.enqueue_run(
+            worker, request.state.actor, body.plan_id, body.authorization_id,
+            body.plan_hash, key,
+        )
+        return {"state": "queued", "job_id": job.job_id, "plan_id": body.plan_id}
 
     @router.post("/projects/{project_id}/sessions", status_code=201)
     def create_session(project_id: str, body: dict[str, Any], request: Request):

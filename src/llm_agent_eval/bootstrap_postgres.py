@@ -28,7 +28,7 @@ def provision_application_login(admin_url: str, username: str, password: str) ->
     try:
         if not store._is_postgres:
             raise ValueError("a PostgreSQL maintenance URL is required")
-        store.create_schema()
+        store.create_schema(migrate=True)
     finally:
         store.close()
 

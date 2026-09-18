@@ -76,6 +76,11 @@ class WorkflowWorker:
             return ConnectionService(storage, self.artifact_root / "install-secret.key").verify(
                 actor, command["target_id"], command,
             )
+        if kind == "evaluation_run":
+            raise WorkflowError(
+                "evaluation execution runtime is not installed",
+                code="execution_not_ready", status=409,
+            )
         raise WorkflowError("Unknown job kind", code="unknown_job_kind")
 
     def drain(self, actor: Actor, job_id: str):

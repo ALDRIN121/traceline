@@ -41,6 +41,7 @@ where = ["src"]
     "migrations/0004_datasets.sql",
     "migrations/0005_targets.sql",
     "migrations/0006_model_profile_kinds.sql",
+    "migrations/0007_run_plans.sql",
 ]
 "share/llm-agent-eval/skills/dashboard-authoring" = [
     "skills/dashboard-authoring/SKILL.md",
