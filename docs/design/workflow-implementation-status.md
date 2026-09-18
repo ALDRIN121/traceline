@@ -434,7 +434,7 @@ It is not an R1 release declaration.
   `citation_correctness` output evaluators, but retrieval-event conformance,
   durable restart/resume polling, malformed-stream/cancel coverage, and full
   stateful multi-turn acceptance remain open.
-- **Observed suite:** the default suite is **861 passed, 9 skipped, 6
+- **Observed suite:** the default suite is **864 passed, 9 skipped, 6
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **3 tests** on the observed macOS Podman 6.1.1 host.
