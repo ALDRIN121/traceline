@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping
@@ -130,12 +131,24 @@ class SandboxRequest:
     argv: tuple[str, ...]
     limits: SandboxLimits = field(default_factory=SandboxLimits)
     egress: str = "none"
+    proxy_endpoint: str | None = None
+    network_name: str | None = None
+    ca_cert: Path | None = None
 
     def __post_init__(self):
         if not isinstance(self.image, str) or not re.fullmatch(r"([a-f0-9]{64}|sha256:[a-f0-9]{64})", self.image):
             raise SandboxDenied("immutable locally-approved image ID required")
-        if self.egress != "none":
-            raise SandboxDenied("proxy-only egress is not implemented")
+        if self.egress not in {"none", "proxy"}:
+            raise SandboxDenied("unsupported egress policy")
+        if self.egress == "proxy":
+            parsed = urlparse(self.proxy_endpoint or "")
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
+                raise SandboxDenied("proxy egress requires an explicit endpoint")
+            if not isinstance(self.network_name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.network_name):
+                raise SandboxDenied("proxy egress requires an engine-owned network")
+            ca = Path(self.ca_cert) if self.ca_cert is not None else None
+            if ca is None or ca.is_symlink() or not ca.is_file():
+                raise SandboxDenied("proxy egress requires an engine-owned CA certificate")
         if (not isinstance(self.argv, tuple) or not self.argv
                 or any(not isinstance(x, str) or not x or "\x00" in x for x in self.argv)
                 or not self.argv[0].startswith("/")):
@@ -235,8 +248,9 @@ class PodmanSandbox:
             if any(x in str(path) for x in (",", "\n", "\x00")):
                 raise SandboxDenied("invalid staging path")
         limits = request.limits
-        return [
-            "create", "--name", name, "--pull=never", "--network=none",
+        args = [
+            "create", "--name", name, "--pull=never",
+            f"--network={request.network_name if request.egress == 'proxy' else 'none'}",
             "--read-only", "--read-only-tmpfs=false", "--user=65532:65532",
             "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--image-volume=ignore", "--unsetenv-all", "--log-driver=none",
@@ -252,6 +266,15 @@ class PodmanSandbox:
             "--mount", f"type=bind,source={inputs},target=/input,readonly",
             "--entrypoint=/bin/sleep", request.image, "infinity",
         ]
+        if request.egress == "proxy":
+            endpoint = request.proxy_endpoint
+            args[args.index("--env=LLM_AGENT_EVAL_TRACE=/output/trace.jsonl") + 1:args.index("--env=LLM_AGENT_EVAL_TRACE=/output/trace.jsonl") + 1] = [
+                f"--env=HTTP_PROXY={endpoint}", f"--env=HTTPS_PROXY={endpoint}",
+                f"--env=ALL_PROXY={endpoint}", "--env=NO_PROXY=",
+                "--env=SSL_CERT_FILE=/run/llm-agent-eval/ca.pem",
+                "--mount", f"type=bind,source={Path(request.ca_cert)},target=/run/llm-agent-eval/ca.pem,readonly",
+            ]
+        return args
 
     def _cleanup(self, name):
         try:

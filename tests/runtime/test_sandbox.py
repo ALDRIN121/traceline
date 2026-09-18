@@ -1,6 +1,7 @@
 """Per-case sandbox policy tests use synthetic local fixtures only."""
 
 import io
+from pathlib import Path
 import subprocess
 import tarfile
 
@@ -63,6 +64,26 @@ def test_mounts_and_no_environment_inheritance(tmp_path, monkeypatch):
     assert any(x.startswith("/output:rw,size=67108864") for x in args)
     assert not any("SYNTHETIC_INSTALL_SECRET" in x for x in args)
     assert not any("podman.sock" in x or "docker.sock" in x for x in args)
+
+
+def test_proxy_egress_requires_engine_owned_network_and_ca_and_injects_only_proxy_env(tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("CA")
+    req = request(
+        tmp_path, egress="proxy", proxy_endpoint="http://proxy:8080",
+        network_name="run-network", ca_cert=ca,
+    )
+    args = PodmanSandbox().run_argument_vector(req, "case-fixed", req.source_dir, req.input_dir)
+    assert "--network=run-network" in args
+    assert "--env=HTTP_PROXY=http://proxy:8080" in args
+    assert "--env=HTTPS_PROXY=http://proxy:8080" in args
+    assert "--env=NO_PROXY=" in args
+    assert any("target=/run/llm-agent-eval/ca.pem" in x and "readonly" in x for x in args)
+
+
+def test_proxy_egress_without_network_or_ca_is_rejected(tmp_path):
+    with pytest.raises(SandboxDenied):
+        request(tmp_path, egress="proxy", proxy_endpoint="http://proxy:8080")
 
 
 def test_changed_source_and_symlinks_rejected(tmp_path):

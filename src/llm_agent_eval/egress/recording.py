@@ -109,6 +109,7 @@ class ProviderRoute:
         input_micros_per_token: int,
         output_micros_per_token: int,
         price_version: str,
+        origin: str | None = None,
         max_request_bytes: int = 262_144,
         input_token_bound: Callable[[Mapping[str, Any]], int] | None = None,
     ):
@@ -123,7 +124,7 @@ class ProviderRoute:
             if type(value) is not int or value < 0:
                 raise ValueError("token prices must be nonnegative integers")
         self.input_token_bound = input_token_bound
-        self.host, self.path, self.model = host, path, model
+        self.host, self.path, self.model, self.origin = host, path, model, origin
         self.secret_ref, self.dummy_key = secret_ref, dummy_key
         self.max_input_tokens, self.max_output_tokens = max_input_tokens, max_output_tokens
         self.input_micros_per_token = input_micros_per_token
@@ -223,9 +224,11 @@ class RecordingEgress:
         body: Mapping[str, Any],
     ) -> tuple[int, Any]:
         limits = self.route.authorize(path, body)
-        if not isinstance(headers.get("Authorization"), str) or (
-            headers["Authorization"] != f"Bearer {self.route.dummy_key}"
-        ):
+        supplied_auth = next(
+            (value for key, value in headers.items() if str(key).lower() == "authorization"),
+            None,
+        )
+        if not isinstance(supplied_auth, str) or supplied_auth != f"Bearer {self.route.dummy_key}":
             raise EgressDenied("credential_not_recognized")
         # Only the trusted provider-specific upper bound permits reservation.
         worst = self.route.worst_case(limits["input_tokens"])
@@ -238,10 +241,15 @@ class RecordingEgress:
         if not real or not isinstance(real, str):
             self.budget.uncertain(reservation)
             raise EgressDenied("secret_resolution_failed")
-        outbound_headers = {**headers, "Authorization": f"Bearer {real}"}
+        outbound_headers = {
+            key: value for key, value in headers.items()
+            if str(key).lower() != "authorization"
+        }
+        outbound_headers["Authorization"] = f"Bearer {real}"
         try:
             status, payload = self._send(
-                {"host": self.route.host, "path": path, "model": self.route.model},
+                {"host": self.route.host, "path": path, "model": self.route.model,
+                 "origin": self.route.origin},
                 body,
                 outbound_headers,
             )

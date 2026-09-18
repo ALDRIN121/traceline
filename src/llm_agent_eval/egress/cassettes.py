@@ -1,0 +1,39 @@
+"""Versioned record/replay worlds with deterministic request fingerprints."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Callable
+
+
+def cassette_fingerprint(provider: str, path: str, request: Any, version: str) -> str:
+    encoded = json.dumps({"provider": provider, "path": path, "request": request, "version": version},
+                         sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class CassetteWorld:
+    def __init__(self, root: Path, *, mode: str, version: str = "v1"):
+        if mode not in {"record", "replay", "hybrid"}:
+            raise ValueError("cassette mode must be record, replay, or hybrid")
+        self.root, self.mode, self.version = Path(root), mode, version
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, fingerprint: str) -> Path:
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint):
+            raise ValueError("invalid cassette fingerprint")
+        return self.root / f"{fingerprint}.json"
+
+    def exchange(self, fingerprint: str, request: Any, send: Callable[[], tuple[int, Any]]):
+        path = self._path(fingerprint)
+        if self.mode in {"replay", "hybrid"} and path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return int(payload["status"]), payload["body"]
+        if self.mode == "replay":
+            raise KeyError(fingerprint)
+        status, body = send()
+        path.write_text(json.dumps({"version": self.version, "status": status, "body": body},
+                                   sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        return status, body
