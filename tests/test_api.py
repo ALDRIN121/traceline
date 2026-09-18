@@ -123,6 +123,17 @@ def run_to_complete(client, n_cases=2, **body_kwargs):
     return run_id, wait_terminal(client, run_id)
 
 
+def test_html_export_route_returns_the_escaped_run_report(client):
+    http, _engine, _db = client
+    run_id, _result = run_to_complete(http, n_cases=1)
+
+    response = http.get(f"/runs/{run_id}/export.html")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<table>" in response.text
+
+
 class TestHealthAndEnvelope:
     def test_release_mode_rejects_anonymous_requests_and_accepts_install_token(self, tmp_path):
         db = Storage(tmp_path / "release.db")

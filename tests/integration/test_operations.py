@@ -31,3 +31,19 @@ def test_sqlite_backup_restore_verifies_manifest_and_artifacts(tmp_path):
         assert (restored_artifacts / record.artifact_id).read_bytes() == b"evidence"
     finally:
         restored_storage.close()
+
+
+def test_readiness_checks_the_mounted_artifact_root(tmp_path):
+    db = tmp_path / "readiness.db"
+    storage = Storage(db)
+    storage.create_schema()
+    mount_parent = tmp_path / "mount-parent"
+    artifact_root = mount_parent / "artifacts"
+    artifact_root.mkdir(parents=True)
+    mount_parent.chmod(0o555)
+    try:
+        result = OperationsService(storage, artifact_root).readiness("ws")
+        assert result == {"status": "ready", "checks": {"database": "ok", "artifact_root": "ok"}}
+    finally:
+        mount_parent.chmod(0o755)
+        storage.close()

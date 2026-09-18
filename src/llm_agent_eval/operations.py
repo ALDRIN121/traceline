@@ -35,8 +35,11 @@ class OperationsService:
             checks["database"] = "ok"
         except Exception:
             checks["database"] = "failed"
-        parent = self.artifact_root.parent
-        checks["artifact_root"] = "ok" if parent.is_dir() and os.access(parent, os.W_OK) else "failed"
+        checks["artifact_root"] = (
+            "ok"
+            if self.artifact_root.is_dir() and os.access(self.artifact_root, os.W_OK)
+            else "failed"
+        )
         ready = all(value == "ok" for value in checks.values())
         return {"status": "ready" if ready else "not_ready", "checks": checks}
 

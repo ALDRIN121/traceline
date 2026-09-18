@@ -433,10 +433,17 @@ It is not an R1 release declaration.
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
   backup/restore, retention enforcement, export/preview TTLs, and a real
-  cross-process recovery rehearsal remain open. Schedule USD limits now
+  cross-process recovery rehearsal remain open. The authenticated run now has
+  CSV and HTML export routes, but frozen export manifests and CI exit-status
+  acceptance remain open. Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
   run idempotency keys instead of collapsing into one plan-level run.
+- **Compose/runtime smoke:** a disposable `docker compose up -d --build`
+  completed with PostgreSQL healthy, the API and worker running, `/health`
+  returning 200, and `/readiness` returning 200 with database and mounted
+  artifact-root checks passing. This validates prototype service startup only;
+  it does not prove the rootless Podman sandbox topology.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
@@ -455,7 +462,7 @@ It is not an R1 release declaration.
   enforce the implemented frozen-version policy rather than accepting an
   unimplemented refresh policy. Retrieval adapter/framework conformance
   remains open.
-- **Observed suite:** the default suite is **888 passed, 9 skipped, 7
+- **Observed suite:** the default suite is **890 passed, 9 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
@@ -468,7 +475,7 @@ adapter/engine seam but not by a killed-process live acceptance run;
 provider-client HTTPS interception from inside the case and
 direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
 Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
-TTL, fairness, and compose readiness are not rehearsed; LiteLLM
+TTL, and fairness are not rehearsed; LiteLLM
 outbound/cassette fidelity, repaired CrewAI execution, full custom evaluator
-sandbox integration, export/CI exit-status acceptance, and the complete
+sandbox integration, frozen export/CI exit-status acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.

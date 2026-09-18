@@ -679,6 +679,11 @@ def create_app(
         return Response(ExportService(store()).csv(ws, run_id), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{run_id}.csv"'})
 
+    @app.get("/runs/{run_id}/export.html")
+    def export_run_html(run_id: str, request: Request) -> Response:
+        return Response(ExportService(store()).html(ws, run_id), media_type="text/html",
+                        headers={"Content-Disposition": f'attachment; filename="{run_id}.html"'})
+
     @app.get("/ci/runs/{run_id}")
     def ci_run_status(run_id: str, request: Request) -> Any:
         run = store().get_run(run_id, ws)
