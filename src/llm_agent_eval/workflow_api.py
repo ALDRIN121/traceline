@@ -100,6 +100,11 @@ class RunSubmissionRequest(BaseModel):
     authorization_id: str
 
 
+class PrepareSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_profile: dict[str, Any]
+
+
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
 #: the generic route must never publish attacker-shaped JSON for them.
 PROTECTED_VERSION_KINDS = frozenset({"model_profile", "model_selection", "judge_rubric"})
@@ -140,6 +145,17 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         if not key:
             raise WorkflowError("An Idempotency-Key is required")
         job = importer.submit(request.state.actor, project_id, body, key)
+        return {"state": "queued", "job_id": job.job_id}
+
+    @router.post("/source-versions/{version_id}/prepare", status_code=202)
+    def prepare_source(version_id: str, body: PrepareSourceRequest, request: Request):
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            raise WorkflowError("An Idempotency-Key is required")
+        job = worker.queue(request.state.actor).enqueue({
+            "kind": "source_prepare", "source_version_id": version_id,
+            "runtime_profile": body.runtime_profile,
+        }, key)
         return {"state": "queued", "job_id": job.job_id}
 
     @router.get("/import-jobs/{job_id}")

@@ -9,6 +9,7 @@ from .auth import Actor
 from .authoring import AuthoringService
 from .contracts import WorkflowError
 from .execution import RunExecutionService
+from .runtime.source import SourceRuntimeService
 from .gateway import ModelGateway
 from .ingestion import ImportService
 from .jobs import JobQueue
@@ -67,6 +68,12 @@ class WorkflowWorker:
         storage = context.storage
         if kind == "source_import":
             return ImportService(storage, self.artifact_root)._process(actor, command)
+        if kind == "source_prepare":
+            version = SourceRuntimeService(storage, self.artifact_root, actor).prepare(
+                command["source_version_id"], command["runtime_profile"],
+            )
+            return {"state": "executable", "source_version_id": version.version_id,
+                    "source_digest": version.content_digest}
         if kind == "session_turn":
             authoring = AuthoringService(storage, self.authoring.gateway)
             prepared = authoring.prepare(actor, command)

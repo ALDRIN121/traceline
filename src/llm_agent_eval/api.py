@@ -44,7 +44,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, File, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -52,6 +52,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .config import settings
 from .auth import Actor, create_install_auth_resolver
 from .contracts import WorkflowError
+from .comparisons import ComparisonService
+from .exports import ExportService
+from .ci_api import exit_code as ci_exit_code
 from .gateway import LiteLLMGateway, ModelGateway
 from .dashboard import (
     DEFAULT_DEFINITION,
@@ -637,6 +640,34 @@ def create_app(
                 else None
             ),
         }
+
+    @app.post("/comparisons")
+    def compare_runs(body: dict[str, Any], request: Request) -> Any:
+        """Compare two completed runs on a frozen metric definition."""
+        result = ComparisonService(store()).compare(
+            ws, body.get("baseline_run_id"), body.get("candidate_run_id"),
+            body.get("metric_id"), resamples=body.get("resamples", 10_000),
+            seed=body.get("seed", 0),
+        )
+        return result
+
+    @app.get("/runs/{run_id}/export.json")
+    def export_run_json(run_id: str, request: Request) -> Any:
+        return ExportService(store()).snapshot(ws, run_id)
+
+    @app.get("/runs/{run_id}/export.csv")
+    def export_run_csv(run_id: str, request: Request) -> Response:
+        return Response(ExportService(store()).csv(ws, run_id), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{run_id}.csv"'})
+
+    @app.get("/ci/runs/{run_id}")
+    def ci_run_status(run_id: str, request: Request) -> Any:
+        run = store().get_run(run_id, ws)
+        if run is None:
+            return _error(request, 404, "not_found", f"run {run_id!r} not found")
+        metrics = [_run_metric_dict(row) for row in store().get_run_metric_results(run_id, ws)]
+        payload = {"run_id": run_id, "status": run.status, "metrics": metrics}
+        return {**payload, "exit_code": ci_exit_code(payload)}
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> Any:
