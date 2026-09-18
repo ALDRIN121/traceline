@@ -156,7 +156,14 @@ class HttpJsonAdapter:
             return InvocationResult(outcome="mapping_error", output=None, capabilities=capabilities)
         # Identity encoding avoids an unbounded decompressor allocation before
         # the decoded-byte limit can be checked. Noncompliant servers fail closed.
-        headers = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+        # Each request owns a DNS-pinned transport. Explicitly close it after
+        # the response so HTTP/1.0-style peers that omit Content-Length are
+        # framed by EOF rather than leaving httpcore to reuse a reset socket.
+        headers = {
+            "Content-Type": "application/json",
+            "Accept-Encoding": "identity",
+            "Connection": "close",
+        }
         auth = target.get("auth") or {"type": "none"}
         if auth.get("type", "none") != "none" and pin["scheme"] != "https":
             return InvocationResult(outcome="https_required", output=None, capabilities=capabilities)
