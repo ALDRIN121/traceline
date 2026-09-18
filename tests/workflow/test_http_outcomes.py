@@ -6,6 +6,7 @@ import time
 
 from llm_agent_eval.targets.http_json import HttpJsonAdapter
 from llm_agent_eval.targets.network_policy import EndpointPolicy
+from llm_agent_eval.events import EventType, Source
 
 
 def _serve(handler_cls):
@@ -91,3 +92,48 @@ def test_retries_are_rejected():
     adapter = HttpJsonAdapter(EndpointPolicy(allow_exact={"127.0.0.1:9"}))
     result = adapter.invoke({"target": _target("http://127.0.0.1:9/invoke"), "retries": 1}, {}, {})
     assert result.outcome == "retries_forbidden"
+
+
+def test_retrieval_mapping_emits_authoritative_ranked_evidence():
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                b'{"answer":"grounded","retrieval":{"query":"what?",'
+                b'"chunks":["doc-b","doc-a"],"scores":[0.9,0.8],"source":"index-v1"}}'
+            )
+
+    server, url, allow = _serve(Handler)
+    try:
+        target = _target(
+            url,
+            retrieval_mapping={
+                "query": "/retrieval/query",
+                "chunks": "/retrieval/chunks",
+                "scores": "/retrieval/scores",
+                "source": "/retrieval/source",
+            },
+        )
+        result = HttpJsonAdapter(EndpointPolicy(allow_exact={allow})).invoke(
+            {"target": target}, {"q": "what?"},
+            {"run_id": "run", "workspace_id": "ws", "case_id": "case",
+             "attempt_id": "attempt", "repeat_index": 0, "attempt": 0},
+        )
+        assert result.outcome == "ok"
+        assert result.capabilities["retrieval"] == "observed"
+        assert len(result.trace_events) == 1
+        event = result.trace_events[0]
+        assert event.type is EventType.RETRIEVAL
+        assert event.source is Source.ADAPTER
+        assert event.payload == {
+            "query": "what?", "chunks": ["doc-b", "doc-a"],
+            "scores": [0.9, 0.8], "source": "index-v1",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()

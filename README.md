@@ -85,6 +85,11 @@ Authenticated API clients can freeze an export with `POST /api/exports` using a 
 download its immutable `json`, `csv`, or `html` representation from
 `/api/exports/{export_id}/{format}`. Later score revisions do not change a frozen export.
 
+R2 stateless JSON targets may also declare a closed `retrieval_mapping` with JSON Pointer fields
+`chunks` (required), `query`, `scores`, and `source`. A successful response emits a redacted,
+adapter-authored `retrieval` event; malformed mappings or unaligned scores fail closed. Retrieval
+metrics therefore remain unavailable when a target has not declared authoritative ranked evidence.
+
 ## The reference fixture
 
 [`fixtures/reference-agent/`](fixtures/reference-agent/) holds a real, deliberately unrepaired

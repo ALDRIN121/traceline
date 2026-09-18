@@ -16,8 +16,9 @@ from llm_agent_eval.worker import WorkflowWorker
 
 
 class Agent:
-    def __init__(self):
+    def __init__(self, response=None):
         self.calls = 0
+        self.response = response or {"answer": {"status": "ok"}}
         agent = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -28,7 +29,7 @@ class Agent:
                 length = int(self.headers.get("content-length", "0"))
                 self.rfile.read(length)
                 agent.calls += 1
-                body = json.dumps({"answer": {"status": "ok"}}).encode()
+                body = json.dumps(agent.response).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -123,6 +124,86 @@ def test_authorized_hosted_run_scores_observed_output_without_trace(tmp_path, mo
         assert rescored["state"] == "rescored"
         assert rescored["aggregate"]["value"] == 0.0
         assert agent.calls == 2  # re-score used retained evidence only
+    finally:
+        storage.close()
+        agent.stop()
+
+
+def test_authorized_hosted_run_persists_retrieval_event_and_scores(tmp_path, monkeypatch):
+    agent = Agent({
+        "answer": {"status": "ok"},
+        "retrieval": {
+            "query": "what?",
+            "chunks": ["doc-b", "doc-a"],
+            "scores": [0.9, 0.8],
+            "source": "index-v1",
+        },
+    })
+    agent.start()
+    monkeypatch.setenv("EVAL_ENGINE_ALLOW_ENDPOINTS", agent.allowlist)
+    storage = Storage(tmp_path / "hosted-retrieval.db")
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    try:
+        project = storage.create_project(workspace_id="ws", name="hosted-retrieval")
+        target = ConnectionService(storage, tmp_path / "install-secret.key").create(
+            actor, project.project_id,
+            {
+                "url": agent.url,
+                "output_mapping": {"final_response": "/answer"},
+                "retrieval_mapping": {
+                    "query": "/retrieval/query",
+                    "chunks": "/retrieval/chunks",
+                    "scores": "/retrieval/scores",
+                    "source": "/retrieval/source",
+                },
+            },
+        )
+        verified = ConnectionService(storage, tmp_path / "install-secret.key").verify(
+            actor, target["target_id"],
+            {"target_version_id": target["version_id"], "smoke_input": {"q": "smoke"}},
+        )
+        versions = VersionStore(storage)
+        spec = {
+            "spec_version": "1", "name": "hosted-retrieval", "dataset_version": "v1",
+            "cases": [{"case_id": "c1", "name": "one", "input": {"q": "run"}}],
+            "metrics": [{
+                "metric_id": "recall", "name": "recall", "type": "scalar",
+                "target": {"type": "retrieval", "selector": "$.chunks", "on_missing": "fail"},
+                "evaluator": {"type": "recall_at_k", "expected": ["doc-a", "doc-b"], "k": 2},
+                "scoring": {"type": "numeric", "range": [0, 1]},
+                "aggregation": {"method": "mean", "on_error": "fail"},
+                "gate": {"min": 1.0}, "provisional": False,
+            }],
+        }
+        evaluation = versions.create("evaluation", project.project_id, {"spec": spec}, 0, actor)
+        dataset = versions.create("dataset", project.project_id, {"cases": [
+            {"case_id": "c1", "name": "one", "input": {"q": "run"}},
+        ]}, 0, actor)
+        worker = WorkflowWorker(
+            storage, tmp_path / "artifacts", MockGateway({}), fingerprint_key=b"f" * 32,
+        )
+        plans = RunPlanService(storage)
+        plan = plans.plan_run(actor, {
+            "project_id": project.project_id,
+            "evaluation_version_id": evaluation.version_id,
+            "dataset_version_id": dataset.version_id,
+            "target_version_id": verified["target_version_id"],
+        }, {"tier": "quick"})
+        authorization = plans.authorize(actor, plan.plan_id, plan.content_digest)
+        job = plans.enqueue_run(
+            worker, actor, plan.plan_id, authorization.authorization_id,
+            plan.content_digest, "hosted-retrieval-once",
+        )
+        terminal = worker.service(actor).run_once(job_id=job.job_id)
+        assert terminal.status == "completed", (terminal.error, terminal.result)
+        assert storage.get_run_metric_results(terminal.result["run_id"], "ws")[0].value == 1.0
+        events = storage.get_trace_events(run_id=terminal.result["run_id"], workspace_id="ws")
+        retrieval = [event for event in events if event.type.value == "retrieval"]
+        assert len(retrieval) == 1
+        assert retrieval[0].source.value == "adapter"
+        assert retrieval[0].payload["chunks"] == ["doc-b", "doc-a"]
+        assert agent.calls == 2
     finally:
         storage.close()
         agent.stop()

@@ -60,6 +60,23 @@ def test_inline_credentials_are_rejected(platform):
     assert created["body"]["error"]["code"] == "secret_ref_required"
 
 
+def test_retrieval_mapping_is_closed_and_pointer_validated(platform):
+    s = platform.seed("output_only_api")
+    created = platform.post(
+        f"/api/projects/{s['project_id']}/connections",
+        {**s["connection"], "retrieval_mapping": {"chunks": "$.retrieval.chunks"}},
+    )
+    assert created["http_status"] == 422
+    assert created["body"]["error"]["code"] == "mapping_error"
+
+    unknown = platform.post(
+        f"/api/projects/{s['project_id']}/connections",
+        {**s["connection"], "retrieval_mapping": {"documents": "/retrieval/chunks"}},
+    )
+    assert unknown["http_status"] == 422
+    assert unknown["body"]["error"]["code"] == "mapping_error"
+
+
 def test_openapi_rejects_external_refs_and_requires_operation(platform):
     s = platform.seed("empty_project")
     external = platform.post(

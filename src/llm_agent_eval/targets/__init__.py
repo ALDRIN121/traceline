@@ -12,7 +12,10 @@ from ..contracts import NotFound, WorkflowError
 from ..secrets import SecretStore
 from ..storage import Storage, _now
 from ..versions import VersionStore
-from .http_json import FORBIDDEN_HEADERS, HttpJsonAdapter, UNSUPPORTED_MODES, reject_golden_mapping
+from .http_json import (
+    FORBIDDEN_HEADERS, HttpJsonAdapter, UNSUPPORTED_MODES, reject_golden_mapping,
+    validate_retrieval_mapping,
+)
 from .http_stream import HttpStreamAdapter
 from .http_job import HttpJobAdapter
 from .http_session import HttpSessionAdapter
@@ -49,6 +52,9 @@ class ConnectionService:
         reject_golden_mapping(mapping)
         if body.get("request_mapping"):
             reject_golden_mapping(body["request_mapping"])
+        retrieval_mapping = body.get("retrieval_mapping")
+        if retrieval_mapping is not None:
+            validate_retrieval_mapping(retrieval_mapping)
         url = body.get("url")
         if not isinstance(url, str) or not url:
             raise WorkflowError("url is required")
@@ -75,6 +81,7 @@ class ConnectionService:
             "auth": auth,
             "request_mapping": body.get("request_mapping") or {},
             "output_mapping": mapping or {"final_response": "/answer"},
+            "retrieval_mapping": retrieval_mapping or None,
             "timeout_seconds": body.get("timeout_seconds") or 5,
             "max_response_bytes": body.get("max_response_bytes") or 1_048_576,
             "max_concurrency": body.get("max_concurrency") or 2,

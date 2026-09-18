@@ -9,8 +9,10 @@ from typing import Any
 import httpx
 
 from ..contracts import CancellationResult, InvocationResult, VerificationRecord, WorkflowError
+from ..events import EventType
 from .network_policy import EndpointPolicy, PolicyDenied
 from .transport import PinnedTransport
+from .evidence import adapter_event
 
 GOLDEN_KEYS = frozenset({"expected", "gold", "label", "reference", "golden"})
 UNSUPPORTED_MODES = frozenset({"streaming", "stateful", "async", "session"})
@@ -19,6 +21,7 @@ FORBIDDEN_HEADERS = frozenset({
     "host", "content-length", "connection", "proxy-authorization", "proxy-connection",
     "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto",
 })
+RETRIEVAL_KEYS = frozenset({"query", "chunks", "scores", "source"})
 
 
 def apply_pointer(document: Any, pointer: str):
@@ -50,6 +53,35 @@ def reject_golden_mapping(mapping: dict) -> None:
         if key in mapping or f"/{key}" in blob:
             raise WorkflowError("Expected labels cannot be mapped into agent-visible fields",
                                 code="golden_mapping_forbidden")
+
+
+def validate_retrieval_mapping(mapping: Any) -> dict:
+    if not isinstance(mapping, dict):
+        raise WorkflowError("Retrieval mapping must be an object", code="mapping_error")
+    unknown = set(mapping) - RETRIEVAL_KEYS
+    if unknown:
+        raise WorkflowError("Retrieval mapping contains unsupported fields", code="mapping_error")
+    if "chunks" not in mapping:
+        raise WorkflowError("Retrieval mapping requires chunks", code="mapping_error")
+    reject_golden_mapping(mapping)
+    for field, pointer in mapping.items():
+        if not isinstance(pointer, str) or not pointer.startswith("/"):
+            raise WorkflowError(f"Retrieval mapping for {field} must be a JSON Pointer",
+                                code="mapping_error")
+    return mapping
+
+
+def apply_retrieval_mapping(document: Any, mapping: dict) -> dict:
+    mapping = validate_retrieval_mapping(mapping)
+    evidence = {field: apply_pointer(document, pointer) for field, pointer in mapping.items()}
+    chunks = evidence.get("chunks")
+    if not isinstance(chunks, list):
+        raise WorkflowError("Retrieval chunks must be a JSON array", code="mapping_error")
+    if "scores" in evidence:
+        scores = evidence["scores"]
+        if not isinstance(scores, list) or len(scores) != len(chunks):
+            raise WorkflowError("Retrieval scores must align with chunks", code="mapping_error")
+    return evidence
 
 
 def apply_request_mapping(case_input: Any, mapping: dict) -> dict:
@@ -93,6 +125,7 @@ class HttpJsonAdapter:
         target = invocation_manifest["target"]
         capabilities = {
             "final_output": "unavailable",
+            "retrieval": "unavailable",
             "tool_execution": "unavailable",
             "provider_cost": "unavailable",
         }
@@ -167,13 +200,21 @@ class HttpJsonAdapter:
         output_mapping = target.get("output_mapping") or {"final_response": ""}
         try:
             output = {name: apply_pointer(payload, pointer) for name, pointer in output_mapping.items()}
+            retrieval_mapping = target.get("retrieval_mapping")
+            retrieval = apply_retrieval_mapping(payload, retrieval_mapping) if retrieval_mapping else None
         except WorkflowError:
             return InvocationResult(outcome="mapping_error", output=None, capabilities=capabilities)
         capabilities = {**capabilities, "final_output": "observed"}
+        trace_events = ()
+        if retrieval is not None:
+            capabilities["retrieval"] = "observed"
+            event = adapter_event(execution_context, EventType.RETRIEVAL, 0, retrieval)
+            if event is not None:
+                trace_events = (event,)
         return InvocationResult(
             outcome="ok", output=output, capabilities=capabilities,
             connector_observations={"status_code": response.status_code, "remote_cost": "unknown"},
-            remote_cost="unknown",
+            remote_cost="unknown", trace_events=trace_events,
         )
 
     def cancel(self, invocation_id, execution_context) -> CancellationResult:

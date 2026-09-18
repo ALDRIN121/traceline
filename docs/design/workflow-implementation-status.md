@@ -460,11 +460,14 @@ It is not an R1 release declaration.
   Stateful session targets now have a full worker-path acceptance case covering
   verification, scripted approval, multi-turn invocation, cleanup, and scoring.
   Retrieval now also has an explicit `retrieval` target over authoritative
-  ranked-chunk events; missing retrieval follows `on_missing`. Schedules
-  enforce the implemented frozen-version policy rather than accepting an
-  unimplemented refresh policy. Retrieval adapter/framework conformance
-  remains open.
-- **Observed suite:** the default suite is **892 passed, 9 skipped, 7
+  ranked-chunk events; missing retrieval follows `on_missing`. Stateless JSON
+  targets now accept a closed retrieval mapping and emit capture-time-redacted
+  adapter retrieval events, with a conformance matrix that lists only the tested
+  generic HTTP adapter and returns `unsupported_framework` for unverified
+  frameworks. Schedules enforce the implemented frozen-version policy rather
+  than accepting an unimplemented refresh policy. Retrieval adapter/framework
+  conformance beyond generic HTTP remains open.
+- **Observed suite:** the default suite is **897 passed, 9 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
