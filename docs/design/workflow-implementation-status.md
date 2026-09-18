@@ -402,7 +402,11 @@ It is not an R1 release declaration.
   dual-homed Podman relay, managed internal network, and sandbox proxy
   argument vector exist. The live opt-in suite now passes the relay/provider
   HTTP proof, host-side TLS interception with the install CA, and a full
-  restricted-build → fresh-container → proxy → output → scoring run. The
+  restricted-build → fresh-container → proxy → output → scoring run. Proxy
+  capture records are now bound into the worker's authoritative persisted
+  trace, including typed usage/cost metadata and capture timestamps. The
+  worker acceptance test covers upload → restricted build → authorization →
+  per-case proxy run → output → scoring. The
   container proof uses a raw HTTP relay client because the pinned Alpine
   BusyBox client does not implement the required HTTPS CONNECT flow; a real
   provider-client HTTPS proof from inside the case remains open.
@@ -430,21 +434,30 @@ It is not an R1 release declaration.
   Streaming emits adapter-authored `stream_start`, `first_token`, and
   `llm_response` evidence; stateful scripts enforce wait-for-input before a
   user response and close sessions after rejection. Remote-job identity is
-  persisted before polling. Retrieval has deterministic `recall_at_k` and
-  `citation_correctness` output evaluators, but retrieval-event conformance,
-  durable restart/resume polling, malformed-stream/cancel coverage, and full
-  stateful multi-turn acceptance remain open.
-- **Observed suite:** the default suite is **864 passed, 9 skipped, 6
+  persisted before polling; stale-attempt reconciliation now marks the job
+  orphaned and a replacement attempt resumes polling that same remote job
+  without a second submit. Async/stream cancellation lands as a cancelled
+  attempt with explicit remote uncertainty, and proxy evidence is retained
+  even when the adapter ends in cancellation, timeout, or provider failure.
+  Retrieval now also has an explicit `retrieval` target over authoritative
+  ranked-chunk events; missing retrieval follows `on_missing`. Schedules
+  enforce the implemented frozen-version policy rather than accepting an
+  unimplemented refresh policy. Full stateful multi-turn acceptance,
+  retrieval adapter/framework conformance, and actual ledger-based schedule
+  USD reconciliation remain open.
+- **Observed suite:** the default suite is **877 passed, 9 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
-  suite passes **3 tests** on the observed macOS Podman 6.1.1 host.
+  suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
 
 **Still release-blocking:** the specialist-owned authoring/results UI is not
-complete; the full upload/import → build → authorization → worker restart
-acceptance is not closed; provider-client HTTPS interception from inside the
-case and direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not
-proven on Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore,
-retention, TTL, fairness, and compose readiness are not rehearsed; LiteLLM
-outbound/cassette fidelity, repaired CrewAI execution, custom evaluator
-sandboxing, export/CI exit-status acceptance, and the complete E01–E32 / UX
-acceptance matrix remain unfinished.
+complete; production workflow construction still has no configured trusted
+proxy-route/session factory for `egress=proxy`; worker restart recovery is
+covered at the adapter/engine seam but not by a killed-process live acceptance
+run; provider-client HTTPS interception from inside the case and
+direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
+Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
+TTL, fairness, and compose readiness are not rehearsed; LiteLLM
+outbound/cassette fidelity, repaired CrewAI execution, full custom evaluator
+sandbox integration, export/CI exit-status acceptance, and the complete
+E01–E32 / UX acceptance matrix remain unfinished.

@@ -42,6 +42,8 @@ class HttpStreamAdapter:
         first_token = None
         final = None
         trace_events = []
+        capabilities = {"final_output": "unavailable"}
+        should_cancel = execution_context.get("should_cancel")
         start_event = adapter_event(
             execution_context, EventType.STREAM_START, 0,
             {"protocol": "sse", "mode": "streaming"},
@@ -61,8 +63,14 @@ class HttpStreamAdapter:
                 with client.stream("POST", target["url"], json=case_input,
                                    headers={"Accept": "text/event-stream"}) as response:
                     if response.status_code != 200:
-                        return InvocationResult("protocol_error", None, {"final_output": "unavailable"})
+                        return InvocationResult("protocol_error", None, capabilities)
                     for chunk in response.iter_bytes():
+                        if callable(should_cancel) and should_cancel():
+                            return InvocationResult(
+                                "cancelled", None, capabilities,
+                                connector_observations={"first_byte": first_byte, "first_token": first_token},
+                                remote_uncertainty="cancelled",
+                            )
                         if first_byte is None:
                             first_byte = time.time()
                         for frame in parser.feed(chunk):
@@ -87,11 +95,11 @@ class HttpStreamAdapter:
                                     trace_events.append(event)
             parser.finish()
         except (httpx.HTTPError, StreamProtocolError, PolicyDenied, ValueError) as exc:
-            return InvocationResult("stream_protocol_error", None, {"final_output": "unavailable"},
+            return InvocationResult("stream_protocol_error", None, capabilities,
                                     connector_observations={"error": type(exc).__name__},
                                     remote_uncertainty="stream_uncertain")
         if final is None:
-            return InvocationResult("incomplete_stream", None, {"final_output": "unavailable"},
+            return InvocationResult("incomplete_stream", None, capabilities,
                                     remote_uncertainty="stream_incomplete")
         return InvocationResult(
             "ok", final, {"final_output": "observed"},

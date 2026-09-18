@@ -48,6 +48,7 @@ class HttpSessionAdapter:
         session_id = None
         trace_events = []
         close_sent = False
+        should_cancel = execution_context.get("should_cancel")
 
         def close_session() -> bool:
             nonlocal close_sent
@@ -76,6 +77,12 @@ class HttpSessionAdapter:
                     return InvocationResult("protocol_error", None, caps)
                 output = None
                 turns_completed = 0
+                if callable(should_cancel) and should_cancel():
+                    return InvocationResult(
+                        "cancelled", None, caps,
+                        connector_observations={"session_id": session_id, "turns_completed": 0},
+                        remote_uncertainty="cancelled",
+                    )
 
                 def send_turn(turn: dict[str, object]):
                     nonlocal turns_completed
@@ -99,6 +106,15 @@ class HttpSessionAdapter:
                     observed = payload
                     pending_input = False
                     for step in interaction_script:
+                        if callable(should_cancel) and should_cancel():
+                            return InvocationResult(
+                                "cancelled", output, caps,
+                                connector_observations={
+                                    "session_id": session_id,
+                                    "turns_completed": turns_completed,
+                                },
+                                remote_uncertainty="cancelled",
+                            )
                         if not isinstance(step, dict) or step.get("kind") not in {
                             "wait_for_input", "user_response"
                         }:
@@ -144,6 +160,15 @@ class HttpSessionAdapter:
                                                 remote_uncertainty="blocked")
                 else:
                     for turn in turns or []:
+                        if callable(should_cancel) and should_cancel():
+                            return InvocationResult(
+                                "cancelled", output, caps,
+                                connector_observations={
+                                    "session_id": session_id,
+                                    "turns_completed": turns_completed,
+                                },
+                                remote_uncertainty="cancelled",
+                            )
                         body, failure = send_turn(turn)
                         if failure is not None:
                             return failure

@@ -107,6 +107,60 @@ def test_http_session_closes_remote_session_when_script_is_rejected():
         server.server_close()
 
 
+def test_http_session_cancellation_closes_session_before_next_turn():
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    paths = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            paths.append(self.path)
+            if self.path == "/init":
+                body = {"session_id": "session-cancel", "state": "awaiting_input",
+                        "requested_input": "Approve?"}
+            else:
+                body = {}
+            encoded = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        result = HttpSessionAdapter(
+            policy=EndpointPolicy(allow_exact={f"127.0.0.1:{server.server_port}"})
+        ).invoke(
+            {"target": {
+                "init_url": f"{base}/init",
+                "turn_url_template": f"{base}/sessions/{{session_id}}/turns",
+                "close_url_template": f"{base}/sessions/{{session_id}}/close",
+            }},
+            {"question": "request approval"},
+            {
+                "interaction_script": [
+                    {"kind": "wait_for_input", "requested_input": "Approve?"},
+                    {"kind": "user_response", "provided_input": "yes"},
+                ],
+                "should_cancel": lambda: True,
+            },
+        )
+        assert result.outcome == "cancelled"
+        assert result.remote_uncertainty == "cancelled"
+        assert paths == ["/init", "/sessions/session-cancel/close"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_stateful_sessions_are_unique_per_case_repeat_and_cleaned_up():
     calls = []
     manager = SessionManager(

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from ..redaction import redact
@@ -390,4 +391,5 @@ class RecordingEgress:
             "usage": usage,
             "cost_usd_micros": None,
             "price_version": self.route.price_version,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }

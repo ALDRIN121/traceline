@@ -877,8 +877,8 @@ _NON_EVENT_TARGETS = frozenset(
 
 def _select_target_events(target: Any, events: Sequence[TraceEvent]) -> list[TraceEvent]:
     """The events a target observes (scalar/judge metrics): tool_call for
-    tool_invocation/tool_arguments, tool_result for tool_output, llm_response
-    for model_output. Ordered by (timestamp, sequence) — deterministic."""
+    tool_invocation/tool_arguments, tool_result for tool_output, retrieval for
+    retrieval. Ordered by (timestamp, sequence) — deterministic."""
     t = target.type
     if t == "model_output":
         event_type = EventType.LLM_RESPONSE
@@ -886,6 +886,8 @@ def _select_target_events(target: Any, events: Sequence[TraceEvent]) -> list[Tra
         event_type = EventType.TOOL_CALL
     elif t == "tool_output":
         event_type = EventType.TOOL_RESULT
+    elif t == "retrieval":
+        event_type = EventType.RETRIEVAL
     else:
         return []
     out = [e for e in events if e.type is event_type and (target.tool is None or e.tool == target.tool)]

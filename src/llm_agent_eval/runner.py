@@ -75,6 +75,7 @@ __all__ = [
     "INVOCATION_FAILED",
     "PROVIDER_UNREACHABLE",
     "NO_TRACE",
+    "CANCELLED",
 ]
 
 COMPLETED = "completed"
@@ -82,6 +83,7 @@ TIMED_OUT = "timed_out"
 INVOCATION_FAILED = "invocation_failed"
 PROVIDER_UNREACHABLE = "provider_unreachable"
 NO_TRACE = "no_trace"
+CANCELLED = "cancelled"
 
 #: Grace period between SIGTERM and SIGKILL (§11A).
 KILL_GRACE_SECONDS = 10.0

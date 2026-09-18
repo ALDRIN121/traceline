@@ -138,6 +138,9 @@ class RunExecutionService:
                 "network_run_id": session_info.network_run_id,
                 "ca_cert": session_info.ca_cert,
             })
+            proxy_records = getattr(proxy_session, "records", None)
+            if isinstance(proxy_records, list):
+                engine.target_execution_context["proxy_records"] = proxy_records
         try:
             result = engine.run(run.run_id, actor.workspace_id,
                                 should_cancel=context.cancellation_event.is_set)

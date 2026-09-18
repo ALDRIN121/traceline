@@ -126,13 +126,22 @@ class ProxyRunSession:
         self.routes = list(routes)
         self.budget = budget
         self.secret_resolver = secret_resolver
-        self.record = record
         self.sandbox = sandbox or PodmanSandbox()
         self.network = network or PodmanRunNetwork(self.sandbox)
         self.ca: InstallCA | None = None
         self.proxy: ProxyInstance | None = None
         self.relay: _PodmanProxyRelay | None = None
         self.lease: NetworkLease | None = None
+        self.records: list[dict[str, Any]] = []
+
+        # Keep a worker-readable copy while preserving the caller's audit
+        # sink.  The engine drains these capture-time-redacted records into
+        # the authoritative attempt trace after each target invocation.
+        self._record_sink = record
+
+    def record(self, value: dict[str, Any]) -> None:
+        self.records.append(dict(value))
+        self._record_sink(value)
 
     def start(self) -> ProxySessionInfo:
         if self.proxy is not None:

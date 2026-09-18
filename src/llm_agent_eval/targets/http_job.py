@@ -77,6 +77,7 @@ class HttpJobAdapter:
         headers = {"Content-Type": "application/json"}
         if (target.get("auth") or {}).get("type") == "bearer":
             headers["Authorization"] = f"Bearer {execution_context.get('secret') or ''}"
+        observations: dict[str, Any] = {}
         try:
             with httpx.Client(transport=PinnedTransport(submit_pin), follow_redirects=False,
                               timeout=timeout, verify=True, trust_env=False) as client:
@@ -95,6 +96,13 @@ class HttpJobAdapter:
                 observations = {"remote_job_id": job_id, "submitted": True}
                 deadline = time.monotonic() + timeout
                 while time.monotonic() <= deadline:
+                    should_cancel = execution_context.get("should_cancel")
+                    if callable(should_cancel) and should_cancel():
+                        return InvocationResult(
+                            "cancelled", None, caps,
+                            connector_observations=observations,
+                            remote_uncertainty="cancelled",
+                        )
                     poll_url = status_template.replace("{job_id}", quote(job_id, safe=""))
                     poll_pin = self.policy.authorize(poll_url)
                     with httpx.Client(transport=PinnedTransport(poll_pin), follow_redirects=False,
@@ -117,9 +125,17 @@ class HttpJobAdapter:
                                         connector_observations=observations,
                                         remote_uncertainty="poll_timeout")
         except httpx.TimeoutException:
-            return InvocationResult("timeout", None, caps, remote_uncertainty="timeout_after_possible_action")
+            return InvocationResult(
+                "timeout", None, caps,
+                connector_observations=observations,
+                remote_uncertainty="timeout_after_possible_action",
+            )
         except (httpx.HTTPError, ValueError):
-            return InvocationResult("transport_error", None, caps, remote_uncertainty="transport")
+            return InvocationResult(
+                "transport_error", None, caps,
+                connector_observations=observations,
+                remote_uncertainty="transport",
+            )
 
     def cancel(self, invocation_id, execution_context):
         return CancellationResult("uncertain", invocation_id, observed=False)

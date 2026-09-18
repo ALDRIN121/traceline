@@ -45,11 +45,12 @@ import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .config import settings
-from .events import CostBlock, TraceEvent
+from .events import CostBlock, EventType, RedactionState, Source, TokenUsage, TraceEvent, make_event
 from .evaluators import (
     CaseScore,
     CaseStatus,
@@ -70,10 +71,12 @@ from .lifecycle import (
     SmokeState,
 )
 from .runner import (
+    COMPLETED,
     INVOCATION_FAILED,
     NO_TRACE,
     PROVIDER_UNREACHABLE,
     TIMED_OUT,
+    CANCELLED,
     InvocationResult as RunnerInvocationResult,
     invoke_agent,
 )
@@ -643,6 +646,12 @@ class Engine:
                         run_id=run_id, workspace_id=workspace_id, metric=metric,
                         aggregate=aggregate, no_ci=no_ci,
                     )
+                if any(outcome.status == AttemptStatus.CANCELLED.value
+                       for outcome in case_result.repeat_outcomes):
+                    return self._cancel_run(
+                        run_id, workspace_id, spec, executed, landed,
+                        expected_n, no_ci, warnings,
+                    )
         except Exception:
             self.storage.set_run_status(run_id, workspace_id, RunStatus.INCOMPLETE)
             raise
@@ -735,6 +744,11 @@ class Engine:
                     attempt.attempt_id, workspace_id, AttemptStatus.ORPHANED,
                     error="previous runner process died; attempt orphaned on resume",
                 )
+                self.storage.set_remote_job_state(
+                    attempt_id=attempt.attempt_id,
+                    workspace_id=workspace_id,
+                    state="orphaned",
+                )
         for case in self.storage.list_cases(run_id, workspace_id):
             if case.status == RunCaseStatus.RUNNING.value:
                 self.storage.set_case_status(
@@ -793,6 +807,16 @@ class Engine:
                         and all(s.status is CaseStatus.PASS for s in retry.scores)
                     ):
                         break
+        if any(outcome.status == AttemptStatus.CANCELLED.value for outcome in repeat_outcomes):
+            self.storage.set_case_status(
+                run.run_id, case.case_id, workspace_id, RunCaseStatus.CANCELLED
+            )
+            return CaseRunResult(
+                run_id=run.run_id, case_id=case.case_id,
+                status=RunCaseStatus.CANCELLED.value, classification=None,
+                error_category="infra", repeat_outcomes=tuple(repeat_outcomes),
+                retry_outcomes=tuple(retry_outcomes), warnings=tuple(warnings),
+            )
         classification, error_category = self._classify_case(repeat_outcomes)
         self.storage.set_case_classification(
             run.run_id, case.case_id, workspace_id, classification, error_category
@@ -880,23 +904,63 @@ class Engine:
                 error=f"runner crashed: {exc}",
             )
             raise
+        failure_event_count = 0
+        failure_trace_truncated = False
+        if result.status not in {COMPLETED, NO_TRACE}:
+            # Adapter events from a failed invocation are not evidence of a
+            # successful agent attempt. Proxy events are different: they are
+            # the authoritative wire record and must survive cancellation,
+            # timeout, budget exhaustion, and provider failure for diagnosis
+            # and cost reconciliation.
+            proxy_evidence = tuple(
+                event for event in result.trace_events if event.source is Source.PROXY
+            )
+            if proxy_evidence:
+                try:
+                    kept, failure_trace_truncated = self._ingest_events(
+                        run, case.case_id, record.attempt_id, proxy_evidence,
+                    )
+                    failure_event_count = len(kept)
+                except EngineError as exc:
+                    self.storage.set_attempt_status(
+                        record.attempt_id, workspace_id, AttemptStatus.ERRORED, error=str(exc),
+                    )
+                    return AttemptResult(
+                        record.attempt_id, repeat_index, attempt, AttemptStatus.ERRORED.value,
+                        result.exit_code, 0, False, str(exc), (), result.result_payload,
+                    )
         if result.status == TIMED_OUT:
             self.storage.set_attempt_status(
                 record.attempt_id, workspace_id, AttemptStatus.TIMED_OUT,
                 exit_code=result.exit_code, error=result.error,
+                event_count=failure_event_count, trace_truncated=failure_trace_truncated,
             )
             return AttemptResult(
                 record.attempt_id, repeat_index, attempt, AttemptStatus.TIMED_OUT.value,
-                result.exit_code, 0, False, result.error, (), result.result_payload,
+                result.exit_code, failure_event_count, failure_trace_truncated,
+                result.error, (), result.result_payload,
+            )
+        if result.status == CANCELLED:
+            self.storage.set_attempt_status(
+                record.attempt_id, workspace_id, AttemptStatus.CANCELLED,
+                exit_code=result.exit_code, error=result.error,
+                event_count=failure_event_count, trace_truncated=failure_trace_truncated,
+            )
+            return AttemptResult(
+                record.attempt_id, repeat_index, attempt, AttemptStatus.CANCELLED.value,
+                result.exit_code, failure_event_count, failure_trace_truncated,
+                result.error, (), result.result_payload,
             )
         if result.status in (INVOCATION_FAILED, PROVIDER_UNREACHABLE):
             self.storage.set_attempt_status(
                 record.attempt_id, workspace_id, AttemptStatus.ERRORED,
                 exit_code=result.exit_code, error=result.error,
+                event_count=failure_event_count, trace_truncated=failure_trace_truncated,
             )
             return AttemptResult(
                 record.attempt_id, repeat_index, attempt, AttemptStatus.ERRORED.value,
-                result.exit_code, 0, False, result.error, (), result.result_payload,
+                result.exit_code, failure_event_count, failure_trace_truncated,
+                result.error, (), result.result_payload,
             )
         # completed | no_trace — ingest, then score.
         try:
@@ -1005,13 +1069,24 @@ class Engine:
         }
         context.update(self.target_execution_context)
         remote_job = self.storage.get_remote_job(attempt_id, workspace_id)
+        if remote_job is None:
+            remote_job = self.storage.get_resumable_remote_job(
+                run_id=run.run_id, case_id=case.case_id, workspace_id=workspace_id,
+            )
         if remote_job is not None:
             context["remote_job_id"] = remote_job["remote_job_id"]
         context["persist_remote_job"] = lambda remote_job_id: self.storage.save_remote_job(
             attempt_id=attempt_id, run_id=run.run_id, case_id=case.case_id,
             workspace_id=workspace_id, remote_job_id=remote_job_id, state="submitted",
         )
+        proxy_records = context.get("proxy_records")
+        proxy_offset = len(proxy_records) if isinstance(proxy_records, list) else 0
         adapter_result = self.target_adapter.invoke(manifest, case.input, context)
+        proxy_events = self._proxy_records_to_events(
+            proxy_records[proxy_offset:] if isinstance(proxy_records, list) else (),
+            context,
+            sequence_offset=len(adapter_result.trace_events),
+        )
         if adapter_result.connector_observations.get("remote_job_id"):
             self.storage.save_remote_job(
                 attempt_id=attempt_id, run_id=run.run_id, case_id=case.case_id,
@@ -1021,16 +1096,77 @@ class Engine:
             )
         status = {
             "ok": "completed", "no_trace": NO_TRACE, "timeout": TIMED_OUT,
-            "provider_unreachable": PROVIDER_UNREACHABLE,
+            "provider_unreachable": PROVIDER_UNREACHABLE, "cancelled": CANCELLED,
         }.get(adapter_result.outcome, INVOCATION_FAILED)
         safe_output = redact(adapter_result.output).content if adapter_result.output is not None else None
         return RunnerInvocationResult(
             status=status,
             exit_code=0 if status in ("completed", NO_TRACE) else None,
-            trace_events=tuple(adapter_result.trace_events),
+            trace_events=tuple(adapter_result.trace_events) + proxy_events,
             result_payload=safe_output if isinstance(safe_output, dict) else None,
             error=(None if status in ("completed", NO_TRACE) else adapter_result.outcome),
         )
+
+    @staticmethod
+    def _proxy_records_to_events(
+        records: Sequence[Mapping[str, Any]], context: Mapping[str, Any], *, sequence_offset: int,
+    ) -> tuple[TraceEvent, ...]:
+        """Convert trusted proxy capture metadata into authoritative events.
+
+        The proxy never sends request/response bodies through this bridge. Its
+        metadata has already been redacted and bounded at capture; the engine
+        only adds the current attempt identity and validates the typed cost
+        block before normal ingestion applies its remaining invariants.
+        """
+        events: list[TraceEvent] = []
+        allowed_payload = {"host", "path", "model", "status", "usage"}
+        for index, raw in enumerate(records):
+            if not isinstance(raw, Mapping) or raw.get("source") != "proxy":
+                raise EngineError("untrusted proxy record rejected")
+            try:
+                event_type = EventType(str(raw.get("type") or "llm_response"))
+            except ValueError as exc:
+                raise EngineError("proxy record has an unsupported event type") from exc
+            if event_type not in {EventType.LLM_CALL, EventType.LLM_RESPONSE, EventType.ERROR,
+                                  EventType.BUDGET_EXCEEDED}:
+                raise EngineError("proxy record has an unsupported event type")
+            usage = raw.get("usage")
+            tokens = TokenUsage()
+            if usage is not None:
+                if (not isinstance(usage, Mapping)
+                        or type(usage.get("prompt_tokens")) is not int
+                        or type(usage.get("completion_tokens")) is not int
+                        or usage["prompt_tokens"] < 0
+                        or usage["completion_tokens"] < 0):
+                    raise EngineError("proxy record usage is invalid")
+                tokens = TokenUsage(
+                    input=usage["prompt_tokens"], output=usage["completion_tokens"],
+                )
+            cost = raw.get("cost_usd_micros")
+            cost_block = None
+            if cost is not None:
+                if type(cost) is not int or cost < 0 or not isinstance(raw.get("price_version"), str):
+                    raise EngineError("proxy record cost is invalid")
+                cost_block = CostBlock(
+                    tokens=tokens, cost_usd=cost / 1_000_000,
+                    price_version=raw["price_version"],
+                )
+            payload = {key: raw[key] for key in allowed_payload if key in raw}
+            timestamp = raw.get("timestamp")
+            try:
+                observed_at = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else datetime.now(timezone.utc)
+            except ValueError as exc:
+                raise EngineError("proxy record timestamp is invalid") from exc
+            events.append(make_event(
+                event_type=event_type,
+                run_id=str(context["run_id"]), workspace_id=str(context["workspace_id"]),
+                case_id=str(context["case_id"]), attempt_id=str(context["attempt_id"]),
+                repeat_index=int(context["repeat_index"]), attempt=int(context["attempt"]),
+                sequence=sequence_offset + index, source=Source.PROXY,
+                timestamp=observed_at, cost=cost_block,
+                redaction_state=RedactionState(status="clean"), payload=payload,
+            ))
+        return tuple(events)
 
     def judgment_context(self, metric: Any, case: TestCase, evidence: tuple[str, ...]) -> JudgmentContext:
         """Resolve the exact candidate/evidence snapshot for the active attempt."""

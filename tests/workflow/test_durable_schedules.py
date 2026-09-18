@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, time
 
+import pytest
+
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.run_plans import RunPlanService
@@ -9,6 +11,7 @@ from llm_agent_eval.schedules import DurableScheduleService, due_daily_slots
 from llm_agent_eval.storage import Storage
 from llm_agent_eval.versions import VersionStore
 from llm_agent_eval.worker import WorkflowWorker
+from llm_agent_eval.contracts import WorkflowError
 
 
 def test_schedule_slots_are_persistent_and_idempotent(tmp_path):
@@ -54,3 +57,30 @@ def test_daily_schedule_can_skip_nonexistent_dst_time():
         time(2, 30), "America/New_York", dst_policy="skip",
     )
     assert slots == []
+
+
+def test_schedule_rejects_unimplemented_version_refresh_policy(tmp_path):
+    storage = Storage(tmp_path / "schedule-policy.db")
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    project = storage.create_project(workspace_id="ws", name="scheduled")
+    versions = VersionStore(storage)
+    evaluation = versions.create("evaluation", project.project_id, {"spec": {"name": "e", "cases": []}}, 0, actor)
+    dataset = versions.create("dataset", project.project_id, {"cases": []}, 0, actor)
+    plans = RunPlanService(storage)
+    plan = plans.plan_run(actor, {
+        "project_id": project.project_id,
+        "evaluation_version_id": evaluation.version_id,
+        "dataset_version_id": dataset.version_id,
+    }, {"tier": "quick"})
+    authorization = plans.authorize(actor, plan.plan_id, plan.content_digest)
+    try:
+        with pytest.raises(WorkflowError, match="only frozen version policy"):
+            DurableScheduleService(storage).create(
+                actor, plan_id=plan.plan_id, plan_hash=plan.content_digest,
+                authorization_id=authorization.authorization_id,
+                timezone_name="Asia/Kolkata", local_time="09:00",
+                version_policy="new_versions",
+            )
+    finally:
+        storage.close()

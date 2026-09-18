@@ -1730,10 +1730,41 @@ class Storage:
     @_workspace_scoped
     def get_remote_job(self, attempt_id: str, workspace_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
-            "SELECT remote_job_id, state FROM remote_jobs WHERE attempt_id = ? AND workspace_id = ?",
+            "SELECT attempt_id, remote_job_id, state FROM remote_jobs WHERE attempt_id = ? AND workspace_id = ?",
             (attempt_id, workspace_id),
         ).fetchone()
-        return None if row is None else {"remote_job_id": row[0], "state": row[1]}
+        return None if row is None else {"attempt_id": row[0], "remote_job_id": row[1], "state": row[2]}
+
+    @_workspace_scoped
+    def get_resumable_remote_job(
+        self, *, run_id: str, case_id: str, workspace_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest remote job left resumable by a dead worker.
+
+        A new attempt is deliberately created when a case is requeued, so the
+        current attempt id cannot identify the remote request.  Only jobs
+        explicitly marked ``orphaned`` by the stale-attempt reconciler are
+        eligible here; completed or ordinary failed jobs must never be reused
+        as a fresh repeat.
+        """
+        row = self._conn.execute(
+            "SELECT attempt_id, remote_job_id, state FROM remote_jobs "
+            "WHERE run_id = ? AND case_id = ? AND workspace_id = ? AND state = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (run_id, case_id, workspace_id, "orphaned"),
+        ).fetchone()
+        return None if row is None else {
+            "attempt_id": row[0], "remote_job_id": row[1], "state": row[2],
+        }
+
+    @_workspace_scoped
+    def set_remote_job_state(self, *, attempt_id: str, workspace_id: str, state: str) -> None:
+        with self._tx():
+            self._conn.execute(
+                "UPDATE remote_jobs SET state = ?, updated_at = ? "
+                "WHERE attempt_id = ? AND workspace_id = ?",
+                (state, _now(), attempt_id, workspace_id),
+            )
 
     # ------------------------------------------------------------------
     # Cost summaries (§12A.5) — per-run totals keyed by price_version

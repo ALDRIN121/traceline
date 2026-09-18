@@ -83,8 +83,15 @@ class DurableScheduleService:
             raise WorkflowError("local_time must be an HH:MM value", code="schedule_invalid")
         if dst_policy not in {"first", "skip"}:
             raise WorkflowError("unsupported DST policy", code="schedule_invalid")
-        if version_policy not in {"frozen", "new_versions"}:
-            raise WorkflowError("unsupported version policy", code="schedule_invalid")
+        if version_policy != "frozen":
+            # A schedule must never accept a policy it cannot execute. The
+            # current plan/authorization contract freezes exact version refs;
+            # silently treating ``new_versions`` as frozen would make the
+            # schedule's visible policy dishonest.
+            raise WorkflowError(
+                "only frozen version policy is currently supported",
+                code="schedule_version_policy_unsupported",
+            )
         if type(daily_request_limit) is not int or not 1 <= daily_request_limit <= 10_000:
             raise WorkflowError("daily_request_limit is invalid", code="schedule_invalid")
         if type(daily_budget_usd_micros) is not int or daily_budget_usd_micros < 0:

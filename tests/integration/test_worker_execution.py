@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.contracts import InvocationResult
 from llm_agent_eval.events import RedactionState, make_event
@@ -90,5 +92,60 @@ def test_scheduled_slots_create_distinct_measured_runs(tmp_path):
 
         assert first_result.result["run_id"] != second_result.result["run_id"]
         assert len(storage.list_runs("ws")) == 2
+    finally:
+        storage.close()
+
+
+def test_worker_binds_proxy_session_records_to_persisted_trace(tmp_path):
+    storage, actor, _worker, plan = _setup(tmp_path)
+    sessions = []
+
+    class ProxyTarget(FakeTarget):
+        def invoke(self, manifest, case_input, context):
+            context["proxy_records"].append({
+                "source": "proxy", "type": "llm_response", "host": "provider.test",
+                "path": "/v1/chat/completions", "model": "fixture-model", "status": 200,
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "cost_usd_micros": 2, "price_version": "fixture-v1",
+            })
+            return super().invoke(manifest, case_input, context)
+
+    class ProxySession:
+        def __init__(self):
+            self.records = []
+            self.started = False
+
+        def start(self):
+            self.started = True
+            return SimpleNamespace(
+                proxy_endpoint="http://proxy.internal:3128",
+                network_name="llm-agent-eval-run-managed",
+                network_run_id="run",
+                ca_cert=tmp_path / "ca.pem",
+            )
+
+        def stop(self):
+            self.started = False
+            return {"state": "stopped"}
+
+    worker = WorkflowWorker(
+        storage, tmp_path / "proxy-artifacts", MockGateway({}), fingerprint_key=b"f" * 32,
+        execution_target_factory=lambda actor, refs, context: (
+            ProxyTarget(), {"egress": "proxy"}, ("/source/agent",)
+        ),
+        proxy_session_factory=lambda actor, run_id, plan, context: (
+            sessions.append(ProxySession()) or sessions[-1]
+        ),
+    )
+    try:
+        auth = RunPlanService(storage).authorize(actor, plan.plan_id, plan.content_digest)
+        job = RunPlanService(storage).enqueue_run(
+            worker, actor, plan.plan_id, auth.authorization_id, plan.content_digest, "proxy-once"
+        )
+        terminal = worker.service(actor).run_once(job_id=job.job_id)
+        assert terminal.status == "completed", terminal.error
+        events = storage.get_trace_events(run_id=terminal.result["run_id"], workspace_id="ws")
+        assert any(event.source.value == "proxy" for event in events)
+        assert sessions and sessions[0].started is False
     finally:
         storage.close()

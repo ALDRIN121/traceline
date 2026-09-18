@@ -246,6 +246,7 @@ class Target(BaseModel):
         "tool_invocation",
         "tool_arguments",
         "tool_output",
+        "retrieval",
         "state_change",
         "workflow_node",
         "final_response",
