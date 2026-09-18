@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .artifacts import ArtifactStore
 from .calibration import JudgeCalibrationService
+from .ci_api import exit_code as ci_exit_code
+from .comparisons import ComparisonService
 from .contracts import WorkflowError
 from .egress.recording import Budget
 from .egress.routes import ProviderRouteRegistry
@@ -288,6 +290,13 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
     router.import_service = importer
     router.worker = worker
 
+    def _enqueue_plan_run(body: RunSubmissionRequest, request: Request, key: str):
+        job = run_plans.enqueue_run(
+            worker, request.state.actor, body.plan_id, body.authorization_id,
+            body.plan_hash, key,
+        )
+        return {"state": "queued", "job_id": job.job_id, "plan_id": body.plan_id}
+
     @router.post("/run-plans", status_code=201)
     def create_run_plan(body: RunPlanRequest, request: Request):
         plan = run_plans.plan_run(request.state.actor, body.version_refs, body.limits)
@@ -310,11 +319,64 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         key = request.headers.get("Idempotency-Key")
         if not key:
             raise WorkflowError("An Idempotency-Key is required")
-        job = run_plans.enqueue_run(
-            worker, request.state.actor, body.plan_id, body.authorization_id,
-            body.plan_hash, key,
+        return _enqueue_plan_run(body, request, key)
+
+    @router.post("/ci/runs", status_code=202)
+    def enqueue_ci_run(body: RunSubmissionRequest, request: Request):
+        """Authenticated CI entrypoint over the same immutable run-plan path."""
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            raise WorkflowError("An Idempotency-Key is required")
+        return _enqueue_plan_run(body, request, key)
+
+    @router.post("/webhooks/evaluations", status_code=202)
+    def enqueue_webhook_run(body: RunSubmissionRequest, request: Request):
+        """Trigger a pre-authorized evaluation from a signed/authenticated webhook.
+
+        The deployment authentication boundary authenticates the webhook request;
+        the delivery ID becomes the durable idempotency key so provider retries
+        cannot enqueue or spend twice.
+        """
+        delivery = request.headers.get("X-Webhook-Delivery")
+        key = request.headers.get("Idempotency-Key") or delivery
+        if not key:
+            raise WorkflowError("X-Webhook-Delivery or Idempotency-Key is required")
+        return {
+            **_enqueue_plan_run(body, request, f"webhook:{key}"),
+            "trigger": "webhook",
+        }
+
+    @router.get("/ci/runs/{run_id}")
+    def get_ci_run(run_id: str, request: Request):
+        run = store().get_run(run_id, request.state.actor.workspace_id)
+        if run is None:
+            raise WorkflowError("Run not found", code="not_found", status=404)
+        metrics = [
+            {
+                "metric_id": metric.metric_id,
+                "value": metric.value,
+                "method": metric.method,
+                "aggregation_state": metric.aggregation_state,
+                "gate_status": metric.gate_status,
+                "no_ci": metric.no_ci,
+                "sample_n": metric.sample_n,
+                "error_n": metric.error_n,
+                "skipped_n": metric.skipped_n,
+                "computed_at": metric.computed_at,
+            }
+            for metric in store().get_run_metric_results(run_id, request.state.actor.workspace_id)
+        ]
+        payload = {"run_id": run_id, "status": run.status, "metrics": metrics}
+        return {**payload, "exit_code": ci_exit_code(payload)}
+
+    @router.post("/comparisons")
+    def compare_ci_runs(body: dict[str, Any], request: Request):
+        return ComparisonService(store()).compare(
+            request.state.actor.workspace_id,
+            body.get("baseline_run_id"), body.get("candidate_run_id"),
+            body.get("metric_id"), resamples=body.get("resamples", 10_000),
+            seed=body.get("seed", 0),
         )
-        return {"state": "queued", "job_id": job.job_id, "plan_id": body.plan_id}
 
     @router.post("/schedules", status_code=201)
     def create_schedule(body: ScheduleRequest, request: Request):

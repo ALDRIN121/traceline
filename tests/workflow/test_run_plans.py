@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 import pytest
 
 from llm_agent_eval.auth import Actor
@@ -112,5 +113,51 @@ def test_evaluation_run_submission_is_idempotent_and_workspace_scoped(tmp_path):
         with pytest.raises(WorkflowError) as error:
             service.get_plan(Actor("other", "ws-b", "owner"), plan.plan_id)
         assert error.value.code == "not_found"
+    finally:
+        storage.close()
+
+
+def test_plan_rejects_metrics_that_target_cannot_evidence(tmp_path):
+    storage, actor, project, _evaluation, dataset = _service(tmp_path)
+    isolated_project = storage.create_project(workspace_id="ws-a", name="capability-test")
+    target_id = uuid.uuid4().hex
+    with storage.workspace_transaction(actor.workspace_id) as conn:
+        conn.execute(
+            "INSERT INTO targets (workspace_id,target_id,project_id,created_at) VALUES (?,?,?,?)",
+            (actor.workspace_id, target_id, isolated_project.project_id, "2026-01-01T00:00:00+00:00"),
+        )
+    versions = VersionStore(storage)
+    target = versions.create(
+        "target", target_id,
+        {
+            "kind": "http_json",
+            "verification": {
+                "state": "verified",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "capabilities": {
+                    "final_output": "observed",
+                    "tool_execution": "unavailable",
+                    "retrieval": "unavailable",
+                },
+            },
+        }, 0, actor,
+    )
+    unsupported = versions.create(
+        "evaluation", isolated_project.project_id,
+        {"spec": {"metrics": [
+            {"metric_id": "tools", "target": {"type": "tool_output"}},
+            {"metric_id": "retrieval", "target": {"type": "retrieval"}},
+        ]}}, 0, actor,
+    )
+    try:
+        plan = RunPlanService(storage).plan_run(actor, {
+            "project_id": isolated_project.project_id,
+            "evaluation_version_id": unsupported.version_id,
+            "dataset_version_id": dataset.version_id,
+            "target_version_id": target.version_id,
+        }, {})
+        assert plan.state == "blocked"
+        assert "target_capability_required:tools:tool_execution" in plan.blockers
+        assert "target_capability_required:retrieval:retrieval" in plan.blockers
     finally:
         storage.close()

@@ -385,8 +385,10 @@ It is not an R1 release declaration.
   durable worker. Run plans require immutable evaluation/dataset references,
   verified non-stale targets, and explicit authorization. Local executable
   sources are materialized inside worker-owned staging; target invocation no
-  longer persists a host source path in the run manifest. Hosted output-only
-  runs and a judge-backed run are covered by integration tests.
+  longer persists a host source path in the run manifest. Plan admission now
+  rejects tool/retrieval metrics when the target verification receipt declares
+  those evidence capabilities unavailable. Hosted output-only runs and a
+  judge-backed run are covered by integration tests.
 - **Output evidence and re-score:** target/local output is redacted before
   persistence in `attempt_outputs`; deterministic raw values are stored in
   case results. `POST /runs/{run_id}/metrics/{metric_id}/rescore` creates a new
@@ -398,6 +400,13 @@ It is not an R1 release declaration.
   authoritative scores. They return explicit incomparable states, disclose
   source/target/model/repeat confounders, and omit the confidence interval when
   repeats are below the minimum.
+- **CI and webhook control plane:** authenticated `/api/ci/runs`,
+  `/api/ci/runs/{run_id}`, and `/api/comparisons` routes now use the immutable
+  plan/authorization and comparison services. Authenticated
+  `/api/webhooks/evaluations` submissions bind the delivery ID to durable job
+  idempotency, so provider retries return the original queued job. Focused route
+  tests cover anonymous rejection, stable CI exit codes, and duplicate delivery
+  behavior.
 - **Proxy/network seam:** a bounded listener, per-run CA/session, trusted
   dual-homed Podman relay, managed internal network, and sandbox proxy
   argument vector exist. The live opt-in suite now passes the relay/provider
@@ -432,8 +441,14 @@ It is not an R1 release declaration.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
-  backup/restore, retention enforcement, export/preview TTLs, and a real
-  cross-process recovery rehearsal remain open. The authenticated run now has
+  backup/restore, retention enforcement, and export/preview TTLs remain open.
+  The Compose PostgreSQL deployment now
+  has observed RLS, non-bypass startup, job reclaim, worker fencing, and
+  shutdown-abandonment evidence: the disposable `TEST_DATABASE_URL` suite
+  passed **6 tests** on host port 5433; separate spawned-process tests also
+  killed a leased generic worker and a leased evaluation worker and observed
+  replacement reclaim/publication of the frozen run. The
+  authenticated run now has
   CSV and HTML export routes; `POST /api/exports` persists workspace-scoped
   frozen manifests with JSON/CSV/HTML hashes, and `ci-status` exposes the
   documented 0/1/2 contract. Frozen exports now retain per-case metric scores,
@@ -469,7 +484,7 @@ It is not an R1 release declaration.
   frameworks. Schedules enforce the implemented frozen-version policy rather
   than accepting an unimplemented refresh policy. Retrieval adapter/framework
   conformance beyond generic HTTP remains open.
-- **Observed suite:** the default suite is **897 passed, 9 skipped, 7
+- **Observed suite:** the default suite is **901 passed, 11 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
@@ -477,8 +492,7 @@ It is not an R1 release declaration.
 **Still release-blocking:** the specialist-owned authoring/results UI is not
 complete; the trusted proxy-route/session factory exists, but its configured
 route file, credential setup, and full containerized deployment topology are
-not yet release-proven; worker restart recovery is covered at the
-adapter/engine seam but not by a killed-process live acceptance run;
+not yet release-proven;
 provider-client HTTPS interception from inside the case and
 direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
 Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,

@@ -28,6 +28,14 @@ _VERSION_REF_KEYS = frozenset({
 })
 _REQUIRED_VERSION_KEYS = ("evaluation_version_id", "dataset_version_id")
 _TIERS = frozenset({"quick", "standard", "full"})
+_TARGET_CAPABILITY_BY_METRIC_TARGET = {
+    "final_response": "final_output",
+    "model_output": "final_output",
+    "tool_invocation": "tool_execution",
+    "tool_arguments": "tool_execution",
+    "tool_output": "tool_execution",
+    "retrieval": "retrieval",
+}
 
 
 def _canonical(value: Any) -> str:
@@ -40,6 +48,15 @@ def _canonical(value: Any) -> str:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _metric_capability(metric: Any) -> str | None:
+    if not isinstance(metric, Mapping):
+        return None
+    target = metric.get("target")
+    if not isinstance(target, Mapping):
+        return None
+    return _TARGET_CAPABILITY_BY_METRIC_TARGET.get(target.get("type"))
 
 
 @dataclass(frozen=True)
@@ -137,6 +154,33 @@ class RunPlanService:
                         stale = True
                     if stale:
                         blockers.append("target_verification_stale")
+
+        # Bind the requested evidence surface to the target's immutable
+        # verification receipt before authorization. A target that can only
+        # return final output must not be authorized for tool or retrieval
+        # metrics that it cannot possibly evidence.
+        target_version_id = normalized_refs.get("target_version_id")
+        evaluation_version_id = normalized_refs.get("evaluation_version_id")
+        if target_version_id and evaluation_version_id:
+            target_version = self.versions.get(target_version_id, actor)
+            evaluation_version = self.versions.get(evaluation_version_id, actor)
+            verification = target_version.content.get("verification") or {}
+            capabilities = verification.get("capabilities") or {}
+            spec = evaluation_version.content.get("spec", evaluation_version.content)
+            metrics = spec.get("metrics", []) if isinstance(spec, Mapping) else []
+            if isinstance(metrics, list):
+                for metric in metrics:
+                    capability = _metric_capability(metric)
+                    if capability is None:
+                        continue
+                    if capabilities.get(capability) not in {"observed", "declared"}:
+                        metric_id = (
+                            metric.get("metric_id", "unknown")
+                            if isinstance(metric, Mapping) else "unknown"
+                        )
+                        blockers.append(
+                            f"target_capability_required:{metric_id}:{capability}"
+                        )
 
         normalized_limits = json.loads(_canonical(dict(limits)))
         tier = normalized_limits.get("tier")
