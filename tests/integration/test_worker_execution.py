@@ -72,3 +72,23 @@ def test_evaluation_run_worker_executes_and_is_idempotent(tmp_path):
         assert replay.status == "completed"
     finally:
         storage.close()
+
+
+def test_scheduled_slots_create_distinct_measured_runs(tmp_path):
+    storage, actor, worker, plan = _setup(tmp_path)
+    try:
+        auth = RunPlanService(storage).authorize(actor, plan.plan_id, plan.content_digest)
+        command = {
+            "kind": "evaluation_run", "plan_id": plan.plan_id,
+            "plan_hash": plan.content_digest, "authorization_id": auth.authorization_id,
+            "schedule_id": "schedule-1",
+        }
+        first = worker.queue(actor).enqueue({**command, "schedule_slot": "slot-1"}, "schedule:slot-1")
+        second = worker.queue(actor).enqueue({**command, "schedule_slot": "slot-2"}, "schedule:slot-2")
+        first_result = worker.service(actor).run_once(job_id=first.job_id)
+        second_result = worker.service(actor).run_once(job_id=second.job_id)
+
+        assert first_result.result["run_id"] != second_result.result["run_id"]
+        assert len(storage.list_runs("ws")) == 2
+    finally:
+        storage.close()

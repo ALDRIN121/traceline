@@ -99,6 +99,7 @@ class SourceRuntimeService:
                 base_image=runtime_profile["base_image"],
                 entrypoint=tuple(runtime_profile["entrypoint"]),
                 policy_version=runtime_profile.get("policy_version", "r1-restricted-build-v1"),
+                egress=runtime_profile.get("egress", "none"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise WorkflowError("runtime_profile is invalid", code="runtime_profile_invalid") from exc
@@ -109,6 +110,7 @@ class SourceRuntimeService:
         content["runtime"] = {
             "image_digest": job.image_digest,
             "entrypoint": list(job.entrypoint),
+            "egress": profile.egress,
             "source_snapshot_digest": job.source_digest,
             "build_provenance": dict(job.provenance),
         }

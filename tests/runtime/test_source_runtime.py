@@ -58,11 +58,15 @@ def test_source_runtime_materializes_only_sanitized_files_and_records_runtime(tm
         )
         prepared = service.prepare(
             source.version_id,
-            {"base_image": IMAGE, "entrypoint": ["/usr/bin/python", "/source/agent.py"]},
+            {
+                "base_image": IMAGE, "entrypoint": ["/usr/bin/python", "/source/agent.py"],
+                "egress": "proxy",
+            },
         )
 
         assert prepared.content["readiness"] == "executable"
         assert prepared.content["runtime"]["image_digest"] == IMAGE
+        assert prepared.content["runtime"]["egress"] == "proxy"
         snapshot = service.materialize(prepared.version_id)
         assert (snapshot.source_dir / "agent.py").read_text() == "print('ok')\n"
         assert snapshot.source_dir.is_dir()

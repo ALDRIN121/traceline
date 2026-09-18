@@ -25,6 +25,7 @@ class RuntimeProfile:
     base_image: str
     entrypoint: tuple[str, ...]
     policy_version: str = "r1-restricted-build-v1"
+    egress: str = "none"
 
     def __post_init__(self):
         if not isinstance(self.base_image, str) or not self.base_image.startswith("sha256:"):
@@ -37,6 +38,8 @@ class RuntimeProfile:
             raise BuildDenied("entrypoint arguments must be bounded strings")
         if not self.entrypoint[0].startswith("/"):
             raise BuildDenied("entrypoint must be absolute inside the image")
+        if self.egress not in {"none", "proxy"}:
+            raise BuildDenied("runtime egress must be none or proxy")
 
 
 @dataclass(frozen=True)

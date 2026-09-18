@@ -281,7 +281,7 @@ class RecordingEgress:
         try:
             status, payload = self._send(
                 {"host": self.route.host, "path": path, "model": self.route.model,
-                 "origin": self.route.origin},
+                 "origin": self.route.origin, "provider": self.route.provider},
                 body,
                 outbound_headers,
             )

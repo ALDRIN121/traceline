@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from ..redaction import redact
+
 
 def cassette_fingerprint(provider: str, path: str, request: Any, version: str) -> str:
     encoded = json.dumps({"provider": provider, "path": path, "request": request, "version": version},
@@ -30,10 +32,16 @@ class CassetteWorld:
         path = self._path(fingerprint)
         if self.mode in {"replay", "hybrid"} and path.exists():
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("version") != self.version:
+                raise ValueError("cassette version mismatch")
             return int(payload["status"]), payload["body"]
         if self.mode == "replay":
             raise KeyError(fingerprint)
         status, body = send()
-        path.write_text(json.dumps({"version": self.version, "status": status, "body": body},
-                                   sort_keys=True, separators=(",", ":")), encoding="utf-8")
-        return status, body
+        safe_body = redact(body).content
+        encoded = json.dumps({"version": self.version, "status": status, "body": safe_body},
+                              sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 1_048_576:
+            raise ValueError("cassette response exceeds byte limit")
+        path.write_text(encoded, encoding="utf-8")
+        return status, safe_body

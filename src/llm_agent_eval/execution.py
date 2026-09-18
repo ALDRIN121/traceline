@@ -79,7 +79,17 @@ class RunExecutionService:
             target_context = {}
         else:
             adapter, manifest, entrypoint, target_context = resolved
-        idempotency_key = f"evaluation-plan:{plan.plan_id}:{plan.content_digest}"
+        schedule_id = command.get("schedule_id")
+        schedule_slot = command.get("schedule_slot")
+        if schedule_id or schedule_slot:
+            if not isinstance(schedule_id, str) or not isinstance(schedule_slot, str) or not schedule_id or not schedule_slot:
+                raise WorkflowError("scheduled run identity is incomplete", code="schedule_identity_invalid", status=409)
+            # Every due slot is a new measured run. A plan-level retry remains
+            # idempotent within that slot, while adjacent slots must not
+            # collapse to the manual-run idempotency key.
+            idempotency_key = f"schedule-run:{schedule_id}:{schedule_slot}"
+        else:
+            idempotency_key = f"evaluation-plan:{plan.plan_id}:{plan.content_digest}"
         existing = self.storage.get_run_by_idempotency_key(actor.workspace_id, idempotency_key)
         if existing is not None and existing.status in {"complete", "failed", "cancelled"}:
             return {"state": existing.status, "run_id": existing.run_id, "plan_id": plan.plan_id}

@@ -420,8 +420,10 @@ It is not an R1 release declaration.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
-  backup/restore, retention enforcement, export/preview TTLs, and a real
-  cross-process recovery rehearsal remain open.
+  backup/restore, retention enforcement, export/preview TTLs, actual proxy-ledger
+  reconciliation for schedule USD limits, and a real cross-process recovery
+  rehearsal remain open. Scheduled slots now use distinct per-slot run
+  idempotency keys instead of collapsing into one plan-level run.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
