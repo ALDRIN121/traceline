@@ -189,6 +189,7 @@ class Engine:
         tiers: Any = None,
         target_adapter: Any = None,
         target_execution_context: Mapping[str, Any] | None = None,
+        judge_readiness: Any = None,
     ):
         self.storage = storage
         # Missing judge configuration is an evaluator error, never a fabricated
@@ -207,7 +208,9 @@ class Engine:
         # Worker-owned connector context (for example a resolved secret) is
         # ephemeral and must never enter the frozen manifest or run storage.
         self.target_execution_context = dict(target_execution_context or {})
+        self.judge_readiness = judge_readiness
         self._active_judgment_context: JudgmentContext | None = None
+        self._should_cancel: Callable[[], bool] | None = None
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
@@ -534,6 +537,7 @@ class Engine:
         missing, never a fabricated complete) and the run lands in
         ``cancelled``. The in-flight case (if any) is allowed to finish; the
         signal is honored at the case boundary."""
+        self._should_cancel = should_cancel
         run = self.storage.get_run(run_id, workspace_id)
         if run is None:
             raise KeyError(f"run {run_id!r} not found in workspace {workspace_id!r}")
@@ -996,6 +1000,8 @@ class Engine:
             "run_id": run.run_id, "workspace_id": workspace_id,
             "case_id": case.case_id, "attempt_id": attempt_id,
             "repeat_index": repeat_index, "attempt": attempt,
+            "interaction_script": [step.model_dump(exclude_none=True) for step in case.script],
+            "should_cancel": self._should_cancel,
         }
         context.update(self.target_execution_context)
         remote_job = self.storage.get_remote_job(attempt_id, workspace_id)
@@ -1194,7 +1200,7 @@ class Engine:
             self.storage.set_run_status(run.run_id, workspace_id, RunStatus.AGGREGATING)
         # §15A.1 (owner decision 4J): with no readiness registry there is no
         # calibration evidence — judge metrics never gate in the MVP.
-        gate_safe_metrics = gate_safe(spec.metrics)
+        gate_safe_metrics = gate_safe(spec.metrics, readiness=self.judge_readiness)
         gate_results: list[GateResult] = []
         for metric in spec.metrics:
             aggregate = aggregate_metric(

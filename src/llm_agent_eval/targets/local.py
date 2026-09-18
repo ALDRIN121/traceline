@@ -86,7 +86,11 @@ class LocalTargetAdapter:
                     network_run_id=execution_context.get("network_run_id"),
                     ca_cert=execution_context.get("ca_cert"),
                 )
-                result = self.sandbox.run(request)
+                cancel = execution_context.get("should_cancel")
+                result = (
+                    self.sandbox.run(request, should_cancel=cancel)
+                    if callable(cancel) else self.sandbox.run(request)
+                )
             except SandboxDenied as exc:
                 return InvocationResult(
                     outcome="invalid_runtime_manifest", output=None,

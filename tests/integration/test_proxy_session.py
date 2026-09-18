@@ -1,5 +1,5 @@
 from llm_agent_eval.egress.recording import Budget, ProviderRoute
-from llm_agent_eval.egress.session import ProxyRunSession
+from llm_agent_eval.egress.session import ProxyRunSession, _PodmanProxyRelay
 from llm_agent_eval.runtime.network import NetworkLease
 
 
@@ -32,3 +32,39 @@ def test_proxy_session_owns_ca_listener_and_network(tmp_path):
     result = session.stop()
     assert result["proxy"]["state"] == "stopped"
     assert result["network"]["state"] == "removed"
+
+
+class _CommandResult:
+    def __init__(self, returncode=0, stdout=b"", stderr=b"", interrupted=None):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.interrupted = interrupted
+
+
+class _RelaySandbox:
+    def __init__(self):
+        self.commands = []
+
+    def _command(self, args):
+        self.commands.append(args)
+        if args[:3] == ["image", "inspect", "--format"]:
+            return _CommandResult(stdout=b"sha256:" + b"a" * 64)
+        if args[:2] == ["inspect", "--format"]:
+            return _CommandResult(returncode=1)
+        return _CommandResult()
+
+
+def test_proxy_relay_cleans_up_when_inspection_fails():
+    sandbox = _RelaySandbox()
+    relay = _PodmanProxyRelay(sandbox, "llm-agent-eval-run-test", "run-1")
+
+    try:
+        relay.start(12345)
+    except RuntimeError as exc:
+        assert "inspected" in str(exc)
+    else:
+        raise AssertionError("relay start unexpectedly succeeded")
+
+    assert ["rm", "--force", "--time", "0", relay.name] in sandbox.commands
+    assert relay.stop() == {"state": "already_stopped"}

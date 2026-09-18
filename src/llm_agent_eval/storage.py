@@ -107,6 +107,8 @@ __all__ = [
     "CustomEvalRecord",
     "ScheduleRecord",
     "ScheduleSlotRecord",
+    "JudgeCalibrationRecord",
+    "JudgeCalibrationLabelRecord",
     "case_key",
 ]
 
@@ -715,6 +717,37 @@ class ScheduleSlotRecord:
     job_id: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class JudgeCalibrationRecord:
+    workspace_id: str
+    binding_key: str
+    provider: str
+    model: str
+    schema_version: str
+    rubric_version: str
+    generation: int
+    state: str
+    label_count: int
+    kappa: float | None
+    min_labels: int
+    kappa_ready: float
+    kappa_reset: float
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class JudgeCalibrationLabelRecord:
+    workspace_id: str
+    binding_key: str
+    generation: int
+    label_id: str
+    case_id: str
+    human_label: Any
+    judge_label: Any
+    author_id: str
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -1964,6 +1997,82 @@ class Storage:
         rows = self._conn.execute(sql, params).fetchall()
         return [_score_revision_from_row(r) for r in rows]
 
+    # ------------------------------------------------------------------
+    # Judge calibration (§15A) — durable instrument state and label lineage
+    # ------------------------------------------------------------------
+
+    @_workspace_scoped
+    def get_judge_calibration(
+        self, *, workspace_id: str, binding_key: str,
+    ) -> JudgeCalibrationRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM judge_calibrations WHERE workspace_id = ? AND binding_key = ?",
+            (workspace_id, binding_key),
+        ).fetchone()
+        return _judge_calibration_from_row(row) if row is not None else None
+
+    @_workspace_scoped
+    def upsert_judge_calibration(
+        self, *, workspace_id: str, binding_key: str, provider: str, model: str,
+        schema_version: str, rubric_version: str, generation: int, state: str,
+        label_count: int, kappa: float | None, min_labels: int,
+        kappa_ready: float, kappa_reset: float,
+    ) -> JudgeCalibrationRecord:
+        if state not in {"UNCALIBRATED", "CALIBRATING", "CALIBRATED"}:
+            raise ValueError("invalid judge calibration state")
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO judge_calibrations (workspace_id,binding_key,provider,model,"
+                " schema_version,rubric_version,generation,state,label_count,kappa,min_labels,"
+                " kappa_ready,kappa_reset,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT (workspace_id,binding_key) DO UPDATE SET provider=excluded.provider,"
+                " model=excluded.model,schema_version=excluded.schema_version,rubric_version=excluded.rubric_version,"
+                " generation=excluded.generation,state=excluded.state,label_count=excluded.label_count,"
+                " kappa=excluded.kappa,min_labels=excluded.min_labels,kappa_ready=excluded.kappa_ready,"
+                " kappa_reset=excluded.kappa_reset,updated_at=excluded.updated_at",
+                (workspace_id, binding_key, provider, model, schema_version, rubric_version,
+                 generation, state, label_count, kappa, min_labels, kappa_ready, kappa_reset, _now()),
+            )
+        result = self.get_judge_calibration(workspace_id=workspace_id, binding_key=binding_key)
+        assert result is not None
+        return result
+
+    @_workspace_scoped
+    def append_judge_calibration_label(
+        self, *, workspace_id: str, binding_key: str, generation: int,
+        label_id: str, case_id: str, human_label: Any, judge_label: Any,
+        author_id: str,
+    ) -> JudgeCalibrationLabelRecord:
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO judge_calibration_labels (workspace_id,binding_key,generation,"
+                " label_id,case_id,human_label,judge_label,author_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT (workspace_id,binding_key,generation,label_id) DO NOTHING",
+                (workspace_id, binding_key, generation, label_id, case_id,
+                 json.dumps(human_label, sort_keys=True, allow_nan=False),
+                 json.dumps(judge_label, sort_keys=True, allow_nan=False), author_id, _now()),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM judge_calibration_labels WHERE workspace_id = ? AND binding_key = ?"
+            " AND generation = ? AND label_id = ?",
+            (workspace_id, binding_key, generation, label_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError("calibration label was not persisted")
+        return _judge_calibration_label_from_row(row)
+
+    @_workspace_scoped
+    def list_judge_calibration_labels(
+        self, *, workspace_id: str, binding_key: str, generation: int | None = None,
+    ) -> list[JudgeCalibrationLabelRecord]:
+        sql = "SELECT * FROM judge_calibration_labels WHERE workspace_id = ? AND binding_key = ?"
+        params: list[Any] = [workspace_id, binding_key]
+        if generation is not None:
+            sql += " AND generation = ?"
+            params.append(generation)
+        sql += " ORDER BY created_at, label_id"
+        return [_judge_calibration_label_from_row(row) for row in self._conn.execute(sql, params).fetchall()]
+
     @_workspace_scoped
     def create_custom_eval(
         self,
@@ -2214,6 +2323,28 @@ def _schedule_slot_from_row(row: sqlite3.Row) -> ScheduleSlotRecord:
         slot_key=row["slot_key"], slot_at=row["slot_at"], state=row["state"],
         owner=row["owner"], job_id=row["job_id"], created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _judge_calibration_from_row(row: sqlite3.Row) -> JudgeCalibrationRecord:
+    return JudgeCalibrationRecord(
+        workspace_id=row["workspace_id"], binding_key=row["binding_key"],
+        provider=row["provider"], model=row["model"],
+        schema_version=row["schema_version"], rubric_version=row["rubric_version"],
+        generation=int(row["generation"]), state=row["state"],
+        label_count=int(row["label_count"]), kappa=row["kappa"],
+        min_labels=int(row["min_labels"]), kappa_ready=float(row["kappa_ready"]),
+        kappa_reset=float(row["kappa_reset"]), updated_at=row["updated_at"],
+    )
+
+
+def _judge_calibration_label_from_row(row: sqlite3.Row) -> JudgeCalibrationLabelRecord:
+    return JudgeCalibrationLabelRecord(
+        workspace_id=row["workspace_id"], binding_key=row["binding_key"],
+        generation=int(row["generation"]), label_id=row["label_id"],
+        case_id=row["case_id"], human_label=_j(row["human_label"]),
+        judge_label=_j(row["judge_label"]), author_id=row["author_id"],
+        created_at=row["created_at"],
     )
 
 

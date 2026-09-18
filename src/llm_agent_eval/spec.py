@@ -118,7 +118,9 @@ _OCCURRENCE_RE = re.compile(r"^(first|last|all|index:[0-9]+)$")
 
 #: evaluator types whose raw output is a number (binary scoring then requires
 #: scoring.condition — §7A.2, never defaulted).
-_NUMERIC_PRODUCING_EVALUATORS: tuple[str, ...] = ("numeric",)
+_NUMERIC_PRODUCING_EVALUATORS: tuple[str, ...] = (
+    "numeric", "recall_at_k", "citation_correctness",
+)
 
 #: Tool-scoped target types: `tool` names the tool (§7A.3).
 _TOOL_SCOPED_TARGETS: tuple[str, ...] = ("tool_invocation", "tool_arguments", "tool_output")
@@ -329,6 +331,8 @@ class Evaluator(BaseModel):
         "trace_rule",
         "llm_judge",
         "composite",
+        "recall_at_k",
+        "citation_correctness",
     ]
     #: exact_match / numeric / reference (reference: a dotted path into the
     #: test case's expected, e.g. "test.expected.refund_amount").
@@ -349,6 +353,9 @@ class Evaluator(BaseModel):
     rule: dict[str, Any] | None = None
     #: llm_judge — rubric version reference (§15A).
     rubric_version_id: str | None = None
+    #: R2 retrieval evaluators use bounded, immutable fixture definitions.
+    k: int | None = None
+    evidence: dict[str, bool] | None = None
 
     @model_validator(mode="after")
     def _config_matches_type(self) -> "Evaluator":
@@ -385,6 +392,17 @@ class Evaluator(BaseModel):
             validate_trace_rule_body(self.rule)
         if t == "llm_judge" and not (isinstance(self.rubric_version_id, str) and self.rubric_version_id):
             raise ValueError("llm_judge evaluator requires 'rubric_version_id' (§15A)")
+        if t == "recall_at_k":
+            if not isinstance(self.expected, list) or any(not isinstance(item, str) or not item for item in self.expected):
+                raise ValueError("recall_at_k evaluator requires a non-empty string 'expected' list")
+            if type(self.k) is not int or self.k < 1:
+                raise ValueError("recall_at_k evaluator requires positive integer 'k'")
+        if t == "citation_correctness":
+            if not isinstance(self.evidence, dict) or any(
+                not isinstance(key, str) or type(value) is not bool
+                for key, value in self.evidence.items()
+            ):
+                raise ValueError("citation_correctness evaluator requires a boolean 'evidence' map")
         return self
 
 

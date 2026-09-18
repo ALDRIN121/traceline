@@ -199,6 +199,7 @@ class JudgeReadiness:
     min_labels: int = _DEFAULT_MIN_LABELS
     kappa_ready: float = _DEFAULT_KAPPA_READY
     kappa_reset: float = _DEFAULT_KAPPA_RESET
+    generation: int = 0
 
     def __post_init__(self) -> None:
         if self.label_count < 0:
@@ -236,6 +237,7 @@ class JudgeReadiness:
             min_labels=self.min_labels,
             kappa_ready=self.kappa_ready,
             kappa_reset=self.kappa_reset,
+            generation=self.generation + 1,
         )
 
     def _derive(self) -> "JudgeReadiness":

@@ -9,7 +9,9 @@ from typing import Any
 import httpx
 
 from ..contracts import CancellationResult, InvocationResult, VerificationRecord
+from ..events import EventType
 from ..streaming import SSEParser, StreamProtocolError
+from .evidence import adapter_event
 from .network_policy import EndpointPolicy, PolicyDenied
 from .transport import PinnedTransport
 
@@ -39,6 +41,13 @@ class HttpStreamAdapter:
         first_byte = None
         first_token = None
         final = None
+        trace_events = []
+        start_event = adapter_event(
+            execution_context, EventType.STREAM_START, 0,
+            {"protocol": "sse", "mode": "streaming"},
+        )
+        if start_event is not None:
+            trace_events.append(start_event)
         try:
             client_args = {"timeout": float(target.get("timeout_seconds", 30)), "trust_env": False}
             if self.policy is not None:
@@ -59,11 +68,23 @@ class HttpStreamAdapter:
                         for frame in parser.feed(chunk):
                             if first_token is None:
                                 first_token = time.time()
+                                event = adapter_event(
+                                    execution_context, EventType.FIRST_TOKEN, len(trace_events),
+                                    {"event": frame.event},
+                                )
+                                if event is not None:
+                                    trace_events.append(event)
                             if frame.event in {"final", "done"}:
                                 try:
                                     final = json.loads(frame.data)
                                 except ValueError as exc:
                                     raise StreamProtocolError("final frame is not JSON") from exc
+                                event = adapter_event(
+                                    execution_context, EventType.LLM_RESPONSE, len(trace_events),
+                                    {"event": frame.event, "has_output": True},
+                                )
+                                if event is not None:
+                                    trace_events.append(event)
             parser.finish()
         except (httpx.HTTPError, StreamProtocolError, PolicyDenied, ValueError) as exc:
             return InvocationResult("stream_protocol_error", None, {"final_output": "unavailable"},
@@ -77,6 +98,7 @@ class HttpStreamAdapter:
             connector_observations={"stream_start": started, "first_byte": first_byte,
                                     "first_token": first_token, "final": time.time(),
                                     "completed": time.time()},
+            trace_events=tuple(trace_events),
         )
 
     def cancel(self, invocation_id, execution_context) -> CancellationResult:

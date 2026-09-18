@@ -15,8 +15,9 @@ class FakeSandbox:
         self.manifests = []
         self.inputs = []
 
-    def run(self, request):
+    def run(self, request, **kwargs):
         self.requests.append(request)
+        self.should_cancel = kwargs.get("should_cancel")
         self.manifests.append((request.input_dir / "manifest.json").read_text())
         self.inputs.append((request.input_dir / "case.json").read_text())
         return self.result
@@ -124,3 +125,22 @@ def test_local_adapter_parses_only_validated_trace_events(tmp_path):
     assert result.outcome == "ok"
     assert len(result.trace_events) == 1
     assert result.trace_events[0].type.value == "tool_call"
+
+
+def test_local_adapter_passes_worker_cancellation_to_sandbox(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("print('ok')")
+    sandbox = FakeSandbox(SandboxResult(
+        state="completed", exit_code=0,
+        output_files={"result.json": b'{"answer":"ok"}'}, cleanup="complete",
+    ))
+    adapter = LocalTargetAdapter(sandbox=sandbox)
+    cancel = lambda: True
+    result = adapter.invoke({
+        "image": "sha256:" + "a" * 64,
+        "source_dir": str(source), "entrypoint": ["/bin/sh"],
+    }, {"q": "hi"}, {"workspace_id": "ws", "should_cancel": cancel})
+
+    assert result.outcome == "ok"
+    assert sandbox.should_cancel is cancel

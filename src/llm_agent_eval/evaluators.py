@@ -58,6 +58,7 @@ from .judge import (
     ReadinessState,
 )
 from .predicates import MISSING, Predicate, PredicateError, UNKNOWN
+from .retrieval import citation_correctness, recall_at_k
 from .spec import EvaluationSpec, Metric, TestCase
 from .trace_rules import TraceRuleError, evaluate_rule
 
@@ -1289,6 +1290,30 @@ def _score_observed_value(
         return _score_raw_value(metric, case_id, raw, evidence,
                                 attempt=attempt, on_retry_override=on_retry_override,
                                 provisional=provisional, what=f"numeric ({target_type})")
+    if ev_type == "recall_at_k":
+        raw = values[0] if len(values) == 1 else list(values)
+        if not isinstance(raw, list):
+            raise EvaluationError("recall_at_k requires a ranked string list")
+        if any(not isinstance(item, str) for item in raw):
+            raise EvaluationError("recall_at_k ranked values must be strings")
+        score = recall_at_k(evaluator.expected, raw, evaluator.k)
+        return _score_raw_value(
+            metric, case_id, score, evidence, attempt=attempt,
+            on_retry_override=on_retry_override, provisional=provisional,
+            what="recall_at_k",
+        )
+    if ev_type == "citation_correctness":
+        raw = values[0] if len(values) == 1 else list(values)
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise EvaluationError("citation_correctness requires a citation string list")
+        score = citation_correctness(raw, evaluator.evidence or {})
+        if score is None:
+            raise EvaluationError("citation evidence is unavailable")
+        return _score_raw_value(
+            metric, case_id, score, evidence, attempt=attempt,
+            on_retry_override=on_retry_override, provisional=provisional,
+            what="citation_correctness",
+        )
     if ev_type == "reference":
         if case is None:
             raise EvaluationError("reference evaluator requires the test case")

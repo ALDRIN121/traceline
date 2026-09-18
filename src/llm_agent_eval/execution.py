@@ -7,6 +7,7 @@ import os
 from typing import Any, Callable
 
 from .auth import Actor
+from .calibration import PersistentJudgeReadinessRegistry
 from .contracts import NotFound, WorkflowError
 from .engine import Engine
 from .gateway import LiteLLMGateway
@@ -88,9 +89,12 @@ class RunExecutionService:
             self.storage, target_adapter=adapter,
             work_root=self.artifact_root / "ws" / actor.workspace_id / "runs",
             target_execution_context=target_context,
+            judge_readiness=PersistentJudgeReadinessRegistry(self.storage, actor),
         )
         if judge_gateway is not None:
-            engine.judge_factory = self._judge_factory(actor, engine, judge_gateway)
+            engine.judge_factory = self._judge_factory(
+                actor, engine, judge_gateway, engine.judge_readiness,
+            )
         run = existing or engine.create_run(
             actor.workspace_id, spec, tier=limits.get("tier") or spec.run_tier or "quick",
             repeats=limits.get("repeats", 1), retry_max=limits.get("retry_max", 0),
@@ -144,7 +148,7 @@ class RunExecutionService:
             ).resolve(secret_ref),
         )
 
-    def _judge_factory(self, actor: Actor, engine: Engine | None, gateway=None):
+    def _judge_factory(self, actor: Actor, engine: Engine | None, gateway=None, readiness=None):
         """Bind persisted rubrics and the current attempt to the worker gateway."""
         rubric_store = RubricStore(self.storage)
         gateway = gateway or self.judge_gateway
@@ -158,6 +162,7 @@ class RunExecutionService:
                 gateway,
                 rubric_version=binding.rubric_version,
                 schema_version=binding.schema_version,
+                readiness=readiness.get(binding) if readiness is not None else None,
                 rubric_resolver=lambda rubric_id: rubric_store.get(rubric_id, actor),
                 context_resolver=lambda metric, case, evidence: engine.judgment_context(
                     metric, case, evidence

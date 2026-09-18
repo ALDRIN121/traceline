@@ -17,9 +17,10 @@ from .spec import Metric
 
 
 class RescoreService:
-    def __init__(self, storage, *, gateway=None):
+    def __init__(self, storage, *, gateway=None, judge_readiness=None):
         self.storage = storage
         self.gateway = gateway
+        self.judge_readiness = judge_readiness
 
     def rescore(
         self,
@@ -112,7 +113,7 @@ class RescoreService:
             replacement_spec, metric, scores, expected_n=len(selected),
         )
         gate_status = "NOT_APPLICABLE"
-        if metric in gate_safe([metric]):
+        if metric in gate_safe([metric], readiness=self.judge_readiness):
             gate = evaluate_gate(metric, aggregate)
             gate_status = "PASS" if gate.passed else ("FAIL" if gate.active else "NOT_APPLICABLE")
         self.storage.upsert_run_metric_result(
@@ -144,6 +145,7 @@ class RescoreService:
             self.gateway,
             rubric_version=metric.judge_binding.rubric_version,
             schema_version=metric.judge_binding.schema_version,
+            readiness=self.judge_readiness.get(metric.judge_binding) if self.judge_readiness else None,
             rubric_resolver=lambda rubric_id: rubric_store.get(rubric_id, actor),
             context_resolver=lambda _metric, _case, refs: JudgmentContext(
                 candidate_output=output,

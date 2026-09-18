@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .artifacts import ArtifactStore
+from .calibration import JudgeCalibrationService
 from .contracts import WorkflowError
 from .datasets import DatasetService
 from .previews import PreviewService
@@ -18,6 +19,7 @@ from .schedules import DurableScheduleService
 from .run_plans import RunPlanService
 from .knowledge import KnowledgeStore
 from .sessions import SessionStore
+from .spec import JudgeBinding
 from .targets import ConnectionService
 from .versions import VersionStore
 from .worker import WorkflowWorker
@@ -148,9 +150,34 @@ class JudgeRubricRequest(BaseModel):
     rubric: RubricContent
 
 
+class JudgeCalibrationBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    binding: JudgeBinding
+
+
+class JudgeCalibrationLabelRequest(JudgeCalibrationBindingRequest):
+    case_id: str = Field(min_length=1, max_length=255)
+    human_label: Any
+    judge_label: Any
+    label_id: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
 #: the generic route must never publish attacker-shaped JSON for them.
 PROTECTED_VERSION_KINDS = frozenset({"model_profile", "model_selection", "judge_rubric"})
+
+
+def _readiness_payload(readiness) -> dict[str, Any]:
+    return {
+        "state": readiness.state.value,
+        "label_count": readiness.label_count,
+        "kappa": readiness.kappa,
+        "min_labels": readiness.min_labels,
+        "kappa_ready": readiness.kappa_ready,
+        "kappa_reset": readiness.kappa_reset,
+        "generation": readiness.generation,
+        "provisional": readiness.is_provisional,
+    }
 
 
 def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> APIRouter:
@@ -372,6 +399,38 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
             project_id, body.rubric, body.expected_revision, request.state.actor,
         )
         return {"state": "draft", "version": asdict(version)}
+
+    @router.post("/judge-calibration/labels", status_code=201)
+    def add_judge_calibration_label(body: JudgeCalibrationLabelRequest, request: Request):
+        readiness = JudgeCalibrationService(store()).record_label(
+            request.state.actor, body.binding, case_id=body.case_id,
+            human_label=body.human_label, judge_label=body.judge_label,
+            label_id=body.label_id,
+        )
+        return {
+            "state": "recorded", "binding": body.binding.model_dump(),
+            "readiness": _readiness_payload(readiness),
+        }
+
+    @router.get("/judge-calibration")
+    def get_judge_calibration(
+        request: Request, provider: str, model: str,
+        schema_version: str, rubric_version: str,
+    ):
+        binding = JudgeBinding(
+            provider=provider, model=model,
+            schema_version=schema_version, rubric_version=rubric_version,
+        )
+        readiness = JudgeCalibrationService(store()).get(request.state.actor, binding)
+        return {"binding": binding.model_dump(), "readiness": _readiness_payload(readiness)}
+
+    @router.post("/judge-calibration/reset", status_code=200)
+    def reset_judge_calibration(body: JudgeCalibrationBindingRequest, request: Request):
+        readiness = JudgeCalibrationService(store()).reset(request.state.actor, body.binding)
+        return {
+            "state": "reset", "binding": body.binding.model_dump(),
+            "readiness": _readiness_payload(readiness),
+        }
 
     @router.post("/projects/{project_id}/openapi-imports", status_code=201)
     def import_openapi(project_id: str, body: dict[str, Any], request: Request):

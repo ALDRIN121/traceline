@@ -273,9 +273,10 @@ class PodmanSandbox:
             endpoint = request.proxy_endpoint
             args[args.index("--env=LLM_AGENT_EVAL_TRACE=/output/trace.jsonl") + 1:args.index("--env=LLM_AGENT_EVAL_TRACE=/output/trace.jsonl") + 1] = [
                 f"--env=HTTP_PROXY={endpoint}", f"--env=HTTPS_PROXY={endpoint}",
-                f"--env=ALL_PROXY={endpoint}", "--env=NO_PROXY=",
+                f"--env=ALL_PROXY={endpoint}",
+                f"--env=http_proxy={endpoint}", f"--env=https_proxy={endpoint}",
+                f"--env=all_proxy={endpoint}", "--env=NO_PROXY=", "--env=no_proxy=",
                 "--env=SSL_CERT_FILE=/run/llm-agent-eval/ca.pem",
-                "--add-host=host.containers.internal:host-gateway",
                 "--mount", f"type=bind,source={Path(request.ca_cert)},target=/run/llm-agent-eval/ca.pem,readonly",
             ]
         return args

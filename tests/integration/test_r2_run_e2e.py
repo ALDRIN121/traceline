@@ -110,6 +110,12 @@ def test_r2_stream_and_async_targets_run_through_the_frozen_worker_path(tmp_path
             terminal = worker.service(actor).run_once(job_id=job.job_id)
             assert terminal.status == "completed", terminal.error
             assert storage.get_run_metric_results(terminal.result["run_id"], "ws")[0].value == 1.0
+            if mode == "streaming":
+                events = storage.get_trace_events(run_id=terminal.result["run_id"], workspace_id="ws")
+                assert [event.type.value for event in events] == [
+                    "stream_start", "first_token", "llm_response"
+                ]
+                assert all(event.source.value == "adapter" for event in events)
             assert server.calls == 2
         finally:
             storage.close()

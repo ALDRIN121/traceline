@@ -1,9 +1,9 @@
 """Forwarding, metering, and redaction rules for the recording egress proxy.
 
-Foundations only: a caller supplies an outbound ``send`` callable. The
-container topology that makes this the sandbox's sole route is owned by the
-runtime agent and is not implemented here; until that integration exists this
-module makes no release claim.
+The host-side recording proxy supplies the outbound ``send`` callable. A
+per-run Podman relay and internal network bind this policy to the local
+sandbox; the relay is intentionally a dumb transport hop and never owns
+credentials, routes, TLS policy, or budget authority.
 
 Design (locked decisions 1–2, invariants):
 
@@ -138,11 +138,19 @@ class ProviderRoute:
     def authorize(self, path: str, body: Mapping[str, Any]) -> dict[str, int]:
         if path != self.path:
             raise EgressDenied("path_not_allowed")
-        if body.get("model") != self.model:
-            raise EgressDenied("model_not_allowed")
+        if self.provider == "google":
+            generation = body.get("generationConfig")
+            if not isinstance(generation, Mapping):
+                raise EgressDenied("generation_config_not_allowed")
+            declared = generation.get("maxOutputTokens")
+            if self.model not in path:
+                raise EgressDenied("model_not_allowed")
+        else:
+            if body.get("model") != self.model:
+                raise EgressDenied("model_not_allowed")
+            declared = body.get("max_tokens")
         if body.get("stream") is True:
             raise EgressDenied("streaming_not_supported")
-        declared = body.get("max_tokens")
         if type(declared) is not int or declared <= 0:
             raise EgressDenied("unbounded_max_tokens")
         if declared > self.max_output_tokens:
@@ -238,11 +246,18 @@ class RecordingEgress:
         body: Mapping[str, Any],
     ) -> tuple[int, Any]:
         limits = self.route.authorize(path, body)
+        auth_header = {
+            "openai": "authorization", "anthropic": "x-api-key", "google": "x-goog-api-key",
+        }.get(self.route.provider, "authorization")
         supplied_auth = next(
-            (value for key, value in headers.items() if str(key).lower() == "authorization"),
+            (value for key, value in headers.items() if str(key).lower() == auth_header),
             None,
         )
-        if not isinstance(supplied_auth, str) or supplied_auth != f"Bearer {self.route.dummy_key}":
+        expected_auth = (
+            self.route.dummy_key if auth_header != "authorization"
+            else f"Bearer {self.route.dummy_key}"
+        )
+        if not isinstance(supplied_auth, str) or supplied_auth != expected_auth:
             raise EgressDenied("credential_not_recognized")
         # Only the trusted provider-specific upper bound permits reservation.
         worst = self.route.worst_case(limits["input_tokens"])
@@ -257,9 +272,12 @@ class RecordingEgress:
             raise EgressDenied("secret_resolution_failed")
         outbound_headers = {
             key: value for key, value in headers.items()
-            if str(key).lower() != "authorization"
+            if str(key).lower() not in {"authorization", auth_header}
         }
-        outbound_headers["Authorization"] = f"Bearer {real}"
+        if auth_header == "authorization":
+            outbound_headers["Authorization"] = f"Bearer {real}"
+        else:
+            outbound_headers[auth_header] = real
         try:
             status, payload = self._send(
                 {"host": self.route.host, "path": path, "model": self.route.model,

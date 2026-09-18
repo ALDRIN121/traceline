@@ -53,6 +53,7 @@ from .config import settings
 from .auth import Actor, create_install_auth_resolver
 from .contracts import WorkflowError
 from .comparisons import ComparisonService
+from .calibration import PersistentJudgeReadinessRegistry
 from .exports import ExportService
 from .rescore import RescoreService
 from .operations import OperationsService
@@ -1050,7 +1051,10 @@ def create_app(
     @app.post("/runs/{run_id}/metrics/{metric_id}/rescore")
     def rescore_metric(run_id: str, metric_id: str, body: RescoreRequest, request: Request) -> Any:
         """Re-score retained evidence without constructing or invoking a target."""
-        return RescoreService(store(), gateway=model_gateway).rescore(
+        return RescoreService(
+            store(), gateway=model_gateway,
+            judge_readiness=PersistentJudgeReadinessRegistry(store(), request.state.actor),
+        ).rescore(
             request.state.actor, run_id, metric_id, body.metric,
             body.score_revision, case_ids=body.case_ids,
         )

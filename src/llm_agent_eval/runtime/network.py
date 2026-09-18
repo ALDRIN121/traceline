@@ -23,10 +23,10 @@ class NetworkLease:
 class PodmanRunNetwork:
     """Create an internal, labelled network and remove it on release.
 
-    The proxy listener is reached through Podman's host gateway; provider DNS
-    resolution and credentials remain on the trusted outbound leg. The
-    network's internal flag prevents a sandbox container from getting a
-    second direct external route.
+    The trusted proxy listener is reached through an engine-owned relay on the
+    internal network; provider DNS resolution and credentials remain on the
+    host-side outbound leg. The network's internal flag prevents a sandbox
+    container from getting a second direct external route.
     """
 
     def __init__(self, sandbox: PodmanSandbox | None = None):

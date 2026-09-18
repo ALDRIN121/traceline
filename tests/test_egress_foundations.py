@@ -10,12 +10,14 @@ from llm_agent_eval.egress.recording import Budget, EgressDenied, ProviderRoute,
 
 
 def route(**changes):
-    values = dict(input_token_bound=lambda body: 100)
+    values = dict(
+        host="provider.example", path="/v1/chat/completions", model="fixture-model",
+        secret_ref="fixture-ref", dummy_key="dummy-case-key", max_input_tokens=100,
+        max_output_tokens=20, input_micros_per_token=2, output_micros_per_token=3,
+        price_version="fixture-v1", input_token_bound=lambda body: 100,
+    )
     values.update(changes)
-    return ProviderRoute(host="provider.example", path="/v1/chat/completions", model="fixture-model",
-                         secret_ref="fixture-ref", dummy_key="dummy-case-key", max_input_tokens=100,
-                         max_output_tokens=20, input_micros_per_token=2, output_micros_per_token=3,
-                         price_version="fixture-v1", **values)
+    return ProviderRoute(**values)
 
 
 def test_ca_persists_identity_and_private_permissions(tmp_path):
@@ -200,3 +202,34 @@ def test_transport_exception_treats_spend_as_uncertain(error):
     with pytest.raises(EgressDenied, match="unavailable"):
         proxy.forward(route().path, {"Authorization": "Bearer dummy-case-key"},
                       {"model": "fixture-model", "max_tokens": 20})
+
+
+@pytest.mark.parametrize("provider, path, body, request_headers, response, auth_key", [
+    (
+        "anthropic", "/v1/messages",
+        {"model": "fixture-model", "messages": [], "max_tokens": 2},
+        {"x-api-key": "dummy-case-key"},
+        {"usage": {"input_tokens": 1, "output_tokens": 1}}, "x-api-key",
+    ),
+    (
+        "google", "/v1beta/models/fixture-model:generateContent",
+        {"contents": [], "generationConfig": {"maxOutputTokens": 2}},
+        {"x-goog-api-key": "dummy-case-key"},
+        {"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}}, "x-goog-api-key",
+    ),
+])
+def test_provider_specific_request_shapes_broker_credentials_and_meter_usage(
+    provider, path, body, request_headers, response, auth_key,
+):
+    outbound = []
+    selected = route(provider=provider, path=path, model="fixture-model")
+    proxy = RecordingEgress(
+        selected, Budget(1000), lambda _ref: "real-provider-key", lambda _row: None,
+        send=lambda config, request, headers: (outbound.append(headers) or (200, response)),
+    )
+
+    status, _ = proxy.forward(path, request_headers, body)
+
+    assert status == 200
+    assert outbound[0][auth_key] == "real-provider-key"
+    assert proxy.budget.spent == 5

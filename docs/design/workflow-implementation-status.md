@@ -398,12 +398,25 @@ It is not an R1 release declaration.
   authoritative scores. They return explicit incomparable states, disclose
   source/target/model/repeat confounders, and omit the confidence interval when
   repeats are below the minimum.
-- **Proxy/network seam:** a bounded listener, per-run CA/session, managed
-  internal Podman network and sandbox proxy argument vector exist. A live
-  Podman network create/inspect/remove proof passed on the observed host. A
-  real agent-container HTTPS interception/provider no-bypass proof is still
-  open; proxy routes remain an explicit trusted deployment seam and do not yet
-  constitute release-grade provider coverage.
+- **Proxy/network seam:** a bounded listener, per-run CA/session, trusted
+  dual-homed Podman relay, managed internal network, and sandbox proxy
+  argument vector exist. The live opt-in suite now passes the relay/provider
+  HTTP proof, host-side TLS interception with the install CA, and a full
+  restricted-build → fresh-container → proxy → output → scoring run. The
+  container proof uses a raw HTTP relay client because the pinned Alpine
+  BusyBox client does not implement the required HTTPS CONNECT flow; a real
+  provider-client HTTPS proof from inside the case remains open.
+- **Durable judge calibration:** calibration rows and label lineage now persist
+  by workspace and exact binding `(provider, model, schema, rubric)`, with
+  generation-based reset and `UNCALIBRATED → CALIBRATING → CALIBRATED`
+  thresholds. Engine and re-score paths read the persisted readiness registry;
+  API routes support label, status, and reset operations. Human dispute/review
+  UX and a complete calibrated run acceptance scenario remain open.
+- **Provider protocol coverage:** the recording proxy now validates and meters
+  tested OpenAI, Anthropic, and Google request/usage shapes with provider-
+  specific dummy-key substitution. Full stream-aware provider interception,
+  LiteLLM-backed outbound integration, and repaired CrewAI/provider fixtures
+  remain open.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
@@ -412,17 +425,24 @@ It is not an R1 release declaration.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
-  Remote-job identity is persisted before polling. Retrieval metrics and full
-  restart-resume/session acceptance coverage remain open.
-- **Observed suite:** the default suite is **850 passed, 9 skipped, 4
+  Streaming emits adapter-authored `stream_start`, `first_token`, and
+  `llm_response` evidence; stateful scripts enforce wait-for-input before a
+  user response and close sessions after rejection. Remote-job identity is
+  persisted before polling. Retrieval has deterministic `recall_at_k` and
+  `citation_correctness` output evaluators, but retrieval-event conformance,
+  durable restart/resume polling, malformed-stream/cancel coverage, and full
+  stateful multi-turn acceptance remain open.
+- **Observed suite:** the default suite is **861 passed, 9 skipped, 6
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
-  they are not credited as release evidence.
+  they are not credited as release evidence. The opt-in live proxy/sandbox
+  suite passes **3 tests** on the observed macOS Podman 6.1.1 host.
 
 **Still release-blocking:** the specialist-owned authoring/results UI is not
-complete; the real upload → build → per-case Podman/proxy → capture → scoring
-→ worker-restart acceptance is not closed; proxy CA trust and direct/alternate
-egress bypass tests are not proven on Linux, macOS and WSL2; judge calibration
-state is not durably persisted; PostgreSQL recovery and operational retention
-are not rehearsed; R2 retrieval, interactive approval scripts and durable
-remote-job restart polling need conformance tests; and the complete E01–E32 /
-UX acceptance matrix has not been executed.
+complete; the full upload/import → build → authorization → worker restart
+acceptance is not closed; provider-client HTTPS interception from inside the
+case and direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not
+proven on Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore,
+retention, TTL, fairness, and compose readiness are not rehearsed; LiteLLM
+outbound/cassette fidelity, repaired CrewAI execution, custom evaluator
+sandboxing, export/CI exit-status acceptance, and the complete E01–E32 / UX
+acceptance matrix remain unfinished.
