@@ -33,8 +33,9 @@ between prototype behavior and planned work.
   executes LLM output.
 - **Deterministic-first evaluation foundation** — validated specs, exact match, schema, numeric,
   trace-rule, reference, and provisional semantic-judge building blocks.
-- **Prototype runs and evidence APIs** — local development storage, run lifecycle endpoints, and
-  declarative dashboard data; execution isolation and proxy-authoritative capture remain planned.
+- **Durable runs and evidence APIs** — local development storage, frozen worker run plans,
+  redacted output/proxy evidence, declarative dashboard data, and CSV/JSON/HTML export routes.
+  Full deployment-grade isolation and provider interception remain release-gated.
 - **Evidence-linked dashboards** — a declarative definition renders run overviews, per-case
   tables, and trace evidence: every score is clickable down to the event that produced it.
 - **Open-source local prototype** — Apache-2.0, no telemetry, no phone-home, and no bundled
@@ -57,6 +58,7 @@ evaluation:
 .venv/bin/eval-engine smoke my-agent-eval                      # smoke gate: does the agent actually run?
 .venv/bin/eval-engine run my-agent-eval/spec.json --entrypoint .venv/bin/python my-agent-eval/agent.py
 .venv/bin/eval-engine results <run-id>                         # scores, gate status, revisions
+.venv/bin/eval-engine ci-status <run-id>                       # JSON CI contract; 0/1/2 gate result
 ```
 
 The dashboard is served by the same server as `eval-engine serve`. It is a prototype presentation
@@ -78,6 +80,10 @@ workspace secret reference and release price-table values, and keep the file non
 users. The file contains routing metadata only; provider keys stay in encrypted secret references
 and are resolved by the worker's trusted proxy identity. The Compose worker sets that identity to
 `proxy`; missing or unsafe route configuration fails a proxy run closed.
+
+Authenticated API clients can freeze an export with `POST /api/exports` using a run ID and then
+download its immutable `json`, `csv`, or `html` representation from
+`/api/exports/{export_id}/{format}`. Later score revisions do not change a frozen export.
 
 ## The reference fixture
 

@@ -195,7 +195,7 @@ class TestResults:
         target = tmp_path / "agent"
         write_project(target, AGENT)
         spec_path = write_spec(target)
-        code, out, _ = run_cli(capsys, tmp_path / "eval.db", "run", str(spec_path))
+        code, out, _ = run_cli(capsys, tmp_path / "eval.db", "run", str(spec_path), "--repeat", "3")
         assert code == 0
         run_id = out.split("run: created ", 1)[1].split(" ", 1)[0]
         code, out, _ = run_cli(capsys, tmp_path / "eval.db", "results", run_id)
@@ -208,6 +208,19 @@ class TestResults:
         code, _, err = run_cli(capsys, tmp_path / "eval.db", "results", "ghost")
         assert code == 1
         assert "not found" in err
+
+    def test_ci_status_returns_stable_gate_exit_code(self, capsys, tmp_path):
+        target = tmp_path / "agent"
+        write_project(target, AGENT)
+        spec_path = write_spec(target)
+        code, out, _ = run_cli(capsys, tmp_path / "eval.db", "run", str(spec_path), "--repeat", "3")
+        assert code == 0
+        run_id = out.split("run: created ", 1)[1].split(" ", 1)[0]
+
+        code, out, _ = run_cli(capsys, tmp_path / "eval.db", "ci-status", run_id)
+
+        assert code == 0
+        assert json.loads(out)["exit_code"] == 0
 
 
 class TestDashboards:

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .config import settings
+from .ci_api import exit_code as ci_exit_code
 from .dashboard import (
     DEFAULT_DEFINITION,
     DefinitionResolutionError,
@@ -383,6 +384,32 @@ def cmd_results(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_ci_status(args: argparse.Namespace) -> int:
+    """Print the authenticated CI contract and return its documented code."""
+    store = _open_store(args.db)
+    run = store.get_run(args.run_id, args.workspace)
+    if run is None:
+        print(f"ci-status: error: run {args.run_id!r} not found", file=sys.stderr)
+        return EXIT_USAGE
+    metrics = [
+        {
+            "metric_id": metric.metric_id,
+            "value": metric.value,
+            "gate_status": metric.gate_status,
+            "no_ci": metric.no_ci,
+        }
+        for metric in store.get_run_metric_results(run.run_id, args.workspace)
+    ]
+    payload = {
+        "run_id": run.run_id,
+        "status": run.status,
+        "metrics": metrics,
+    }
+    payload["exit_code"] = ci_exit_code(payload)
+    print(json.dumps(payload, sort_keys=True))
+    return payload["exit_code"]
+
+
 def cmd_dashboards(args: argparse.Namespace) -> int:
     store = _open_store(args.db)
     run = store.get_run(args.run_id, args.workspace)
@@ -513,6 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("run_id", help="the run id (see `eval-engine run` output)")
     add_common(p)
     p.set_defaults(handler=cmd_results)
+
+    p = sub.add_parser("ci-status", help="print CI gate status and return its stable exit code")
+    p.add_argument("run_id", help="the run id (see `eval-engine run` output)")
+    add_common(p)
+    p.set_defaults(handler=cmd_ci_status)
 
     p = sub.add_parser("dashboards", help="resolve a declarative dashboard definition (§37B)")
     p.add_argument("run_id", help="the run id to bind")

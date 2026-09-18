@@ -541,6 +541,7 @@ class RunRecord:
     run_id: str
     workspace_id: str
     project_id: str | None
+    run_manifest_ref: str | None
     spec: EvaluationSpec
     spec_json: str
     agent_version: dict[str, Any]
@@ -935,9 +936,12 @@ class Storage:
             existing_workflow = self._conn.execute("SELECT to_regclass('object_versions')").fetchone()[0] is not None
             existing_jobs = self._conn.execute("SELECT to_regclass('jobs')").fetchone()[0] is not None
             existing_plans = self._conn.execute("SELECT to_regclass('run_plans')").fetchone()[0] is not None
-            if existing_base and existing_workflow and existing_jobs and existing_plans:
+            existing_exports = self._conn.execute("SELECT to_regclass('export_snapshots')").fetchone()[0] is not None
+            if existing_base and existing_workflow and existing_jobs and existing_plans and existing_exports:
                 return
-            if existing_base and existing_workflow and existing_jobs and not existing_plans:
+            if existing_base and existing_workflow and existing_jobs and (
+                not existing_plans or not existing_exports
+            ):
                 raise RuntimeError("database migration required; run the maintenance bootstrap")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -1367,6 +1371,58 @@ class Storage:
             (run_id, workspace_id),
         ).fetchone()
         return _run_from_row(row) if row is not None else None
+
+    @_workspace_scoped
+    def create_export_snapshot(
+        self,
+        *,
+        workspace_id: str,
+        export_id: str,
+        run_id: str,
+        manifest: dict[str, Any],
+        manifest_sha256: str,
+    ) -> dict[str, Any]:
+        """Persist the exact export input before any format is rendered."""
+        if not re.fullmatch(r"[0-9a-f]{32}", export_id):
+            raise ValueError("export_id must be a 32-hex identifier")
+        if not isinstance(manifest, dict) or not isinstance(manifest_sha256, str):
+            raise ValueError("export manifest is invalid")
+        created_at = _now()
+        manifest_json = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO export_snapshots"
+                " (workspace_id,export_id,run_id,manifest_json,manifest_sha256,created_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (workspace_id, export_id, run_id, manifest_json, manifest_sha256, created_at),
+            )
+        return {
+            "export_id": export_id,
+            "workspace_id": workspace_id,
+            "run_id": run_id,
+            "manifest": manifest,
+            "sha256": manifest_sha256,
+            "created_at": created_at,
+            "state": "ready",
+        }
+
+    @_workspace_scoped
+    def get_export_snapshot(self, export_id: str, workspace_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM export_snapshots WHERE export_id = ? AND workspace_id = ?",
+            (export_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "export_id": row["export_id"],
+            "workspace_id": row["workspace_id"],
+            "run_id": row["run_id"],
+            "manifest": json.loads(row["manifest_json"]),
+            "sha256": row["manifest_sha256"],
+            "created_at": row["created_at"],
+            "state": "ready",
+        }
 
     @_workspace_scoped
     def list_runs(
@@ -2334,6 +2390,7 @@ def _run_from_row(row: sqlite3.Row) -> RunRecord:
         run_id=row["run_id"],
         workspace_id=row["workspace_id"],
         project_id=row["project_id"],
+        run_manifest_ref=row["run_manifest_ref"],
         spec=spec,
         spec_json=spec_json,
         agent_version=agent_version,

@@ -134,6 +134,25 @@ def test_html_export_route_returns_the_escaped_run_report(client):
     assert "<table>" in response.text
 
 
+def test_export_snapshot_is_frozen_before_later_score_changes(client):
+    http, _engine, db = client
+    run_id, _result = run_to_complete(http, n_cases=1)
+
+    created = http.post("/api/exports", json={"run_id": run_id})
+
+    assert created.status_code == 201
+    export_id = created.json()["export_id"]
+    before = http.get(f"/api/exports/{export_id}/html")
+    assert before.status_code == 200
+
+    case = db.list_cases(run_id, WORKSPACE)[0]
+    db.set_case_classification(run_id, case.case_id, WORKSPACE, "FAILING")
+
+    after = http.get(f"/api/exports/{export_id}/html")
+    assert after.status_code == 200
+    assert after.content == before.content
+
+
 class TestHealthAndEnvelope:
     def test_release_mode_rejects_anonymous_requests_and_accepts_install_token(self, tmp_path):
         db = Storage(tmp_path / "release.db")

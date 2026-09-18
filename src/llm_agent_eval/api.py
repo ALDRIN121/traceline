@@ -684,6 +684,35 @@ def create_app(
         return Response(ExportService(store()).html(ws, run_id), media_type="text/html",
                         headers={"Content-Disposition": f'attachment; filename="{run_id}.html"'})
 
+    @app.post("/api/exports", status_code=201)
+    def create_export(body: dict[str, Any], request: Request) -> Any:
+        run_id = body.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id is required")
+        case_ids = body.get("case_ids")
+        metric_ids = body.get("metric_ids")
+        for field, value in (("case_ids", case_ids), ("metric_ids", metric_ids)):
+            if value is not None and (
+                not isinstance(value, list) or not all(isinstance(item, str) and item for item in value)
+            ):
+                raise ValueError(f"{field} must be a list of non-empty strings")
+        return ExportService(store()).freeze(
+            ws, run_id, case_ids=case_ids, metric_ids=metric_ids
+        )
+
+    @app.get("/api/exports/{export_id}")
+    def get_export(export_id: str, request: Request) -> Any:
+        return ExportService(store()).frozen(ws, export_id)
+
+    @app.get("/api/exports/{export_id}/{format_name}")
+    def download_export(export_id: str, format_name: str, request: Request) -> Response:
+        data, media_type = ExportService(store()).frozen_bytes(ws, export_id, format_name)
+        return Response(
+            data,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{export_id}.{format_name}"'},
+        )
+
     @app.get("/ci/runs/{run_id}")
     def ci_run_status(run_id: str, request: Request) -> Any:
         run = store().get_run(run_id, ws)

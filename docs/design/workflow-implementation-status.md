@@ -434,8 +434,10 @@ It is not an R1 release declaration.
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
   backup/restore, retention enforcement, export/preview TTLs, and a real
   cross-process recovery rehearsal remain open. The authenticated run now has
-  CSV and HTML export routes, but frozen export manifests and CI exit-status
-  acceptance remain open. Schedule USD limits now
+  CSV and HTML export routes; `POST /api/exports` persists workspace-scoped
+  frozen manifests with JSON/CSV/HTML hashes, and `ci-status` exposes the
+  documented 0/1/2 contract. Export/preview TTLs and full evidence bundles
+  remain open. Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
   run idempotency keys instead of collapsing into one plan-level run.
@@ -462,7 +464,7 @@ It is not an R1 release declaration.
   enforce the implemented frozen-version policy rather than accepting an
   unimplemented refresh policy. Retrieval adapter/framework conformance
   remains open.
-- **Observed suite:** the default suite is **890 passed, 9 skipped, 7
+- **Observed suite:** the default suite is **892 passed, 9 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
@@ -477,5 +479,5 @@ direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
 Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
 TTL, and fairness are not rehearsed; LiteLLM
 outbound/cassette fidelity, repaired CrewAI execution, full custom evaluator
-sandbox integration, frozen export/CI exit-status acceptance, and the complete
+sandbox integration, full export-bundle/CI acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.
