@@ -38,12 +38,15 @@ class LocalTargetAdapter:
 
     def invoke(self, invocation_manifest, case_input, execution_context) -> InvocationResult:
         try:
-            source = Path(invocation_manifest["source_dir"])
+            # The source snapshot is a worker-owned runtime detail. It is
+            # supplied through ephemeral execution context, never frozen into
+            # the durable run manifest.
+            source = Path(execution_context.get("source_dir") or invocation_manifest["source_dir"])
             image = invocation_manifest["image"]
             entrypoint = tuple(invocation_manifest["entrypoint"])
             if not source.is_dir() or source.is_symlink():
                 raise SandboxDenied("source snapshot is unavailable")
-            source_digest = snapshot_digest(source)
+            source_digest = execution_context.get("source_snapshot_tree") or snapshot_digest(source)
         except (KeyError, TypeError, ValueError, OSError, SandboxDenied):
             return InvocationResult(
                 outcome="invalid_runtime_manifest", output=None,
@@ -78,6 +81,10 @@ class LocalTargetAdapter:
                     argv=entrypoint,
                     limits=limits,
                     egress=invocation_manifest.get("egress", "none"),
+                    proxy_endpoint=execution_context.get("proxy_endpoint"),
+                    network_name=execution_context.get("network_name"),
+                    network_run_id=execution_context.get("network_run_id"),
+                    ca_cert=execution_context.get("ca_cert"),
                 )
                 result = self.sandbox.run(request)
             except SandboxDenied as exc:

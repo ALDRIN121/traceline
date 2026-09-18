@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import date
 from typing import Callable
 
 from .auth import Actor
@@ -10,6 +11,7 @@ from .authoring import AuthoringService
 from .contracts import WorkflowError
 from .execution import RunExecutionService
 from .runtime.source import SourceRuntimeService
+from .schedules import DurableScheduleService
 from .gateway import ModelGateway
 from .ingestion import ImportService
 from .jobs import JobQueue
@@ -25,7 +27,8 @@ class WorkflowWorker:
                  fingerprint_key: bytes | None = None,
                  fingerprint_key_source: Callable[[], bytes] | None = None,
                  handlers: dict[str, Callable] | None = None, lease_seconds: int = 30,
-                 execution_target_factory: Callable | None = None):
+                 execution_target_factory: Callable | None = None,
+                 proxy_session_factory: Callable | None = None):
         material = fingerprint_key
         if material is None and fingerprint_key_source is not None:
             material = fingerprint_key_source()
@@ -44,6 +47,7 @@ class WorkflowWorker:
         self.previews = PreviewService(storage, artifact_root)
         self.connections = ConnectionService(storage, self.artifact_root / "install-secret.key")
         self.execution_target_factory = execution_target_factory
+        self.proxy_session_factory = proxy_session_factory
 
     def queue(self, actor: Actor) -> JobQueue:
         return JobQueue(self.storage, actor, fingerprint_key=self.fingerprint_key,
@@ -58,6 +62,12 @@ class WorkflowWorker:
     def run_forever(self, actor: Actor, *, stop_event, poll_seconds=0.5, worker_id=None):
         return self.service(actor, worker_id=worker_id).run_forever(
             stop_event=stop_event, poll_seconds=poll_seconds,
+        )
+
+    def sweep_schedules(self, actor: Actor, schedule_id: str, start: date, end: date, *, owner: str):
+        """Claim due slots and enqueue only already-authorized plans."""
+        return DurableScheduleService(self.storage).sweep(
+            actor, self, schedule_id, start, end, owner=owner,
         )
 
     def _dispatch(self, actor: Actor, command: dict, context: JobContext):
@@ -89,6 +99,7 @@ class WorkflowWorker:
         if kind == "evaluation_run":
             return RunExecutionService(
                 storage, self.artifact_root, target_factory=self.execution_target_factory,
+                judge_gateway=self.gateway, proxy_session_factory=self.proxy_session_factory,
             ).execute(actor, command, context)
         raise WorkflowError("Unknown job kind", code="unknown_job_kind")
 

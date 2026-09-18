@@ -71,7 +71,7 @@ def test_proxy_egress_requires_engine_owned_network_and_ca_and_injects_only_prox
     ca.write_text("CA")
     req = request(
         tmp_path, egress="proxy", proxy_endpoint="http://proxy:8080",
-        network_name="run-network", ca_cert=ca,
+        network_name="run-network", network_run_id="run-1", ca_cert=ca,
     )
     args = PodmanSandbox().run_argument_vector(req, "case-fixed", req.source_dir, req.input_dir)
     assert "--network=run-network" in args

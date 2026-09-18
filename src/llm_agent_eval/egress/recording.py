@@ -110,6 +110,8 @@ class ProviderRoute:
         output_micros_per_token: int,
         price_version: str,
         origin: str | None = None,
+        provider: str = "openai",
+        usage_decoder: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         max_request_bytes: int = 262_144,
         input_token_bound: Callable[[Mapping[str, Any]], int] | None = None,
     ):
@@ -125,6 +127,7 @@ class ProviderRoute:
                 raise ValueError("token prices must be nonnegative integers")
         self.input_token_bound = input_token_bound
         self.host, self.path, self.model, self.origin = host, path, model, origin
+        self.provider, self.usage_decoder = provider, usage_decoder
         self.secret_ref, self.dummy_key = secret_ref, dummy_key
         self.max_input_tokens, self.max_output_tokens = max_input_tokens, max_output_tokens
         self.input_micros_per_token = input_micros_per_token
@@ -190,6 +193,17 @@ class ProviderRoute:
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,
         }
+
+    def decode_usage(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.usage_decoder is not None:
+            return self.usage_decoder(payload)
+        if self.provider in {"openai", "anthropic", "google"}:
+            from .decoders import normalize_usage
+            return normalize_usage(self.provider, payload)
+        usage = payload.get("usage")
+        if not isinstance(usage, Mapping):
+            raise EgressDenied("usage_unavailable")
+        return usage
 
 
 class RecordingEgress:
@@ -261,9 +275,9 @@ class RecordingEgress:
             self._record(self._metadata(status=None, usage=None, model=self.route.model))
             raise EgressDenied("upstream_unreachable") from exc
         try:
-            response_usage = payload.get("usage") if isinstance(payload, Mapping) else None
+            response_usage = self.route.decode_usage(payload) if isinstance(payload, Mapping) else None
             micros, usage = self.route.observed(response_usage)
-        except EgressDenied as exc:
+        except (EgressDenied, ValueError) as exc:
             # Unmeterable observed traffic closes the budget; the reservation
             # becomes spent so the run cannot continue unaccounted.
             self.budget.uncertain(reservation)

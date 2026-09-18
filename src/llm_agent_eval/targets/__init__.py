@@ -118,15 +118,32 @@ class ConnectionService:
         adapter = HttpJsonAdapter(EndpointPolicy(allow_exact=_allow_exact()))
         record = adapter.verify(version.content, smoke, context)
         expires = None
+        verified_version_id = version_id
         if record.state == "verified":
             expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+            # Verification is part of the immutable target identity used by a
+            # later run plan. Keep the original configuration version intact;
+            # publish a new target version containing only the observed receipt.
+            verified_content = dict(version.content)
+            verified_content["verification"] = {
+                "state": "verified",
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": expires,
+                "capabilities": dict(record.capabilities),
+                "observed_identity": record.observed_identity,
+                "outcome": record.outcome,
+            }
+            verified_version_id = VersionStore(self.storage).create(
+                "target", target_id, verified_content, version.revision, actor
+            ).version_id
         return {
             "state": record.state,
             "capabilities": record.capabilities,
             "outcome": record.outcome,
             "observed_identity": record.observed_identity,
             "target_id": target_id,
-            "target_version_id": version_id,
+            "target_version_id": verified_version_id,
+            "configured_target_version_id": version_id,
             "secret_ref": auth.get("secret_ref"),
             "expires_at": expires,
             "provider_cost": "unknown",

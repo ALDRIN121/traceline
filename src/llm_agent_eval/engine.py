@@ -61,6 +61,7 @@ from .evaluators import (
     score_attempt,
 )
 from .judge import JudgeBinding, JudgeEvaluator, UnconfiguredJudge
+from .judge_gateway import JudgmentContext
 from .lifecycle import (
     AttemptStatus,
     RunCaseStatus,
@@ -75,6 +76,7 @@ from .runner import (
     InvocationResult as RunnerInvocationResult,
     invoke_agent,
 )
+from .redaction import redact
 from .spec import RUN_TIERS, EvaluationSpec, TestCase, validate_spec
 from .storage import (
     ProjectRecord,
@@ -185,6 +187,7 @@ class Engine:
         price_version: str | None = None,
         tiers: Any = None,
         target_adapter: Any = None,
+        target_execution_context: Mapping[str, Any] | None = None,
     ):
         self.storage = storage
         # Missing judge configuration is an evaluator error, never a fabricated
@@ -200,6 +203,10 @@ class Engine:
         self.price_version = price_version if price_version is not None else settings.price_version
         self.tiers = tiers if tiers is not None else settings.run_tiers
         self.target_adapter = target_adapter
+        # Worker-owned connector context (for example a resolved secret) is
+        # ephemeral and must never enter the frozen manifest or run storage.
+        self.target_execution_context = dict(target_execution_context or {})
+        self._active_judgment_context: JudgmentContext | None = None
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
@@ -911,17 +918,27 @@ class Engine:
             trace_truncated=truncated,
         )
         metric_by_id = {m.metric_id: m for m in run.spec.metrics}
-        if attempt == 0:
-            # First attempts are authoritative (§11C.3).
-            scores = [
-                evaluate_case(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
-                for metric in run.spec.metrics
-            ]
-        else:
-            scores = [
-                score_attempt(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
-                for metric in run.spec.metrics
-            ]
+        # Judges receive the exact output/evidence snapshot for this attempt.
+        # The resolver is intentionally scoped to this synchronous scoring
+        # window, so it cannot fall back to a mutable "latest" record.
+        self._active_judgment_context = JudgmentContext(
+            candidate_output=result.result_payload,
+            evidence={event.event_id: event.model_dump(mode="json") for event in kept},
+        )
+        try:
+            if attempt == 0:
+                # First attempts are authoritative (§11C.3).
+                scores = [
+                    evaluate_case(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
+                    for metric in run.spec.metrics
+                ]
+            else:
+                scores = [
+                    score_attempt(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
+                    for metric in run.spec.metrics
+                ]
+        finally:
+            self._active_judgment_context = None
         self.storage.upsert_case_metric_results(
             run_id=run.run_id, case_id=case.case_id, workspace_id=workspace_id,
             scores=scores, metric_by_id=metric_by_id,
@@ -946,17 +963,29 @@ class Engine:
             "case_id": case.case_id, "attempt_id": attempt_id,
             "repeat_index": repeat_index, "attempt": attempt,
         }
+        context.update(self.target_execution_context)
         adapter_result = self.target_adapter.invoke(manifest, case.input, context)
         status = {
             "ok": "completed", "no_trace": NO_TRACE, "timeout": TIMED_OUT,
             "provider_unreachable": PROVIDER_UNREACHABLE,
         }.get(adapter_result.outcome, INVOCATION_FAILED)
+        safe_output = redact(adapter_result.output).content if adapter_result.output is not None else None
         return RunnerInvocationResult(
             status=status,
             exit_code=0 if status in ("completed", NO_TRACE) else None,
             trace_events=tuple(adapter_result.trace_events),
-            result_payload=adapter_result.output if isinstance(adapter_result.output, dict) else None,
+            result_payload=safe_output if isinstance(safe_output, dict) else None,
             error=(None if status in ("completed", NO_TRACE) else adapter_result.outcome),
+        )
+
+    def judgment_context(self, metric: Any, case: TestCase, evidence: tuple[str, ...]) -> JudgmentContext:
+        """Resolve the exact candidate/evidence snapshot for the active attempt."""
+        context = self._active_judgment_context
+        if context is None:
+            raise ValueError("judge context is unavailable outside an active attempt")
+        return JudgmentContext(
+            candidate_output=context.candidate_output,
+            evidence={ref: context.evidence[ref] for ref in evidence if ref in context.evidence},
         )
 
     def _ingest_events(

@@ -9,6 +9,12 @@ def test_remote_verification_does_not_invent_tool_evidence(platform):
     assert v["capabilities"]["final_output"] == "observed"
     assert v["capabilities"]["tool_execution"] == "unavailable"
     assert v["capabilities"]["provider_cost"] == "unavailable"
+    verified = platform.store  # the durable version is the run-plan input
+    from llm_agent_eval.auth import Actor
+    from llm_agent_eval.versions import VersionStore
+    target = VersionStore(verified).get(v["target_version_id"], Actor("test", "workspace_a", "owner"))
+    assert target.content["verification"]["state"] == "verified"
+    assert target.content["verification"]["capabilities"]["final_output"] == "observed"
 
 
 def test_expected_labels_cannot_be_mapped_into_the_request(platform):

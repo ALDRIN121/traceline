@@ -24,6 +24,7 @@ _VERSION_REF_KEYS = frozenset({
     "project_id", "source_version_id", "knowledge_version_id",
     "evaluation_version_id", "dataset_version_id", "target_version_id",
     "connection_version_id", "dashboard_version_id", "world_version_id",
+    "model_selection_version_id",
 })
 _REQUIRED_VERSION_KEYS = ("evaluation_version_id", "dataset_version_id")
 _TIERS = frozenset({"quick", "standard", "full"})
@@ -122,6 +123,20 @@ class RunPlanService:
                 readiness = version.content.get("readiness")
                 if readiness != "executable":
                     blockers.append("source_runtime_not_ready")
+            if key == "target_version_id":
+                if version.kind != "target":
+                    blockers.append("target_version_invalid")
+                verification = version.content.get("verification") or {}
+                if verification.get("state") != "verified":
+                    blockers.append("target_verification_required")
+                else:
+                    expires_at = verification.get("expires_at")
+                    try:
+                        stale = datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+                    except (TypeError, ValueError):
+                        stale = True
+                    if stale:
+                        blockers.append("target_verification_stale")
 
         normalized_limits = json.loads(_canonical(dict(limits)))
         tier = normalized_limits.get("tier")

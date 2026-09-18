@@ -133,6 +133,7 @@ class SandboxRequest:
     egress: str = "none"
     proxy_endpoint: str | None = None
     network_name: str | None = None
+    network_run_id: str | None = None
     ca_cert: Path | None = None
 
     def __post_init__(self):
@@ -146,6 +147,8 @@ class SandboxRequest:
                 raise SandboxDenied("proxy egress requires an explicit endpoint")
             if not isinstance(self.network_name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.network_name):
                 raise SandboxDenied("proxy egress requires an engine-owned network")
+            if not isinstance(self.network_run_id, str) or not self.network_run_id:
+                raise SandboxDenied("proxy egress requires an engine-owned run identity")
             ca = Path(self.ca_cert) if self.ca_cert is not None else None
             if ca is None or ca.is_symlink() or not ca.is_file():
                 raise SandboxDenied("proxy egress requires an engine-owned CA certificate")
@@ -272,6 +275,7 @@ class PodmanSandbox:
                 f"--env=HTTP_PROXY={endpoint}", f"--env=HTTPS_PROXY={endpoint}",
                 f"--env=ALL_PROXY={endpoint}", "--env=NO_PROXY=",
                 "--env=SSL_CERT_FILE=/run/llm-agent-eval/ca.pem",
+                "--add-host=host.containers.internal:host-gateway",
                 "--mount", f"type=bind,source={Path(request.ca_cert)},target=/run/llm-agent-eval/ca.pem,readonly",
             ]
         return args
@@ -312,6 +316,12 @@ class PodmanSandbox:
                 return replace(result, code="image_unavailable", engine_version=version)
             if should_cancel():
                 return replace(result, state="cancelled", code="cancelled", engine_version=version)
+            if request.egress == "proxy":
+                try:
+                    from .network import PodmanRunNetwork
+                    PodmanRunNetwork(self).validate(request.network_name, request.network_run_id)
+                except SandboxDenied:
+                    return replace(result, code="managed_network_required", engine_version=version)
             self.validate_snapshot(request.source_dir, request.source_digest)
             self.validate_snapshot(request.input_dir, request.input_digest)
             with tempfile.TemporaryDirectory(prefix="llm-agent-eval-sandbox-") as staging:

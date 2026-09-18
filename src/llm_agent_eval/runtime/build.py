@@ -121,6 +121,8 @@ class BuildService:
                 text = str(parsed[0].get("Id", "")).strip()
         except json.JSONDecodeError:
             pass
+        if len(text) == 64 and all(c in "0123456789abcdef" for c in text):
+            text = "sha256:" + text
         if not text.startswith("sha256:") or len(text) != 71 or any(c not in "0123456789abcdef" for c in text[7:]):
             raise BuildDenied("Podman returned a non-digest image identity")
         return text

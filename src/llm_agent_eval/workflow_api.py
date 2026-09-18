@@ -1,6 +1,7 @@
 """Small durable-object API surface, registered by the existing app factory."""
 
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -11,6 +12,9 @@ from .artifacts import ArtifactStore
 from .contracts import WorkflowError
 from .datasets import DatasetService
 from .previews import PreviewService
+from .profiles import ModelProfile, ProfileStore
+from .rubric_store import RubricContent, RubricStore
+from .schedules import DurableScheduleService
 from .run_plans import RunPlanService
 from .knowledge import KnowledgeStore
 from .sessions import SessionStore
@@ -100,9 +104,48 @@ class RunSubmissionRequest(BaseModel):
     authorization_id: str
 
 
+class ScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_id: str
+    plan_hash: str
+    authorization_id: str
+    timezone: str
+    local_time: str
+    dst_policy: str = "first"
+    version_policy: str = "frozen"
+    daily_request_limit: int = Field(default=1, ge=1, le=10_000, strict=True)
+    daily_budget_usd_micros: int = Field(default=0, ge=0, strict=True)
+
+
+class ScheduleSweepRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: str
+    end: str
+    owner: str = Field(min_length=1, max_length=255)
+
+
 class PrepareSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runtime_profile: dict[str, Any]
+
+
+class ModelProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    profile: ModelProfile
+
+
+class ModelSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    harness_profile_id: str
+    judge_profile_id: str
+
+
+class JudgeRubricRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    rubric: RubricContent
 
 
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
@@ -206,6 +249,33 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         )
         return {"state": "queued", "job_id": job.job_id, "plan_id": body.plan_id}
 
+    @router.post("/schedules", status_code=201)
+    def create_schedule(body: ScheduleRequest, request: Request):
+        schedule = DurableScheduleService(store()).create(
+            request.state.actor,
+            plan_id=body.plan_id,
+            plan_hash=body.plan_hash,
+            authorization_id=body.authorization_id,
+            timezone_name=body.timezone,
+            local_time=body.local_time,
+            dst_policy=body.dst_policy,
+            version_policy=body.version_policy,
+            daily_request_limit=body.daily_request_limit,
+            daily_budget_usd_micros=body.daily_budget_usd_micros,
+        )
+        return {"state": schedule.state, "schedule": asdict(schedule)}
+
+    @router.post("/schedules/{schedule_id}/sweep", status_code=202)
+    def sweep_schedule(schedule_id: str, body: ScheduleSweepRequest, request: Request):
+        try:
+            start, end = date.fromisoformat(body.start), date.fromisoformat(body.end)
+        except ValueError:
+            raise WorkflowError("start and end must be ISO dates", code="schedule_invalid") from None
+        jobs = worker.sweep_schedules(
+            request.state.actor, schedule_id, start, end, owner=body.owner,
+        )
+        return {"state": "queued", "jobs": [job.job_id for job in jobs]}
+
     @router.post("/projects/{project_id}/sessions", status_code=201)
     def create_session(project_id: str, body: dict[str, Any], request: Request):
         evaluation_id = body.get("evaluation_id")
@@ -277,6 +347,31 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
     @router.post("/projects/{project_id}/connections", status_code=201)
     def create_connection(project_id: str, body: dict[str, Any], request: Request):
         return connections.create(request.state.actor, project_id, body)
+
+    @router.post("/projects/{project_id}/model-profiles", status_code=201)
+    def create_model_profile(project_id: str, body: ModelProfileRequest, request: Request):
+        version = ProfileStore(store()).create(
+            project_id, body.profile, body.expected_revision, request.state.actor,
+        )
+        return {"state": "draft", "version": asdict(version)}
+
+    @router.post("/projects/{project_id}/model-selection", status_code=201)
+    def create_model_selection(project_id: str, body: ModelSelectionRequest, request: Request):
+        version = ProfileStore(store()).select(
+            project_id,
+            harness_profile_id=body.harness_profile_id,
+            judge_profile_id=body.judge_profile_id,
+            expected_revision=body.expected_revision,
+            actor=request.state.actor,
+        )
+        return {"state": "draft", "version": asdict(version)}
+
+    @router.post("/projects/{project_id}/judge-rubrics", status_code=201)
+    def create_judge_rubric(project_id: str, body: JudgeRubricRequest, request: Request):
+        version = RubricStore(store()).create(
+            project_id, body.rubric, body.expected_revision, request.state.actor,
+        )
+        return {"state": "draft", "version": asdict(version)}
 
     @router.post("/projects/{project_id}/openapi-imports", status_code=201)
     def import_openapi(project_id: str, body: dict[str, Any], request: Request):

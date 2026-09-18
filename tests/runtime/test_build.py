@@ -67,3 +67,7 @@ def test_build_rejects_symlinked_context_files(tmp_path):
         BuildService().prepare(
             source, RuntimeProfile(base_image=IMAGE, entrypoint=("/bin/sh",))
         )
+
+
+def test_podman_raw_image_id_is_normalized_to_digest():
+    assert BuildService._parse_image_digest("a" * 64) == "sha256:" + "a" * 64

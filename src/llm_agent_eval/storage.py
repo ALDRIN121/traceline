@@ -105,6 +105,8 @@ __all__ = [
     "RunMetricResultRecord",
     "ScoreRevisionRecord",
     "CustomEvalRecord",
+    "ScheduleRecord",
+    "ScheduleSlotRecord",
     "case_key",
 ]
 
@@ -684,6 +686,38 @@ class RunAuthorizationRecord:
 
 
 @dataclass(frozen=True)
+class ScheduleRecord:
+    schedule_id: str
+    workspace_id: str
+    project_id: str
+    plan_id: str
+    plan_hash: str
+    authorization_id: str
+    timezone: str
+    local_time: str
+    state: str
+    dst_policy: str
+    version_policy: str
+    daily_request_limit: int
+    daily_budget_usd_micros: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ScheduleSlotRecord:
+    schedule_id: str
+    workspace_id: str
+    slot_key: str
+    slot_at: str
+    state: str
+    owner: str
+    job_id: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class CustomEvalRecord:
     eval_id: str
     workspace_id: str
@@ -945,6 +979,98 @@ class Storage:
                 "UPDATE run_authorizations SET state='expired' WHERE workspace_id=? AND authorization_id=? AND state='authorized'",
                 (workspace_id, authorization_id),
             )
+
+    # ------------------------------------------------------------------
+    # Durable recurring schedules
+    # ------------------------------------------------------------------
+
+    @_workspace_scoped
+    def create_schedule(
+        self, *, workspace_id: str, schedule_id: str, project_id: str, plan_id: str,
+        plan_hash: str, authorization_id: str, timezone: str, local_time: str,
+        state: str, dst_policy: str, version_policy: str,
+        daily_request_limit: int, daily_budget_usd_micros: int,
+        created_at: str | None = None,
+    ) -> ScheduleRecord:
+        if state not in {"active", "paused"}:
+            raise ValueError("invalid schedule state")
+        if dst_policy not in {"first", "skip"}:
+            raise ValueError("invalid DST policy")
+        if version_policy not in {"frozen", "new_versions"}:
+            raise ValueError("invalid schedule version policy")
+        created_at = created_at or _now()
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO schedules (workspace_id,schedule_id,project_id,plan_id,plan_hash,authorization_id,timezone,local_time,state,dst_policy,version_policy,daily_request_limit,daily_budget_usd_micros,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (workspace_id, schedule_id, project_id, plan_id, plan_hash,
+                 authorization_id, timezone, local_time, state, dst_policy,
+                 version_policy, daily_request_limit, daily_budget_usd_micros,
+                 created_at, created_at),
+            )
+        return self.get_schedule(schedule_id, workspace_id)
+
+    @_workspace_scoped
+    def get_schedule(self, schedule_id: str, workspace_id: str) -> ScheduleRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM schedules WHERE workspace_id=? AND schedule_id=?",
+            (workspace_id, schedule_id),
+        ).fetchone()
+        return _schedule_from_row(row) if row is not None else None
+
+    @_workspace_scoped
+    def list_schedules(self, workspace_id: str, *, state: str | None = None) -> list[ScheduleRecord]:
+        if state is None:
+            rows = self._conn.execute(
+                "SELECT * FROM schedules WHERE workspace_id=? ORDER BY created_at,schedule_id",
+                (workspace_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM schedules WHERE workspace_id=? AND state=? ORDER BY created_at,schedule_id",
+                (workspace_id, state),
+            ).fetchall()
+        return [_schedule_from_row(row) for row in rows]
+
+    @_workspace_scoped
+    def claim_schedule_slot(
+        self, *, workspace_id: str, schedule_id: str, slot_key: str,
+        slot_at: str, owner: str, created_at: str | None = None,
+    ) -> bool:
+        created_at = created_at or _now()
+        with self._tx():
+            inserted = self._conn.execute(
+                "INSERT INTO schedule_slots (workspace_id,schedule_id,slot_key,slot_at,state,owner,job_id,created_at,updated_at) VALUES (?,?,?,?, 'claimed', ?, NULL, ?, ?) ON CONFLICT (workspace_id,schedule_id,slot_key) DO NOTHING",
+                (workspace_id, schedule_id, slot_key, slot_at, owner, created_at, created_at),
+            )
+            return bool(inserted.rowcount)
+
+    @_workspace_scoped
+    def set_schedule_slot_job(
+        self, *, workspace_id: str, schedule_id: str, slot_key: str,
+        state: str, job_id: str | None = None,
+    ) -> ScheduleSlotRecord:
+        if state not in {"claimed", "queued", "failed"}:
+            raise ValueError("invalid schedule slot state")
+        with self._tx():
+            self._conn.execute(
+                "UPDATE schedule_slots SET state=?,job_id=?,updated_at=? WHERE workspace_id=? AND schedule_id=? AND slot_key=?",
+                (state, job_id, _now(), workspace_id, schedule_id, slot_key),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM schedule_slots WHERE workspace_id=? AND schedule_id=? AND slot_key=?",
+            (workspace_id, schedule_id, slot_key),
+        ).fetchone()
+        if row is None:
+            raise KeyError("schedule slot not found")
+        return _schedule_slot_from_row(row)
+
+    @_workspace_scoped
+    def list_schedule_slots(self, schedule_id: str, workspace_id: str) -> list[ScheduleSlotRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM schedule_slots WHERE workspace_id=? AND schedule_id=? ORDER BY slot_at,slot_key",
+            (workspace_id, schedule_id),
+        ).fetchall()
+        return [_schedule_slot_from_row(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Projects and the smoke gate (harness §32A)
@@ -2020,6 +2146,28 @@ def _attempt_from_row(row: sqlite3.Row) -> AttemptRecord:
         error=row["error"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+    )
+
+
+def _schedule_from_row(row: sqlite3.Row) -> ScheduleRecord:
+    return ScheduleRecord(
+        schedule_id=row["schedule_id"], workspace_id=row["workspace_id"],
+        project_id=row["project_id"], plan_id=row["plan_id"], plan_hash=row["plan_hash"],
+        authorization_id=row["authorization_id"], timezone=row["timezone"],
+        local_time=row["local_time"], state=row["state"], dst_policy=row["dst_policy"],
+        version_policy=row["version_policy"],
+        daily_request_limit=int(row["daily_request_limit"]),
+        daily_budget_usd_micros=int(row["daily_budget_usd_micros"]),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def _schedule_slot_from_row(row: sqlite3.Row) -> ScheduleSlotRecord:
+    return ScheduleSlotRecord(
+        schedule_id=row["schedule_id"], workspace_id=row["workspace_id"],
+        slot_key=row["slot_key"], slot_at=row["slot_at"], state=row["state"],
+        owner=row["owner"], job_id=row["job_id"], created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
