@@ -18,6 +18,9 @@ from .secrets import SecretStore
 from .spec import validate_spec
 from .storage import Storage
 from .targets.http_json import HttpJsonAdapter
+from .targets.http_stream import HttpStreamAdapter
+from .targets.http_job import HttpJobAdapter
+from .targets.http_session import HttpSessionAdapter
 from .targets.local import LocalTargetAdapter
 from .targets.network_policy import EndpointPolicy
 from .versions import VersionStore
@@ -98,7 +101,11 @@ class RunExecutionService:
             concurrency=limits.get("concurrency", 1),
             timeout_seconds=limits.get("timeout_seconds", 120),
             invocation_manifest=manifest,
-            world_config={"run_plan_id": plan.plan_id, "plan_hash": plan.content_digest},
+            world_config={
+                "run_plan_id": plan.plan_id,
+                "plan_hash": plan.content_digest,
+                "version_refs": dict(refs),
+            },
         )
         proxy_session = None
         if manifest.get("egress") == "proxy":
@@ -201,7 +208,12 @@ class RunExecutionService:
                 item.strip() for item in os.environ.get("EVAL_ENGINE_ALLOW_ENDPOINTS", "").split(",")
                 if item.strip()
             }
-            return HttpJsonAdapter(EndpointPolicy(allow_exact=allowed)), {
+            adapter = {
+                "http_stream": HttpStreamAdapter(policy=EndpointPolicy(allow_exact=allowed)),
+                "http_job": HttpJobAdapter(policy=EndpointPolicy(allow_exact=allowed)),
+                "http_session": HttpSessionAdapter(policy=EndpointPolicy(allow_exact=allowed)),
+            }.get(target.content.get("kind"), HttpJsonAdapter(EndpointPolicy(allow_exact=allowed)))
+            return adapter, {
                 "target": target.content, "retries": 0,
             }, ("/bin/true",), target_context
         raise WorkflowError("run plan has no executable target", code="execution_target_required", status=409)

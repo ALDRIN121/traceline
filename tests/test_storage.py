@@ -77,7 +77,7 @@ def _metric(spec) -> Metric:
 
 
 def _score(metric_id="refund_amount", case_id="c1", *, status=CaseStatus.PASS, attempt=0,
-           on_retry_override=False):
+           on_retry_override=False, raw_value=None):
     return CaseScore(
         metric_id=metric_id,
         case_id=case_id,
@@ -88,6 +88,7 @@ def _score(metric_id="refund_amount", case_id="c1", *, status=CaseStatus.PASS, a
         message="test",
         attempt=attempt,
         on_retry_override=on_retry_override,
+        raw_value=raw_value,
     )
 
 
@@ -489,6 +490,7 @@ class TestMetricResults:
         assert rows[0].status == "PASS"
         assert rows[0].is_authoritative is True
         assert rows[0].on_retry_override is False
+        assert rows[0].raw_value is None
         # Re-score in place: last attempt wins under the same revision (§18.6).
         storage.upsert_case_metric_results(
             run_id=run.run_id, case_id="c1", workspace_id="ws1",
@@ -498,6 +500,16 @@ class TestMetricResults:
         rows = storage.get_case_scores(run_id=run.run_id, workspace_id="ws1")
         assert len(rows) == 1
         assert rows[0].status == "FAIL"
+
+    def test_raw_value_is_persisted_for_rescore(self, storage):
+        run = _make_run(storage)
+        metric = _spec().metrics[0]
+        storage.upsert_case_metric_results(
+            run_id=run.run_id, case_id="c1", workspace_id="ws1",
+            scores=[_score(raw_value={"amount": 49.99})],
+            metric_by_id={metric.metric_id: metric},
+        )
+        assert storage.get_case_scores(run_id=run.run_id, workspace_id="ws1")[0].raw_value == {"amount": 49.99}
 
     def test_retry_row_flagged_on_retry_override(self, storage):
         run = _make_run(storage)

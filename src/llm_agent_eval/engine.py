@@ -58,6 +58,7 @@ from .evaluators import (
     evaluate_case,
     evaluate_gate,
     gate_safe,
+    score_output,
     score_attempt,
 )
 from .judge import JudgeBinding, JudgeEvaluator, UnconfiguredJudge
@@ -917,24 +918,57 @@ class Engine:
             exit_code=result.exit_code, event_count=len(kept),
             trace_truncated=truncated,
         )
+        # Persist only the capture-time-redacted output surface. This is the
+        # authoritative evidence for output-only targets and lets a later
+        # score revision run without invoking the agent again.
+        candidate_output = (
+            redact(result.result_payload).content
+            if result.result_payload is not None else None
+        )
+        if candidate_output is not None and not isinstance(candidate_output, dict):
+            candidate_output = None
+        self.storage.save_attempt_output(
+            attempt_id=record.attempt_id, run_id=run.run_id,
+            case_id=case.case_id, workspace_id=workspace_id,
+            result_payload=candidate_output,
+        )
         metric_by_id = {m.metric_id: m for m in run.spec.metrics}
         # Judges receive the exact output/evidence snapshot for this attempt.
         # The resolver is intentionally scoped to this synchronous scoring
         # window, so it cannot fall back to a mutable "latest" record.
         self._active_judgment_context = JudgmentContext(
-            candidate_output=result.result_payload,
+            candidate_output=candidate_output,
             evidence={event.event_id: event.model_dump(mode="json") for event in kept},
         )
         try:
             if attempt == 0:
                 # First attempts are authoritative (§11C.3).
                 scores = [
-                    evaluate_case(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
+                    (score_output(
+                        run.spec, case.case_id, candidate_output, metric,
+                        judge=self._judge_for(metric),
+                    ) if candidate_output is not None
+                      and getattr(result, "status", None) == "completed"
+                      and metric.target.type in {"final_response", "state_change", "workflow_node", "external"}
+                     else evaluate_case(
+                         run.spec, case.case_id, kept, metric,
+                         judge=self._judge_for(metric),
+                     ))
                     for metric in run.spec.metrics
                 ]
             else:
                 scores = [
-                    score_attempt(run.spec, case.case_id, kept, metric, judge=self._judge_for(metric))
+                    (score_output(
+                        run.spec, case.case_id, candidate_output, metric,
+                        judge=self._judge_for(metric), attempt=attempt,
+                        on_retry_override=True,
+                    ) if candidate_output is not None
+                      and getattr(result, "status", None) == "completed"
+                      and metric.target.type in {"final_response", "state_change", "workflow_node", "external"}
+                     else score_attempt(
+                         run.spec, case.case_id, kept, metric,
+                         judge=self._judge_for(metric),
+                     ))
                     for metric in run.spec.metrics
                 ]
         finally:
@@ -946,7 +980,7 @@ class Engine:
         return AttemptResult(
             record.attempt_id, repeat_index, attempt, AttemptStatus.COMPLETED.value,
             result.exit_code, len(kept), truncated, None, tuple(scores),
-            result.result_payload,
+            candidate_output,
         )
 
     def _invoke_target(self, run: RunRecord, case: TestCase, workspace_id: str,
@@ -964,7 +998,21 @@ class Engine:
             "repeat_index": repeat_index, "attempt": attempt,
         }
         context.update(self.target_execution_context)
+        remote_job = self.storage.get_remote_job(attempt_id, workspace_id)
+        if remote_job is not None:
+            context["remote_job_id"] = remote_job["remote_job_id"]
+        context["persist_remote_job"] = lambda remote_job_id: self.storage.save_remote_job(
+            attempt_id=attempt_id, run_id=run.run_id, case_id=case.case_id,
+            workspace_id=workspace_id, remote_job_id=remote_job_id, state="submitted",
+        )
         adapter_result = self.target_adapter.invoke(manifest, case.input, context)
+        if adapter_result.connector_observations.get("remote_job_id"):
+            self.storage.save_remote_job(
+                attempt_id=attempt_id, run_id=run.run_id, case_id=case.case_id,
+                workspace_id=workspace_id,
+                remote_job_id=adapter_result.connector_observations["remote_job_id"],
+                state="completed" if adapter_result.outcome == "ok" else adapter_result.outcome,
+            )
         status = {
             "ok": "completed", "no_trace": NO_TRACE, "timeout": TIMED_OUT,
             "provider_unreachable": PROVIDER_UNREACHABLE,

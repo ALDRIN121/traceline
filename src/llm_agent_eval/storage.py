@@ -615,7 +615,7 @@ class CaseMetricResultRecord:
     score_revision: int
     status: str
     score: float | None
-    raw_value: dict[str, Any] | None
+    raw_value: Any
     evidence_event_ids: tuple[str, ...]
     judge_binding: dict[str, Any] | None
     is_authoritative: bool
@@ -1632,7 +1632,8 @@ class Storage:
                 judge_binding = json.dumps(metric.judge_binding.model_dump())
             rows.append((
                 run_id, case_id, s.metric_id, workspace_id, score_revision,
-                s.status.value, s.score, None, json.dumps(list(s.evidence_event_ids)),
+                s.status.value, s.score, json.dumps(s.raw_value, allow_nan=False),
+                json.dumps(list(s.evidence_event_ids)),
                 judge_binding,
                 1 if s.attempt == 0 else 0,
                 1 if s.on_retry_override else 0,
@@ -1655,6 +1656,51 @@ class Storage:
                 "   computed_at = excluded.computed_at",
                 rows,
             )
+
+    @_workspace_scoped
+    def save_attempt_output(
+        self, *, attempt_id: str, run_id: str, case_id: str,
+        workspace_id: str, result_payload: Any,
+    ) -> None:
+        """Retain the redacted output surface for evidence-only re-scoring."""
+        encoded = json.dumps(result_payload, allow_nan=False) if result_payload is not None else None
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO attempt_outputs (attempt_id, run_id, case_id, workspace_id, result_payload, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (attempt_id) DO UPDATE SET result_payload = excluded.result_payload",
+                (attempt_id, run_id, case_id, workspace_id, encoded, _now()),
+            )
+
+    @_workspace_scoped
+    def get_attempt_output(self, attempt_id: str, workspace_id: str) -> Any:
+        row = self._conn.execute(
+            "SELECT result_payload FROM attempt_outputs WHERE attempt_id = ? AND workspace_id = ?",
+            (attempt_id, workspace_id),
+        ).fetchone()
+        return None if row is None or row[0] is None else json.loads(row[0])
+
+    @_workspace_scoped
+    def save_remote_job(
+        self, *, attempt_id: str, run_id: str, case_id: str,
+        workspace_id: str, remote_job_id: str, state: str,
+    ) -> None:
+        now = _now()
+        with self._tx():
+            self._conn.execute(
+                "INSERT INTO remote_jobs (attempt_id, run_id, case_id, workspace_id, remote_job_id, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (attempt_id) DO UPDATE SET remote_job_id = excluded.remote_job_id, state = excluded.state, updated_at = excluded.updated_at",
+                (attempt_id, run_id, case_id, workspace_id, remote_job_id, state, now, now),
+            )
+
+    @_workspace_scoped
+    def get_remote_job(self, attempt_id: str, workspace_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT remote_job_id, state FROM remote_jobs WHERE attempt_id = ? AND workspace_id = ?",
+            (attempt_id, workspace_id),
+        ).fetchone()
+        return None if row is None else {"remote_job_id": row[0], "state": row[1]}
 
     # ------------------------------------------------------------------
     # Cost summaries (§12A.5) — per-run totals keyed by price_version

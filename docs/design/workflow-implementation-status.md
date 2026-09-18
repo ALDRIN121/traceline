@@ -374,3 +374,55 @@ unproven; `GatewayJudge` has no run-path resolver wiring; the engine still runs
 agents as host subprocesses outside the workflow worker; end-to-end acceptance
 (upload → isolated execution → authoritative capture → scoring → restart
 recovery) has not been exercised even with synthetic fixtures.
+
+## R1/R2 follow-up on `codex/r1-r2-complete`
+
+**Status:** partial, verified on 2026-09-18; this section supersedes the
+historical “remaining gaps” wording above only for the evidence listed here.
+It is not an R1 release declaration.
+
+- **Frozen worker execution:** `evaluation_run` is now dispatched by the
+  durable worker. Run plans require immutable evaluation/dataset references,
+  verified non-stale targets, and explicit authorization. Local executable
+  sources are materialized inside worker-owned staging; target invocation no
+  longer persists a host source path in the run manifest. Hosted output-only
+  runs and a judge-backed run are covered by integration tests.
+- **Output evidence and re-score:** target/local output is redacted before
+  persistence in `attempt_outputs`; deterministic raw values are stored in
+  case results. `POST /runs/{run_id}/metrics/{metric_id}/rescore` creates a new
+  score revision from retained output/traces without invoking the target. The
+  hosted end-to-end test verifies the measured endpoint call count is unchanged
+  by re-score.
+- **Comparison:** paired comparisons now check metric identity, dataset and
+  expected-reference identity, world identity, matched/scored cohort size and
+  authoritative scores. They return explicit incomparable states, disclose
+  source/target/model/repeat confounders, and omit the confidence interval when
+  repeats are below the minimum.
+- **Proxy/network seam:** a bounded listener, per-run CA/session, managed
+  internal Podman network and sandbox proxy argument vector exist. A live
+  Podman network create/inspect/remove proof passed on the observed host. A
+  real agent-container HTTPS interception/provider no-bypass proof is still
+  open; proxy routes remain an explicit trusted deployment seam and do not yet
+  constitute release-grade provider coverage.
+- **Operations:** local readiness, workspace artifact usage/quota primitives,
+  orphan recovery, and non-overwriting SQLite workspace backup/restore with
+  manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
+  backup/restore, retention enforcement, export/preview TTLs, and a real
+  cross-process recovery rehearsal remain open.
+- **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
+  are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
+  run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
+  Remote-job identity is persisted before polling. Retrieval metrics and full
+  restart-resume/session acceptance coverage remain open.
+- **Observed suite:** the default suite is **850 passed, 9 skipped, 4
+  deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
+  they are not credited as release evidence.
+
+**Still release-blocking:** the specialist-owned authoring/results UI is not
+complete; the real upload → build → per-case Podman/proxy → capture → scoring
+→ worker-restart acceptance is not closed; proxy CA trust and direct/alternate
+egress bypass tests are not proven on Linux, macOS and WSL2; judge calibration
+state is not durably persisted; PostgreSQL recovery and operational retention
+are not rehearsed; R2 retrieval, interactive approval scripts and durable
+remote-job restart polling need conformance tests; and the complete E01–E32 /
+UX acceptance matrix has not been executed.

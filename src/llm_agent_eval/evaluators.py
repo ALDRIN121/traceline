@@ -120,6 +120,7 @@ class CaseScore:
     attempt: int = 0
     on_retry_override: bool = False
     provisional: bool = False
+    raw_value: Any = None
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,54 @@ def score_attempt(
     except (EvaluationError, TraceRuleError, JudgmentError) as exc:
         return _error_result(metric, case_id, str(exc), attempt=attempt,
                              on_retry_override=attempt > 0, provisional=provisional)
+
+
+def score_output(
+    spec: EvaluationSpec,
+    case_id: str,
+    output: Any,
+    metric: Metric,
+    *,
+    judge: JudgeEvaluator | None = None,
+    attempt: int = 0,
+    on_retry_override: bool = False,
+) -> CaseScore:
+    """Score connector/local final-output evidence without fabricating a trace.
+
+    Hosted output-only targets do not claim internal tool/model events. Their
+    observed response is still first-class evidence for ``final_response``
+    metrics, so it uses the same selector and scoring semantics as trace-backed
+    values while preserving an empty event-id set.
+    """
+    _case_from_spec(spec, case_id)
+    provisional = bool(metric.provisional)
+    try:
+        if metric.type == "judge":
+            if judge is None:
+                raise JudgmentError("judge metrics require a configured judge")
+            if metric.target.type not in _NON_EVENT_TARGETS:
+                return score_attempt(
+                    spec, case_id, (), metric, judge=judge,
+                )
+            return _finish_judge(
+                metric, case_id, _case_from_spec(spec, case_id), judge, (),
+                attempt=attempt, on_retry_override=on_retry_override,
+                provisional=provisional,
+            )
+        if metric.type != "scalar" or metric.target.type not in _NON_EVENT_TARGETS:
+            return score_attempt(spec, case_id, (), metric, judge=judge)
+        context = output
+        if metric.target.type == "final_response" and isinstance(output, dict) and "final_response" in output:
+            context = output["final_response"]
+        value = _select_from(context, metric.target.selector)
+        return _score_observed_value(
+            metric, case_id, [value], (), metric.target.type,
+            case=_case_from_spec(spec, case_id), attempt=attempt,
+            on_retry_override=on_retry_override, provisional=provisional,
+        )
+    except (EvaluationError, TraceRuleError, JudgmentError) as exc:
+        return _error_result(metric, case_id, str(exc), attempt=attempt,
+                             on_retry_override=on_retry_override, provisional=provisional)
 
 
 def aggregate_metric(
@@ -980,12 +1029,12 @@ def _score_trace_rule(
         return CaseScore(
             metric.metric_id, case_id, 1.0, True, result.matched, CaseStatus.PASS,
             f"rule passed (matched {len(result.matched)} events)",
-            attempt, on_retry_override, provisional,
+            attempt, on_retry_override, provisional, result.result,
         )
     evidence = _dedupe_ids((*result.matched, *result.failing))
     return CaseScore(
         metric.metric_id, case_id, 0.0, False, evidence, CaseStatus.FAIL,
-        "rule failed", attempt, on_retry_override, provisional,
+        "rule failed", attempt, on_retry_override, provisional, result.result,
     )
 
 
@@ -1013,7 +1062,7 @@ def _score_raw_value(
                 CaseStatus.PASS if passed else CaseStatus.FAIL,
                 f"{what}: every selected value must satisfy the condition "
                 f"(got {len(raw)} values)",
-                attempt, on_retry_override, provisional,
+                attempt, on_retry_override, provisional, _safe_raw_value(raw),
             )
         if scoring.type == "numeric":
             norms = [_normalize_score(scoring, v) for v in raw]
@@ -1024,7 +1073,7 @@ def _score_raw_value(
                 metric.metric_id, case_id, score, passed, evidence,
                 CaseStatus.PASS if passed else CaseStatus.FAIL,
                 f"{what}: normalized mean over {len(raw)} selected values",
-                attempt, on_retry_override, provisional,
+                attempt, on_retry_override, provisional, _safe_raw_value(raw),
             )
         raise EvaluationError(
             f"categorical scoring cannot consume a list of values ({what})"
@@ -1036,7 +1085,7 @@ def _score_raw_value(
             CaseStatus.PASS if passed else CaseStatus.FAIL,
             f"{what}: condition over raw_value={raw!r} "
             + ("passed" if passed else "failed"),
-            attempt, on_retry_override, provisional,
+            attempt, on_retry_override, provisional, _safe_raw_value(raw),
         )
     if scoring.type == "numeric":
         passed = _in_score_range(scoring, raw)
@@ -1046,7 +1095,7 @@ def _score_raw_value(
             CaseStatus.PASS if passed else CaseStatus.FAIL,
             f"{what}: raw_value={raw!r} "
             + (f"within range {scoring.range}" if passed else f"outside range {scoring.range}"),
-            attempt, on_retry_override, provisional,
+            attempt, on_retry_override, provisional, _safe_raw_value(raw),
         )
     if scoring.type == "categorical":
         categories = scoring.categories or []
@@ -1062,9 +1111,20 @@ def _score_raw_value(
             CaseStatus.PASS if passed else CaseStatus.FAIL,
             f"{what}: value {raw_s!r} "
             + ("in categories" if passed else f"not in categories {categories}"),
-            attempt, on_retry_override, provisional,
+            attempt, on_retry_override, provisional, _safe_raw_value(raw),
         )
     raise EvaluationError(f"unsupported scoring.type {scoring.type!r} (§7A.2)")
+
+
+def _safe_raw_value(value: Any) -> Any:
+    """Make missing sentinels representable in JSON result evidence."""
+    if value is MISSING or value is UNKNOWN:
+        return None
+    if isinstance(value, list):
+        return [_safe_raw_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _safe_raw_value(item) for key, item in value.items()}
+    return value
 
 
 def _eval_condition(metric: Metric, raw: Any) -> bool:
@@ -1277,6 +1337,7 @@ def _boolean_case_score(
     attempt: int,
     on_retry_override: bool,
     provisional: bool,
+    raw_value: Any = None,
 ) -> CaseScore:
     """A boolean evaluator under binary scoring passes iff it returns true
     (§7A.2). Non-binary scoring over a boolean feeds 1.0/0.0 as the raw value."""
@@ -1286,6 +1347,7 @@ def _boolean_case_score(
             CaseStatus.PASS if passed else CaseStatus.FAIL,
             f"{what} " + ("passed" if passed else "failed"),
             attempt, on_retry_override, provisional,
+            passed if raw_value is None else raw_value,
         )
     return _score_raw_value(metric, case_id, 1.0 if passed else 0.0, evidence,
                             attempt=attempt, on_retry_override=on_retry_override,

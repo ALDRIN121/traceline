@@ -13,6 +13,9 @@ from ..secrets import SecretStore
 from ..storage import Storage, _now
 from ..versions import VersionStore
 from .http_json import FORBIDDEN_HEADERS, HttpJsonAdapter, UNSUPPORTED_MODES, reject_golden_mapping
+from .http_stream import HttpStreamAdapter
+from .http_job import HttpJobAdapter
+from .http_session import HttpSessionAdapter
 from .network_policy import EndpointPolicy
 from .openapi import import_openapi
 from .local import LocalTargetAdapter
@@ -35,8 +38,11 @@ class ConnectionService:
         if self.storage.get_project(project_id, actor.workspace_id) is None:
             raise NotFound()
         mode = body.get("mode") or "stateless_json"
-        if mode in UNSUPPORTED_MODES or mode != "stateless_json":
+        r2_enabled = os.environ.get("EVAL_ENGINE_ENABLE_R2", "false").lower() == "true"
+        if mode in UNSUPPORTED_MODES and not (r2_enabled and mode in {"streaming", "async", "session"}):
             raise WorkflowError("R1 supports only synchronous stateless JSON HTTP", code="unsupported_target_mode")
+        if mode not in {"stateless_json", "streaming", "async", "session"}:
+            raise WorkflowError("target mode is not supported", code="unsupported_target_mode")
         if body.get("retry_max") not in (None, 0):
             raise WorkflowError("Remote retries are disabled by default", code="retries_forbidden")
         mapping = body.get("output_mapping") or {}
@@ -63,7 +69,7 @@ class ConnectionService:
         pin = EndpointPolicy(allow_exact=_allow_exact()).authorize(url)
         target_id, now = uuid.uuid4().hex, _now()
         content = {
-            "kind": "http_json",
+            "kind": {"stateless_json": "http_json", "streaming": "http_stream", "async": "http_job", "session": "http_session"}[mode],
             "url": url,
             "method": body.get("method") or "POST",
             "auth": auth,
@@ -73,9 +79,26 @@ class ConnectionService:
             "max_response_bytes": body.get("max_response_bytes") or 1_048_576,
             "max_concurrency": body.get("max_concurrency") or 2,
             "retry_max": 0,
-            "mode": "stateless_json",
+            "mode": "stateless_json" if mode == "stateless_json" else mode,
             "pinned": pin,
         }
+        if mode == "streaming":
+            content["mode"] = "stream"
+            content["max_frame_bytes"] = body.get("max_frame_bytes") or 65_536
+            content["max_frames"] = body.get("max_frames") or 10_000
+        elif mode == "async":
+            content["submit_url"] = body.get("submit_url") or url
+            content["status_url_template"] = body.get("status_url_template")
+            content["poll_interval_seconds"] = body.get("poll_interval_seconds") or 0.1
+            content["poll_timeout_seconds"] = body.get("poll_timeout_seconds") or 30
+            if not isinstance(content["status_url_template"], str) or "{job_id}" not in content["status_url_template"]:
+                raise WorkflowError("async targets require status_url_template", code="target_invalid")
+        elif mode == "session":
+            content["init_url"] = body.get("init_url") or url
+            content["turn_url_template"] = body.get("turn_url_template")
+            content["close_url_template"] = body.get("close_url_template")
+            if not isinstance(content["turn_url_template"], str) or "{session_id}" not in content["turn_url_template"]:
+                raise WorkflowError("session targets require turn_url_template", code="target_invalid")
         with self.storage.workspace_transaction(actor.workspace_id) as conn:
             conn.execute(
                 "INSERT INTO targets (workspace_id,target_id,project_id,created_at) VALUES (?,?,?,?)",
@@ -115,7 +138,7 @@ class ConnectionService:
         if auth.get("type") in {"bearer", "api_key"}:
             secrets = SecretStore(self.storage, actor, self.secret_key_path)
             context["secret"] = secrets.resolve(auth["secret_ref"])
-        adapter = HttpJsonAdapter(EndpointPolicy(allow_exact=_allow_exact()))
+        adapter = self._adapter(version.content)
         record = adapter.verify(version.content, smoke, context)
         expires = None
         verified_version_id = version_id
@@ -148,3 +171,14 @@ class ConnectionService:
             "expires_at": expires,
             "provider_cost": "unknown",
         }
+
+    @staticmethod
+    def _adapter(content: dict):
+        policy = EndpointPolicy(allow_exact=_allow_exact())
+        if content.get("kind") == "http_stream":
+            return HttpStreamAdapter(policy=policy)
+        if content.get("kind") == "http_job":
+            return HttpJobAdapter(policy=policy)
+        if content.get("kind") == "http_session":
+            return HttpSessionAdapter(policy=policy)
+        return HttpJsonAdapter(policy)

@@ -54,6 +54,8 @@ from .auth import Actor, create_install_auth_resolver
 from .contracts import WorkflowError
 from .comparisons import ComparisonService
 from .exports import ExportService
+from .rescore import RescoreService
+from .operations import OperationsService
 from .ci_api import exit_code as ci_exit_code
 from .gateway import LiteLLMGateway, ModelGateway
 from .dashboard import (
@@ -109,6 +111,14 @@ class RevisionRequest(BaseModel):
     dispute_path: Literal["rule_wrong", "evidence_missing", "judgment_wrong"] | None = None
     reason: str | None = None
     author_id: str | None = None
+
+
+class RescoreRequest(BaseModel):
+    """Replacement metric binding for evidence-only re-scoring."""
+
+    score_revision: int = Field(gt=1)
+    metric: dict[str, Any]
+    case_ids: list[str] | None = None
 
 
 class ValidateSpecRequest(BaseModel):
@@ -183,6 +193,7 @@ def _case_metric_dict(r: Any) -> dict[str, Any]:
         "score_revision": r.score_revision,
         "status": r.status,
         "score": r.score,
+        "raw_value": r.raw_value,
         "is_authoritative": r.is_authoritative,
         "on_retry_override": r.on_retry_override,
         "overridden": r.overridden,
@@ -412,7 +423,7 @@ def create_app(
         # Health is intentionally public so local orchestration can determine
         # liveness before it has the install owner credential. It exposes no
         # workspace data and accepts no mutation.
-        if request.url.path == "/health":
+        if request.url.path in {"/health", "/readiness"}:
             response = await call_next(request)
             response.headers["x-correlation-id"] = request.state.correlation_id
             return response
@@ -537,6 +548,13 @@ def create_app(
         except Exception:
             return _error(request, 503, "internal_error", "database unreachable")
         return {"status": "ok", "database": "ok", "service": "llm_agent_eval"}
+
+    @app.get("/readiness")
+    def readiness(request: Request) -> Any:
+        result = OperationsService(store(), artifact_root).readiness(ws)
+        if result["status"] != "ready":
+            return _error(request, 503, "internal_error", "service is not ready", result)
+        return result
 
     @app.post("/runs", status_code=201)
     def create_run(
@@ -1028,6 +1046,14 @@ def create_app(
                 "overridden": machine.overridden,
             },
         }
+
+    @app.post("/runs/{run_id}/metrics/{metric_id}/rescore")
+    def rescore_metric(run_id: str, metric_id: str, body: RescoreRequest, request: Request) -> Any:
+        """Re-score retained evidence without constructing or invoking a target."""
+        return RescoreService(store(), gateway=model_gateway).rescore(
+            request.state.actor, run_id, metric_id, body.metric,
+            body.score_revision, case_ids=body.case_ids,
+        )
 
     # ------------------------------------------------------------------
     # Dashboard surface (§37B) — the declarative definition is the only

@@ -138,11 +138,24 @@ class DurableScheduleService:
             start, end, local, schedule.timezone, dst_policy=schedule.dst_policy,
         )
         existing = self.storage.list_schedule_slots(schedule_id, actor.workspace_id)
-        local_days = {slot.slot_at[:10] for slot in existing if slot.state in {"claimed", "queued"}}
+        daily_counts: dict[str, int] = {}
+        for slot in existing:
+            if slot.state in {"claimed", "queued"}:
+                day = slot.slot_at[:10]
+                daily_counts[day] = daily_counts.get(day, 0) + 1
+        plan_budget = int((plan.content.get("limits") or {}).get("budget_usd_micros", 0))
+        daily_spend: dict[str, int] = {
+            day: count * plan_budget for day, count in daily_counts.items()
+        }
         queued = []
         for slot in slots:
             slot_key = ScheduleStore().enqueue_key(schedule_shape, slot)
-            if slot.strftime("%Y-%m-%d") in local_days and len(local_days) >= schedule.daily_request_limit:
+            day = slot.strftime("%Y-%m-%d")
+            if daily_counts.get(day, 0) >= schedule.daily_request_limit:
+                continue
+            if schedule.daily_budget_usd_micros and (
+                daily_spend.get(day, 0) + plan_budget > schedule.daily_budget_usd_micros
+            ):
                 continue
             # A single atomic insert is the distributed lock and idempotency
             # record; a second worker gets False and does no enqueue.
@@ -174,5 +187,6 @@ class DurableScheduleService:
                 slot_key=slot_key, state="queued", job_id=job.job_id,
             )
             queued.append(job)
-            local_days.add(slot.strftime("%Y-%m-%d"))
+            daily_counts[day] = daily_counts.get(day, 0) + 1
+            daily_spend[day] = daily_spend.get(day, 0) + plan_budget
         return queued
