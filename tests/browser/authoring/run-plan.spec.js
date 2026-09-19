@@ -90,10 +90,10 @@ test("Preview runs the durable plan, authorization, and enqueue sequence", async
     project_id: "project-a",
     evaluation_version_id: "eval-v1",
     dataset_version_id: "dataset-v1",
-    source_version_id: "source-v1",
     target_version_id: "target-v1",
     dashboard_version_id: "dashboard-v1",
   });
+  expect(plan.body.version_refs).not.toHaveProperty("source_version_id");
   expect(authorize.body).toEqual({ plan_hash: "a".repeat(64) });
   expect(enqueue.body).toEqual({ plan_id: "plan-1", plan_hash: "a".repeat(64), authorization_id: "authorization-1" });
   expect(enqueue.idempotencyKey).toMatch(/^authoring-/);

@@ -178,12 +178,16 @@
 
   function runVersionRefs() {
     const session = window.__tracelineAuthoringSession || {};
+    const selectedTargetVersionId = targetVersionId || session.target_version_id || "";
     const refs = {
       project_id: projectId || session.project_id || "",
       evaluation_version_id: evaluationVersionId || session.evaluation_version_id || "",
       dataset_version_id: datasetVersionId || session.dataset_version_id || "",
-      source_version_id: sourceVersionId || session.source_version_id || "",
-      target_version_id: targetVersionId || session.target_version_id || "",
+      // A verified hosted target is the execution source. Keeping the
+      // knowledge-derived source ref alongside it makes the plan prefer the
+      // local runtime path, so omit it only for an explicitly selected target.
+      source_version_id: selectedTargetVersionId ? "" : sourceVersionId || session.source_version_id || "",
+      target_version_id: selectedTargetVersionId,
       dashboard_version_id: dashboardVersionId || session.dashboard_version_id || "",
     };
     return Object.fromEntries(Object.entries(refs).filter(([, value]) => value));

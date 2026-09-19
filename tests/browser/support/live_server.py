@@ -21,12 +21,14 @@ from llm_agent_eval.engine import Engine
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.knowledge import KnowledgeStore
 from llm_agent_eval.storage import Storage
+from llm_agent_eval.targets import ConnectionService
 from llm_agent_eval.versions import VersionStore
 
 
 WORKSPACE = "browser-workspace"
 ACTOR = Actor("browser-owner", WORKSPACE, "owner")
 TARGET_STUB_PORT = 8766
+LIVE_EVAL_ID = "live-browser-eval"
 
 
 class _TargetStubHandler(BaseHTTPRequestHandler):
@@ -69,7 +71,7 @@ def _source_archive() -> bytes:
     return archive.getvalue()
 
 
-def _seed(storage: Storage, artifact_root: Path) -> None:
+def _seed(storage: Storage, artifact_root: Path) -> dict[str, str]:
     project = storage.create_project(
         workspace_id=WORKSPACE,
         name="Seeded support agent",
@@ -87,6 +89,94 @@ def _seed(storage: Storage, artifact_root: Path) -> None:
     )
     KnowledgeStore(storage, artifact_root).current(project.project_id, ACTOR)
 
+    plan_project = storage.create_project(
+        workspace_id=WORKSPACE,
+        name="Seeded live run agent",
+        entrypoint=("python", "agent.py"),
+    )
+    VersionStore(storage).create(
+        "source",
+        plan_project.project_id,
+        {"artifact_ids": [artifact.artifact_id], "readiness": "executable", "manifest": {}},
+        0,
+        ACTOR,
+    )
+    KnowledgeStore(storage, artifact_root).current(plan_project.project_id, ACTOR)
+
+    connection = ConnectionService(storage, artifact_root / "install-secret.key")
+    target = connection.create(
+        ACTOR,
+        plan_project.project_id,
+        {
+            "url": f"http://127.0.0.1:{TARGET_STUB_PORT}/invoke",
+            "framework": "generic_http",
+            "mode": "stateless_json",
+            "auth": {"type": "none"},
+        },
+    )
+    verified = connection.verify(
+        ACTOR,
+        target["target_id"],
+        {"target_version_id": target["version_id"], "smoke_input": {"message": "seed verification"}},
+    )
+
+    cases = [{"case_id": "live-case", "name": "live hosted case", "input": {"message": "hello"}}]
+    versions = VersionStore(storage)
+    dataset = versions.create(
+        "dataset", plan_project.project_id, {"cases": cases}, 0, ACTOR,
+    )
+    spec = {
+        "spec_version": "1",
+        "name": "Live hosted acceptance",
+        "dataset_version": dataset.version_id,
+        "cases": cases,
+        "metrics": [{
+            "metric_id": "answer",
+            "name": "Observed answer",
+            "type": "scalar",
+            "target": {"type": "final_response", "selector": "$", "on_missing": "fail"},
+            "evaluator": {"type": "exact_match", "expected": "verified"},
+            "scoring": {"type": "binary", "range": [0, 1]},
+            "aggregation": {"method": "pass_rate", "on_error": "fail"},
+            "gate": {"min": 1.0},
+            "provisional": False,
+        }],
+    }
+    dashboard = {
+        "version": 3,
+        "name": "Live results",
+        "registry_version": 1,
+        "layout": {"type": "grid", "columns": 12},
+        "filters": [{"id": "run", "type": "run_selector", "default": "latest"}],
+        "blocks": [{
+            "component": "metric_summary",
+            "span": 12,
+            "bind": {"metric": "answer", "run": "$filters.run", "stat": "pass_rate"},
+        }],
+    }
+    storage.create_custom_eval(
+        workspace_id=WORKSPACE,
+        name="Live hosted acceptance",
+        spec=spec,
+        dashboard={"definition": dashboard, "target_version_id": verified["target_version_id"]},
+        dataset=cases,
+        project_id=plan_project.project_id,
+        entrypoint=("python", "agent.py"),
+        eval_id=LIVE_EVAL_ID,
+    )
+    evaluation = versions.create(
+        "evaluation", LIVE_EVAL_ID, {"spec": spec}, 0, ACTOR,
+    )
+    dashboard_version = versions.create(
+        "dashboard", LIVE_EVAL_ID, {"definition": dashboard}, 0, ACTOR,
+    )
+    return {
+        "project_id": plan_project.project_id,
+        "evaluation_version_id": evaluation.version_id,
+        "dataset_version_id": dataset.version_id,
+        "dashboard_version_id": dashboard_version.version_id,
+    }
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -98,13 +188,13 @@ def main() -> None:
         storage = Storage(root / "browser.db")
         storage.create_schema()
         artifact_root = root / "artifacts"
-        _seed(storage, artifact_root)
         previous_allowlist = os.environ.get("EVAL_ENGINE_ALLOW_ENDPOINTS")
         os.environ["EVAL_ENGINE_ALLOW_ENDPOINTS"] = f"127.0.0.1:{TARGET_STUB_PORT}"
         target_stub = None
         target_stub_thread = None
         try:
             target_stub, target_stub_thread = _start_target_stub()
+            _seed(storage, artifact_root)
             app = create_app(
                 storage=storage,
                 engine=Engine(storage, work_root=root / "work"),

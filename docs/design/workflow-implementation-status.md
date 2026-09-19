@@ -584,11 +584,13 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **44 tests**. The evidence covers
+  dashboard browser suites pass **45 tests**. The evidence covers
   live FastAPI-backed project create/list/detail/knowledge, ZIP upload →
   durable import worker → knowledge revision refresh, and hosted target
   configure → durable verification → observed verified-version flows in
-  local-owner mode at a 390×844 viewport with keyboard activation, in addition to
+  local-owner mode at a 390×844 viewport with keyboard activation, including the
+  live hosted Preview → plan → authorization → worker completion → scored
+  results/export readback flow, in addition to
   workspace project listing, project creation with the server-observed ID,
   project detail selection, automatic knowledge loading, stale selection
   isolation, and secret-field redaction, alongside project/session context,
