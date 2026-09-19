@@ -80,6 +80,51 @@ def test_restricted_build_returns_digest_and_never_inherits_environment(tmp_path
     assert "--cap-drop=ALL" in build
     assert "--security-opt=no-new-privileges" in build
     assert not any("API" in part or "SECRET" in part for part in build)
+    assert job.provenance["adapter_version"] == "local-target-v1"
+    assert job.provenance["lockfile_digest"] == "none"
+    assert job.provenance["cache_key"]
+    assert any("llm-agent-eval.cache-key=" in part for part in build)
+
+
+def test_build_cache_key_changes_for_lockfile_base_policy_and_adapter(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("print('ok')")
+    (source / "uv.lock").write_text("version = 1\n")
+
+    first = BuildService(command_runner=FakePodman(), adapter_version="local-target-v1")
+    first_job = first.prepare(
+        source,
+        RuntimeProfile(base_image=IMAGE, entrypoint=("/bin/sh",)),
+    )
+
+    (source / "uv.lock").write_text("version = 2\n")
+    changed_lockfile = BuildService(
+        command_runner=FakePodman(), adapter_version="local-target-v1"
+    ).prepare(source, RuntimeProfile(base_image=IMAGE, entrypoint=("/bin/sh",)))
+    changed_base = BuildService(
+        command_runner=FakePodman(), adapter_version="local-target-v1"
+    ).prepare(
+        source,
+        RuntimeProfile(base_image="sha256:" + "c" * 64, entrypoint=("/bin/sh",)),
+    )
+    changed_policy = BuildService(
+        command_runner=FakePodman(), adapter_version="local-target-v1"
+    ).prepare(
+        source,
+        RuntimeProfile(
+            base_image=IMAGE, entrypoint=("/bin/sh",), policy_version="policy-v2"
+        ),
+    )
+    changed_adapter = BuildService(
+        command_runner=FakePodman(), adapter_version="local-target-v2"
+    ).prepare(source, RuntimeProfile(base_image=IMAGE, entrypoint=("/bin/sh",)))
+
+    assert changed_lockfile.provenance["lockfile_digest"] != first_job.provenance["lockfile_digest"]
+    assert changed_lockfile.provenance["cache_key"] != first_job.provenance["cache_key"]
+    assert changed_base.provenance["cache_key"] != changed_lockfile.provenance["cache_key"]
+    assert changed_policy.provenance["cache_key"] != changed_lockfile.provenance["cache_key"]
+    assert changed_adapter.provenance["cache_key"] != changed_lockfile.provenance["cache_key"]
 
 
 def test_restricted_build_uses_the_explicit_rootless_engine_socket(tmp_path):

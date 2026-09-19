@@ -61,7 +61,8 @@ class BuildService:
     """Build only from an engine-owned source snapshot with no ambient secrets."""
 
     def __init__(self, *, command_runner: Callable | None = None,
-                 environment: Mapping[str, str] | None = None):
+                 environment: Mapping[str, str] | None = None,
+                 adapter_version: str = "local-target-v1"):
         source_env = dict(os.environ if environment is None else environment)
         try:
             podman = PodmanSandbox(environment=source_env)
@@ -70,6 +71,9 @@ class BuildService:
         self.prefix = list(podman.prefix)
         self.environment = podman.env
         self.command_runner = command_runner or _run_podman
+        if not isinstance(adapter_version, str) or not adapter_version.strip():
+            raise BuildDenied("adapter version is required")
+        self.adapter_version = adapter_version
 
     def prepare(self, source_dir: Path, profile: RuntimeProfile) -> BuildJob:
         source_dir = Path(source_dir)
@@ -80,6 +84,12 @@ class BuildService:
         source_digest = hashlib.sha256(
             json.dumps(source_tree, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        lockfile_digest = self._lockfile_digest(source_tree)
+        cache_key = self._cache_key(
+            source_digest=source_digest,
+            lockfile_digest=lockfile_digest,
+            profile=profile,
+        )
         self._require_rootless_engine()
         tag = f"llm-agent-eval-build-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory(prefix="llm-agent-build-") as context_name:
@@ -103,6 +113,7 @@ class BuildService:
                 *self.prefix, "build", "--pull=never", "--network=none",
                 "--cap-drop=ALL", "--security-opt=no-new-privileges",
                 "--label", f"llm-agent-eval.source-digest={source_digest}",
+                "--label", f"llm-agent-eval.cache-key={cache_key}",
                 "--label", f"llm-agent-eval.build-policy={profile.policy_version}",
                 "--tag", tag, "--file", str(containerfile), str(context),
             ]
@@ -124,8 +135,43 @@ class BuildService:
             job_id=uuid.uuid4().hex, state="prepared", source_digest=source_digest,
             image_digest=image_digest, entrypoint=profile.entrypoint,
             provenance={"build_policy_version": profile.policy_version,
-                        "base_image": profile.base_image},
+                        "base_image": profile.base_image,
+                        "adapter_version": self.adapter_version,
+                        "lockfile_digest": lockfile_digest,
+                        "cache_key": cache_key},
         )
+
+    @staticmethod
+    def _lockfile_digest(source_tree: dict) -> str:
+        files = source_tree.get("files", {})
+        lockfile_names = {
+            "Cargo.lock", "Gemfile.lock", "Pipfile.lock", "composer.lock",
+            "go.sum", "npm-shrinkwrap.json", "package-lock.json", "pdm.lock",
+            "poetry.lock", "pnpm-lock.yaml", "uv.lock", "yarn.lock",
+        }
+        lockfiles = {
+            name: digest for name, digest in files.items()
+            if Path(name).name in lockfile_names or name.endswith(".lock")
+        }
+        if not lockfiles:
+            return "none"
+        return hashlib.sha256(
+            json.dumps(lockfiles, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def _cache_key(self, *, source_digest: str, lockfile_digest: str,
+                   profile: RuntimeProfile) -> str:
+        payload = {
+            "source_digest": source_digest,
+            "lockfile_digest": lockfile_digest,
+            "base_image": profile.base_image,
+            "adapter_version": self.adapter_version,
+            "build_policy_version": profile.policy_version,
+            "entrypoint": list(profile.entrypoint),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     def _require_rootless_engine(self) -> None:
         try:

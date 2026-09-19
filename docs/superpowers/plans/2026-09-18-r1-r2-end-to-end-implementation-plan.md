@@ -57,7 +57,7 @@
 - `LocalTargetAdapter.cancel(invocation_id, execution_context) -> CancellationResult`
 
 - [ ] Write failing tests for digest-pinned build admission, source/image mismatch, no host execution, per-case fresh containers, missing entrypoint, invalid model configuration, cancellation, and orphan reaping.
-- [ ] Implement restricted build provenance and cache keys covering source, lockfile, base digest, adapter, and build-policy versions.
+- [x] Implement restricted build provenance and cache keys covering source, lockfile, base digest, adapter, and build-policy versions.
 - [ ] Replace uploaded-agent host invocation with `LocalTargetAdapter` through the durable worker.
 - [ ] Extend the sandbox command vector for controlled proxy networking while retaining read-only roots, bounded tmpfs, dropped capabilities, and empty environment defaults.
 - [ ] Implement the v3 input/manifest/output protocol and six smoke-failure classifications.

@@ -400,7 +400,12 @@ It is not an R1 release declaration.
   bound. Restricted builds now revalidate the staged source tree against the
   recorded digest and use the selected rootless Podman connection (including
   `ENGINE_SOCKET`/user-runtime configuration); a rootful engine is rejected
-  before any build command is issued. Evidence: `tests/runtime/test_build.py`.
+  before any build command is issued. Restricted-build provenance also records
+  a deterministic cache key over the source snapshot, detected lockfiles,
+  digest-pinned base image, local adapter version, build policy version, and
+  entrypoint; the key is attached to the image build labels so lockfile,
+  policy, adapter, or base changes cannot reuse an older build. Evidence:
+  `tests/runtime/test_build.py`.
 - **Output evidence and re-score:** target/local output is redacted before
   persistence in `attempt_outputs`; deterministic raw values are stored in
   case results. `POST /runs/{run_id}/metrics/{metric_id}/rescore` creates a new
@@ -664,7 +669,7 @@ It is not an R1 release declaration.
   anonymous API rejection, public static-shell loading, fragment token
   consumption/removal, authenticated authoring/dashboard API calls, and no
   token retention in localStorage.
-- **Observed suite:** the default suite is **961 passed, 16 skipped, 10
+- **Observed suite:** the default suite is **962 passed, 16 skipped, 10
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The combined opt-in live
   proxy/sandbox, HTTPS-client, embedded-LiteLLM, custom-evaluator, and local-runtime selection passes **8 tests**
