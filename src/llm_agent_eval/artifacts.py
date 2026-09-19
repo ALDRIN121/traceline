@@ -129,3 +129,28 @@ class ArtifactStore:
                 except WorkflowError:
                     unavailable.append(record.artifact_id)
         return {"removed_uncommitted": removed, "unavailable_artifact_ids": unavailable}
+
+    def delete_unreferenced(self, workspace_id: str, artifact_id: str) -> bool:
+        """Delete one ready artifact only when no immutable version references it."""
+        self.actor.require(write=True, workspace_id=workspace_id)
+        if not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
+            raise NotFound()
+        with self.storage.workspace_transaction(workspace_id) as conn:
+            referenced = conn.execute(
+                "SELECT 1 FROM version_artifacts WHERE workspace_id=? AND artifact_id=? LIMIT 1",
+                (workspace_id, artifact_id),
+            ).fetchone()
+            if referenced is not None:
+                return False
+            deleted = conn.execute(
+                "DELETE FROM artifacts WHERE workspace_id=? AND artifact_id=? AND state='ready'",
+                (workspace_id, artifact_id),
+            )
+            if deleted.rowcount != 1:
+                return False
+        path = self._directory(workspace_id) / artifact_id
+        if path.is_symlink():
+            path.unlink(missing_ok=True)
+        elif path.exists():
+            path.unlink()
+        return True

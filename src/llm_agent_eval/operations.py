@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -65,6 +66,113 @@ class OperationsService:
 
     def recover_workspace(self, actor) -> dict[str, Any]:
         return ArtifactStore(self.storage, self.artifact_root, actor).recover(actor.workspace_id)
+
+    def enforce_retention(
+        self,
+        actor,
+        *,
+        now: datetime | None = None,
+        export_days: int = 7,
+        preview_days: int = 30,
+        abandoned_import_hours: int = 24,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Apply the conservative local retention policy from workflow §12.
+
+        Database references and immutable version attachments are checked before
+        filesystem deletion.  ``dry_run`` returns the exact candidate counts
+        without changing rows or files; a scheduler can therefore report the
+        impact before the operator enables pruning.
+        """
+        actor.require(write=True)
+        for name, value, low in (
+            ("export_days", export_days, 1),
+            ("preview_days", preview_days, 1),
+            ("abandoned_import_hours", abandoned_import_hours, 1),
+        ):
+            if type(value) is not int or value < low:
+                raise WorkflowError(f"{name} must be an integer >= {low}")
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise WorkflowError("retention now must be timezone-aware")
+        current = current.astimezone(timezone.utc)
+        export_cutoff = (current - timedelta(days=export_days)).isoformat()
+        preview_cutoff = (current - timedelta(days=preview_days)).isoformat()
+        upload_cutoff = (current - timedelta(hours=abandoned_import_hours)).timestamp()
+        preview_ids = self.storage.preview_artifact_ids_before(actor.workspace_id, preview_cutoff)
+        protected_job_ids = self.storage.all_job_artifact_ids(actor.workspace_id) - preview_ids
+        preview_ids -= protected_job_ids
+        export_rows = self._expired_export_count(actor.workspace_id, export_cutoff)
+        upload_paths = self._old_uploads(actor.workspace_id, upload_cutoff)
+        candidates = {
+            "expired_exports": export_rows,
+            "preview_artifacts": len(preview_ids),
+            "abandoned_uploads": len(upload_paths),
+            "staging_files": self._old_staging_files(actor.workspace_id, upload_cutoff),
+        }
+        if dry_run:
+            return {"state": "dry_run", **candidates}
+        deleted_exports = self.storage.delete_export_snapshots_before(
+            actor.workspace_id, export_cutoff,
+        )
+        artifact_store = ArtifactStore(self.storage, self.artifact_root, actor)
+        deleted_preview = sum(
+            1 for artifact_id in sorted(preview_ids)
+            if artifact_store.delete_unreferenced(actor.workspace_id, artifact_id)
+        )
+        deleted_uploads = 0
+        for path in upload_paths:
+            try:
+                path.unlink()
+                deleted_uploads += 1
+            except FileNotFoundError:
+                pass
+        deleted_staging = self._delete_old_staging(actor.workspace_id, upload_cutoff)
+        return {
+            "state": "completed",
+            "expired_exports": deleted_exports,
+            "preview_artifacts": deleted_preview,
+            "abandoned_uploads": deleted_uploads,
+            "staging_files": deleted_staging,
+        }
+
+    def _expired_export_count(self, workspace_id: str, cutoff: str) -> int:
+        with self.storage.workspace_transaction(workspace_id) as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM export_snapshots WHERE workspace_id=? AND created_at < ?",
+                (workspace_id, cutoff),
+            ).fetchone()[0])
+
+    def _workspace_dir(self, workspace_id: str, name: str) -> Path:
+        if not isinstance(workspace_id, str) or not workspace_id.replace("_", "").replace("-", "").isalnum():
+            raise WorkflowError("invalid workspace identity")
+        return (self.artifact_root / name / workspace_id).resolve()
+
+    def _old_uploads(self, workspace_id: str, cutoff: float) -> list[Path]:
+        root = self._workspace_dir(workspace_id, "quarantine")
+        if not root.is_dir():
+            return []
+        return [
+            path for path in root.iterdir()
+            if path.is_file() and path.name != ".keep" and path.stat().st_mtime < cutoff
+        ]
+
+    def _old_staging_files(self, workspace_id: str, cutoff: float) -> int:
+        root = (self.artifact_root / "ws" / workspace_id / "artifacts").resolve()
+        if not root.is_dir():
+            return 0
+        return sum(1 for path in root.iterdir() if path.is_file() and path.suffix == ".stage" and path.stat().st_mtime < cutoff)
+
+    def _delete_old_staging(self, workspace_id: str, cutoff: float) -> int:
+        root = (self.artifact_root / "ws" / workspace_id / "artifacts").resolve()
+        if not root.is_dir():
+            return 0
+        deleted = 0
+        for path in root.iterdir():
+            if path.is_file() and path.suffix == ".stage" and path.stat().st_mtime < cutoff:
+                path.unlink()
+                deleted += 1
+        return deleted
 
     def backup_workspace(self, actor, destination: Path) -> dict[str, Any]:
         actor.require(write=True)

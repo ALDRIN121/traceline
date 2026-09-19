@@ -1426,6 +1426,72 @@ class Storage:
         }
 
     @_workspace_scoped
+    def delete_export_snapshots_before(self, workspace_id: str, cutoff: str) -> int:
+        """Delete only this workspace's expired frozen export manifests."""
+        if not isinstance(cutoff, str) or not cutoff:
+            raise ValueError("cutoff is required")
+        with self._tx():
+            deleted = self._conn.execute(
+                "DELETE FROM export_snapshots WHERE workspace_id=? AND created_at < ?",
+                (workspace_id, cutoff),
+            )
+            return deleted.rowcount
+
+    @_workspace_scoped
+    def preview_artifact_ids_before(
+        self, workspace_id: str, cutoff: str, *, keep_revisions: int = 20,
+    ) -> set[str]:
+        """Return expired preview artifacts outside the recent revision window.
+
+        A preview job is a revision for retention purposes.  The newest
+        ``keep_revisions`` revisions with unreferenced artifacts remain
+        recoverable even when they are older than the age cutoff; immutable
+        version attachments are protected separately by ``delete_unreferenced``.
+        """
+        if type(keep_revisions) is not int or keep_revisions < 0:
+            raise ValueError("keep_revisions must be nonnegative")
+        rows = self._conn.execute(
+            "SELECT result_json, updated_at FROM jobs WHERE workspace_id=? AND status='completed' "
+            "AND command_json LIKE '%dashboard_preview%' AND result_json IS NOT NULL "
+            "ORDER BY updated_at DESC, job_id DESC",
+            (workspace_id,),
+        ).fetchall()
+        artifact_ids: set[str] = set()
+        retained_revisions = 0
+        for row in rows:
+            try:
+                result = json.loads(row["result_json"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(result, dict) and isinstance(result.get("artifact_ids"), list):
+                revision_artifacts = {
+                    item for item in result["artifact_ids"] if isinstance(item, str)
+                }
+                if retained_revisions < keep_revisions:
+                    retained_revisions += 1
+                    continue
+                if row["updated_at"] < cutoff:
+                    artifact_ids.update(revision_artifacts)
+        return artifact_ids
+
+    @_workspace_scoped
+    def all_job_artifact_ids(self, workspace_id: str) -> set[str]:
+        """Collect job-result artifact references before retention removes any."""
+        rows = self._conn.execute(
+            "SELECT result_json FROM jobs WHERE workspace_id=? AND result_json IS NOT NULL",
+            (workspace_id,),
+        ).fetchall()
+        artifact_ids: set[str] = set()
+        for row in rows:
+            try:
+                result = json.loads(row["result_json"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(result, dict) and isinstance(result.get("artifact_ids"), list):
+                artifact_ids.update(item for item in result["artifact_ids"] if isinstance(item, str))
+        return artifact_ids
+
+    @_workspace_scoped
     def list_runs(
         self, workspace_id: str, *, limit: int = 50, status: str | None = None
     ) -> list[RunRecord]:
