@@ -51,6 +51,17 @@ def test_release_ci_runs_tests_and_fail_closed_scans():
     workflow = yaml.safe_load((ROOT / ".github/workflows/release-checks.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
+    assert "compose-rehearsal" in jobs
+    compose_job = jobs["compose-rehearsal"]
+    compose_commands = "\n".join(
+        step.get("run", "") for step in compose_job["steps"]
+    )
+    compose_env = "\n".join(
+        str(step.get("env", {})) for step in compose_job["steps"]
+    )
+    assert "LLM_AGENT_EVAL_RUN_COMPOSE" in compose_env
+    assert "test_compose_rehearsal.py" in compose_commands
+    assert not compose_job.get("continue-on-error", False)
     platform_smoke = jobs["platform-smoke"]
     assert platform_smoke["strategy"]["matrix"]["os"] == [
         "ubuntu-latest", "macos-latest", "windows-latest",
