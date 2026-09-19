@@ -366,14 +366,16 @@ open.
   4 deselected**; the 9 skips are PostgreSQL-dependent tests (no
   `TEST_DATABASE_URL`/local server) and are not release evidence.
 
-**Remaining release gaps (all ten blockers re-checked 2026-09-18):** no
-`evaluation_run` worker handler or container-target admission (source versions
-stay `readiness="blocked"`; run creation still freezes host paths); no
-proxy listener, trust injection, or provider transport, so proxy-only egress is
-unproven; `GatewayJudge` has no run-path resolver wiring; the engine still runs
-agents as host subprocesses outside the workflow worker; end-to-end acceptance
-(upload → isolated execution → authoritative capture → scoring → restart
-recovery) has not been exercised even with synthetic fixtures.
+**Remaining release gaps (all ten blockers re-checked 2026-09-18 and the
+worker-path follow-up re-checked 2026-09-19):** the `evaluation_run` handler,
+container-target admission, and persisted-judge resolver wiring now exist and
+are covered by worker-path tests, but full source upload → build → isolated
+execution acceptance still depends on a real proxy-enabled runtime. The proxy
+listener/trust-injection/provider transport is not yet a complete release
+topology, so proxy-only egress remains unproven; the engine's real source path
+still requires the runtime admission and platform evidence described below.
+End-to-end acceptance (upload → isolated execution → authoritative capture →
+scoring → restart recovery) has not been exercised as one live scenario.
 
 ## R1/R2 follow-up on `codex/r1-r2-complete`
 
