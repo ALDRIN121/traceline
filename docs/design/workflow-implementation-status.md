@@ -563,7 +563,7 @@ It is not an R1 release declaration.
   legacy run modal explicitly states that its request is not backend
   authorization; no visual API-backed full-flow screenshot or complete R1
   accessibility matrix is claimed.
-- **Observed suite:** the default suite is **929 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **930 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
