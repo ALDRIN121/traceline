@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
+import os
 from pathlib import Path
 import tempfile
 import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import uvicorn
 
@@ -23,6 +26,36 @@ from llm_agent_eval.versions import VersionStore
 
 WORKSPACE = "browser-workspace"
 ACTOR = Actor("browser-owner", WORKSPACE, "owner")
+TARGET_STUB_PORT = 8766
+
+
+class _TargetStubHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/invoke":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        payload = json.dumps({"answer": "verified"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *_args):
+        pass
+
+
+def _start_target_stub():
+    server = ThreadingHTTPServer(("127.0.0.1", TARGET_STUB_PORT), _TargetStubHandler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="browser-target-stub",
+        daemon=True,
+    )
+    thread.start()
+    return server, thread
 
 
 def _source_archive() -> bytes:
@@ -66,7 +99,12 @@ def main() -> None:
         storage.create_schema()
         artifact_root = root / "artifacts"
         _seed(storage, artifact_root)
+        previous_allowlist = os.environ.get("EVAL_ENGINE_ALLOW_ENDPOINTS")
+        os.environ["EVAL_ENGINE_ALLOW_ENDPOINTS"] = f"127.0.0.1:{TARGET_STUB_PORT}"
+        target_stub = None
+        target_stub_thread = None
         try:
+            target_stub, target_stub_thread = _start_target_stub()
             app = create_app(
                 storage=storage,
                 engine=Engine(storage, work_root=root / "work"),
@@ -93,6 +131,15 @@ def main() -> None:
                 worker_stop.set()
                 worker_thread.join(timeout=2)
         finally:
+            if target_stub is not None:
+                target_stub.shutdown()
+                target_stub.server_close()
+            if target_stub_thread is not None:
+                target_stub_thread.join(timeout=2)
+            if previous_allowlist is None:
+                os.environ.pop("EVAL_ENGINE_ALLOW_ENDPOINTS", None)
+            else:
+                os.environ["EVAL_ENGINE_ALLOW_ENDPOINTS"] = previous_allowlist
             storage.close()
 
 

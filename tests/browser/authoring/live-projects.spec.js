@@ -117,3 +117,99 @@ test("live authoring uploads a ZIP, completes its import job, and refreshes know
     { method: "GET", path: `/api/projects/${seededProjectId}/knowledge` },
   ]));
 });
+
+test("live authoring configures a target, verifies it, and shows the observed target version", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  const apiRequests = [];
+  const jobSnapshots = [];
+  page.on("request", (request) => {
+    if (!request.url().includes("/api/")) return;
+    const contentType = request.headers()["content-type"] || "";
+    apiRequests.push({
+      method: request.method(),
+      path: new URL(request.url()).pathname,
+      body: contentType.includes("application/json") ? request.postDataJSON() : null,
+    });
+  });
+  page.on("response", async (response) => {
+    const path = new URL(response.url()).pathname;
+    if (!/^\/api\/jobs\/[0-9a-f]{32}$/.test(path)) return;
+    try {
+      jobSnapshots.push(await response.json());
+    } catch (_) {
+      // The UI status and URL remain the user-facing assertions.
+    }
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Select Seeded support agent" })).toBeVisible();
+  const seededProject = page.locator(".project-option", { hasText: "Seeded support agent" });
+  const seededProjectId = await seededProject.getAttribute("data-project-id");
+  expect(seededProjectId).toMatch(/^[0-9a-f]{32}$/);
+
+  const selectSeeded = page.getByRole("button", { name: "Select Seeded support agent" });
+  await selectSeeded.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Knowledge report" })).toBeVisible();
+
+  await page.getByLabel("Target URL").fill("http://127.0.0.1:8766/invoke");
+  const configureResponse = page.waitForResponse((response) => {
+    return response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/projects/${seededProjectId}/connections`;
+  });
+  await page.getByRole("button", { name: "Configure target" }).click();
+  const configured = await (await configureResponse).json();
+  expect(configured.state).toBe("configured");
+  expect(configured.target_id).toMatch(/^[0-9a-f]{32}$/);
+  expect(configured.version_id).toMatch(/^[0-9a-f]{32}$/);
+  await expect(page.locator("#target-connection-status")).toContainText("Target configured (configured)");
+
+  const verifyResponse = page.waitForResponse((response) => {
+    return response.request().method() === "POST"
+      && new URL(response.url()).pathname === `/api/targets/${configured.target_id}/verify`;
+  });
+  await page.getByRole("button", { name: "Verify target" }).click();
+  const queued = await (await verifyResponse).json();
+  expect(queued.state).toBe("queued");
+  expect(queued.job_id).toMatch(/^[0-9a-f]{32}$/);
+
+  await expect.poll(
+    () => jobSnapshots.find((job) => job.job_id === queued.job_id)?.status || null,
+    { timeout: 10_000 },
+  ).toBe("completed");
+  const completed = jobSnapshots.find((job) => job.job_id === queued.job_id);
+  expect(completed.result.state).toBe("verified");
+  expect(completed.result.target_version_id).toMatch(/^[0-9a-f]{32}$/);
+  expect(completed.result.target_version_id).not.toBe(configured.version_id);
+
+  await expect(page.locator("#target-connection-status")).toContainText(
+    `Target verified. Version ${completed.result.target_version_id}`,
+    { timeout: 10_000 },
+  );
+  await expect.poll(() => new URL(page.url()).searchParams.get("target_version_id")).toBe(
+    completed.result.target_version_id,
+  );
+
+  expect(apiRequests).toEqual(expect.arrayContaining([
+    {
+      method: "POST",
+      path: `/api/projects/${seededProjectId}/connections`,
+      body: {
+        url: "http://127.0.0.1:8766/invoke",
+        framework: "generic_http",
+        mode: "stateless_json",
+        auth: { type: "none" },
+      },
+    },
+    {
+      method: "POST",
+      path: `/api/targets/${configured.target_id}/verify`,
+      body: {
+        target_version_id: configured.version_id,
+        smoke_input: { message: "Traceline verification request" },
+      },
+    },
+    { method: "GET", path: `/api/jobs/${queued.job_id}`, body: null },
+  ]));
+});
