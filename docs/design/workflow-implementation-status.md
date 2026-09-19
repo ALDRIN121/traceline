@@ -540,7 +540,7 @@ It is not an R1 release declaration.
   workflow and integration set (streaming, async, stateful sessions,
   retrieval, adapter matrix, schedules, frozen worker paths, and the tested
   OpenAI-compatible, Anthropic Messages, and Google Generative stateless JSON
-  adapters) passes **40 tests** on the
+  adapters and durable schedule lifecycle API) passes **42 tests** on the
   observed host. The matrix still fails closed for unverified frameworks;
   this is not a cross-platform or broad framework-conformance claim.
 - **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are
