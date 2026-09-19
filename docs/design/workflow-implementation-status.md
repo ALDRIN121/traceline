@@ -25,8 +25,9 @@ implemented.
   includes `/api/projects/upload`.
 - Automated coverage: `tests/test_api.py` verifies the app factory builds both health and archive
   upload routes using a temporary database. `tests/test_installation.py` verifies the package
-  declaration and an independently installed CLI/app-factory smoke. `integration` and `browser`
-  markers are registered for their future suites; neither suite exists yet. `live` remains opt-in.
+  declaration and an independently installed CLI/app-factory smoke. The `integration` and
+  `browser` markers now cover the disposable-service and Playwright suites; both are run
+  explicitly when their environment is available. `live` remains opt-in.
 - Final default-suite evidence after T00 coverage: **516 passed, 3 skipped, 3 deselected, 2
   warnings**. The suite was observed in two passing invocations to remain below the local command
   timeout. A fresh lock-synchronized environment installed `psycopg==3.3.5` and then observed all
@@ -43,12 +44,12 @@ The package currently provides a FastAPI/CLI prototype, local development storag
 semantics, ZIP/Git ingestion, evidence-backed knowledge versions, CEL for new scalar
 predicates, durable harness sessions with a LiteLLM SDK gateway (no LiteLLM Proxy server
 in the run path), versioned dataset import with label provenance, deterministic
-synthetic dashboard previews from a built-in skill, and hosted synchronous JSON
-target verification behind an exact test-only endpoint allowlist. Rootless
-sandbox/proxy proof and shipping PostgreSQL RLS deployment remain later
-workflow-plan work. T10 has a browser-verified onboarding slice, but its
-durable API onboarding and end-to-end acceptance criteria remain incomplete.
-T12 has a rootless Podman setup preflight, not a verified containment boundary.
+synthetic dashboard previews from a built-in skill, hosted synchronous JSON
+target verification, and tested R2 streaming/async/stateful/retrieval/schedule paths.
+Rootless sandbox/proxy proof is observed on the configured macOS Podman host, while
+cross-platform containment, production route setup, and shipping PostgreSQL RLS deployment
+remain release-gated workflow-plan work. T10 has a browser-verified onboarding slice, but its
+full live API-backed visual/accessibility acceptance remains incomplete.
 The locked v3 architecture continues to govern those tasks; this record does
 not relax its invariants.
 

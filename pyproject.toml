@@ -57,8 +57,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "browser: requires the browser end-to-end harness (future suite; not yet present)",
-    "integration: requires documented disposable external services (future suite; not yet present)",
+    "browser: requires the Playwright browser end-to-end harness",
+    "integration: requires documented disposable external services",
     "live: hits a real LLM provider; requires DEEPSEEK_API_KEY (run last)",
 ]
 addopts = "-m 'not live'"

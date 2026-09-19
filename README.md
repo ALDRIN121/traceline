@@ -150,7 +150,8 @@ LLM_AGENT_EVAL_RUN_CUSTOM_EVALUATOR=1 PYTHONPATH=src python -m pytest -q tests/i
 
 Provider-backed live tests, when present, require explicitly supplied credentials in `.env`
 (never committed) and should run last. `integration` and `browser` markers are registered for
-their future suites; their absence today does not mean those environments are verified.
+the disposable-service and Playwright suites; passing those suites still does not prove the
+cross-platform deployment matrix.
 
 ## License
 
