@@ -461,8 +461,9 @@ It is not an R1 release declaration.
   frozen manifests with JSON/CSV/HTML hashes, and `ci-status` exposes the
   documented 0/1/2 contract. Frozen exports now retain per-case metric scores,
   raw values, evidence event IDs, authority/retry markers, and richer CSV/HTML
-  evidence rows. Export/preview TTLs and the full bundle/CI acceptance scenario
-  remain open. Schedule USD limits now
+  evidence rows. Export/preview TTL code now has retention tests; the full
+  export-bundle/CI acceptance scenario and deployment rehearsal remain open.
+  Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
   run idempotency keys instead of collapsing into one plan-level run.
