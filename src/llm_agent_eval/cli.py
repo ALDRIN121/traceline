@@ -487,6 +487,70 @@ def cmd_worker(args: argparse.Namespace) -> int:
         store.close()
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    from .auth import Actor
+    from .operations import OperationsService
+
+    store = _open_store(args.db or settings.db_path)
+    root = Path(args.artifact_root or settings.artifact_root)
+    try:
+        result = OperationsService(store, root).backup_workspace(
+            Actor("cli-owner", args.workspace, "owner"), Path(args.destination),
+        )
+        print(json.dumps(result, sort_keys=True))
+        return EXIT_OK
+    except Exception as exc:
+        print(f"backup: error: {exc}", file=sys.stderr)
+        return EXIT_OPERATIONAL
+    finally:
+        store.close()
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    from .operations import OperationsService
+
+    if not args.postgres_url and not args.destination_db:
+        print("restore: error: --destination-db is required for SQLite restore", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        if args.postgres_url:
+            result = OperationsService.restore_postgres(
+                Path(args.backup), args.postgres_url, Path(args.destination_artifact_root),
+            )
+        else:
+            result = OperationsService.restore_sqlite(
+                Path(args.backup), Path(args.destination_db), Path(args.destination_artifact_root),
+            )
+        print(json.dumps(result, sort_keys=True))
+        return EXIT_OK
+    except Exception as exc:
+        print(f"restore: error: {exc}", file=sys.stderr)
+        return EXIT_OPERATIONAL
+
+
+def cmd_retention(args: argparse.Namespace) -> int:
+    from .auth import Actor
+    from .operations import OperationsService
+
+    store = _open_store(args.db or settings.db_path)
+    root = Path(args.artifact_root or settings.artifact_root)
+    try:
+        result = OperationsService(store, root).enforce_retention(
+            Actor("cli-owner", args.workspace, "owner"),
+            export_days=args.export_days,
+            preview_days=args.preview_days,
+            abandoned_import_hours=args.abandoned_import_hours,
+            dry_run=not args.apply,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return EXIT_OK
+    except Exception as exc:
+        print(f"retention: error: {exc}", file=sys.stderr)
+        return EXIT_OPERATIONAL
+    finally:
+        store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="eval-engine",
@@ -564,6 +628,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--artifact-root", default=None, help="install state/artifact root")
     add_common(p)
     p.set_defaults(handler=cmd_worker)
+
+    p = sub.add_parser("backup", help="create a checksummed SQLite or PostgreSQL workspace backup")
+    p.add_argument("destination", type=Path, help="new backup archive path")
+    p.add_argument("--artifact-root", default=None, help="artifact/install root")
+    add_common(p)
+    p.set_defaults(handler=cmd_backup)
+
+    p = sub.add_parser("restore", help="restore a workspace backup into fresh destinations")
+    p.add_argument("backup", type=Path, help="backup archive path")
+    p.add_argument("--destination-db", default=None, help="new SQLite database path")
+    p.add_argument("--destination-artifact-root", required=True, help="new artifact root")
+    p.add_argument("--postgres-url", default=None, help="restore as PostgreSQL instead of SQLite")
+    p.set_defaults(handler=cmd_restore)
+
+    p = sub.add_parser("retention", help="preview or apply workspace retention cleanup")
+    p.add_argument("--artifact-root", default=None, help="artifact/install root")
+    p.add_argument("--apply", action="store_true", help="delete expired unreferenced data")
+    p.add_argument("--export-days", type=int, default=7)
+    p.add_argument("--preview-days", type=int, default=30)
+    p.add_argument("--abandoned-import-hours", type=int, default=24)
+    add_common(p)
+    p.set_defaults(handler=cmd_retention)
 
     return parser
 

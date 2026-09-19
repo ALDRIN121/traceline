@@ -131,6 +131,42 @@ class TestUsage:
         assert "project.json" in err
 
 
+class TestOperations:
+    def test_backup_creates_an_explicit_stateful_archive(self, capsys, tmp_path):
+        artifact_root = tmp_path / "artifacts"
+        code, out, err = run_cli(
+            capsys,
+            tmp_path / "eval.db",
+            "backup",
+            str(tmp_path / "backup.zip"),
+            "--artifact-root",
+            str(artifact_root),
+        )
+        assert code == 0, err
+        result = json.loads(out)
+        assert result["state"] == "ready"
+        assert result["storage"] == "sqlite"
+        assert result["install_keys"] == "excluded_from_archive_restore_separately"
+        assert (tmp_path / "backup.zip").is_file()
+
+    def test_restore_requires_fresh_sqlite_destinations(self, capsys, tmp_path):
+        backup = tmp_path / "backup.zip"
+        code, _, err = run_cli(
+            capsys, tmp_path / "eval.db", "backup", str(backup),
+            "--artifact-root", str(tmp_path / "artifacts"),
+        )
+        assert code == 0, err
+        code, out, err = run_cli(
+            capsys, tmp_path / "other.db", "restore", str(backup),
+            "--destination-db", str(tmp_path / "restored.db"),
+            "--destination-artifact-root", str(tmp_path / "restored-artifacts"),
+        )
+        assert code == 0, err
+        result = json.loads(out)
+        assert result["state"] == "restored"
+        assert result["install_keys"] == "required_separately"
+
+
 class TestSmoke:
     def test_smoke_passes(self, capsys, tmp_path):
         target = tmp_path / "agent"

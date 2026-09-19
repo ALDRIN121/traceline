@@ -303,8 +303,9 @@ class OperationsService:
                         or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
                     raise WorkflowError("backup checksum verification failed", code="backup_corrupt", status=422)
             dump = root / "database.dump"
-            if not dump.is_file() or not (root / "artifacts").is_dir():
-                raise WorkflowError("backup database dump or artifact bundle is missing", code="backup_invalid", status=422)
+            if not dump.is_file():
+                raise WorkflowError("backup database dump is missing", code="backup_invalid", status=422)
+            (root / "artifacts").mkdir(parents=True, exist_ok=True)
             completed = subprocess.run(
                 [restore_tool, "--exit-on-error", "--no-owner", "--dbname", database_url, str(dump)],
                 check=False, capture_output=True, env=environment,
@@ -392,6 +393,7 @@ class OperationsService:
                 path = (root / relative).resolve()
                 if not path.is_relative_to(root) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                     raise WorkflowError("backup checksum verification failed", code="backup_corrupt", status=422)
+            (root / "artifacts").mkdir(parents=True, exist_ok=True)
             destination_db.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / "database.sqlite", destination_db)
             if destination_artifact_root.exists():
