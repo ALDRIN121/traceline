@@ -48,7 +48,7 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .events import EventType, TraceEvent
 from .judge import (
@@ -73,6 +73,7 @@ __all__ = [
     "UnsupportedSelectorError",
     "evaluate_case",
     "score_attempt",
+    "score_custom",
     "aggregate_metric",
     "evaluate_gate",
     "gate_safe",
@@ -122,6 +123,7 @@ class CaseScore:
     on_retry_override: bool = False
     provisional: bool = False
     raw_value: Any = None
+    evaluator_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -309,6 +311,101 @@ def score_output(
     except (EvaluationError, TraceRuleError, JudgmentError) as exc:
         return _error_result(metric, case_id, str(exc), attempt=attempt,
                              on_retry_override=on_retry_override, provisional=provisional)
+
+
+def score_custom(
+    spec: EvaluationSpec,
+    case_id: str,
+    events: Sequence[TraceEvent],
+    metric: Metric,
+    evaluator: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
+    *,
+    evaluator_version: str,
+    pass_threshold: float,
+    evidence_event_ids: Sequence[str] | None = None,
+    output: Any = None,
+    attempt: int = 0,
+    on_retry_override: bool = False,
+    provisional: bool | None = None,
+) -> CaseScore:
+    """Run a reviewed evaluator artifact against selected redacted evidence.
+
+    Custom evaluators are deliberately a scoring seam, not an ``Evaluator``
+    type in the user-authored spec.  The caller supplies the frozen artifact
+    identity and sandbox callback resolved from the run plan.  A malformed or
+    failed artifact is an evaluator ``ERROR``; it never becomes an assertion
+    failure and never silently earns a score.
+    """
+    _validate_events(case_id, events)
+    case = _case_from_spec(spec, case_id)
+    provisional = bool(metric.provisional if provisional is None else provisional)
+    selected = list(events)
+    if metric.target.type not in ("trace", "input") and metric.target.type not in _NON_EVENT_TARGETS:
+        selected = _select_target_events(metric.target, events)
+    if metric.target.type in _NON_EVENT_TARGETS and output is None:
+        return _on_missing_result(
+            metric, case_id, attempt=attempt, on_retry_override=on_retry_override,
+            provisional=provisional, reason="custom evaluator output evidence is unavailable",
+        )
+    if not selected and metric.target.type == "trace":
+        return _on_missing_result(
+            metric, case_id, attempt=attempt, on_retry_override=on_retry_override,
+            provisional=provisional, reason="custom evaluator trace is empty",
+        )
+    if not selected and metric.target.type != "input" and output is None:
+        return _on_missing_result(
+            metric, case_id, attempt=attempt, on_retry_override=on_retry_override,
+            provisional=provisional, reason="custom evaluator target matched zero events",
+        )
+    ids = tuple(evidence_event_ids or tuple(
+        event.event_id if isinstance(event, TraceEvent) else event.get("event_id", "")
+        for event in selected
+    ))
+    try:
+        evidence = {
+            "events": [
+                event.model_dump(mode="json") if isinstance(event, TraceEvent) else dict(event)
+                for event in selected
+            ],
+            "output": output,
+        }
+        reference = {
+            "case_id": case.case_id,
+            "input": case.input,
+            "expected": {key: value.value for key, value in case.expected.items()},
+            "expected_tags": {key: value.tag for key, value in case.expected.items()},
+        }
+        result = evaluator(evidence, reference)
+        if not isinstance(result, dict) or type(result.get("score")) not in {int, float}:
+            raise EvaluationError("evaluator_score_invalid")
+        raw_score = result["score"]
+        if not math.isfinite(float(raw_score)):
+            raise EvaluationError("evaluator_score_invalid")
+        if metric.scoring.range is None:
+            raise EvaluationError("custom evaluator requires an explicit numeric scoring range")
+        lo, hi = metric.scoring.range
+        if not lo <= raw_score <= hi:
+            raise EvaluationError(f"custom evaluator score {raw_score!r} outside scoring range {metric.scoring.range!r}")
+        refs = result.get("evidence_refs", [])
+        if (not isinstance(refs, list) or any(type(ref) is not str for ref in refs)
+                or any(ref not in ids for ref in refs)):
+            raise EvaluationError("evaluator_evidence_refs_invalid")
+        score = _normalize_score(metric.scoring, raw_score)
+        passed = float(raw_score) >= pass_threshold
+        justification = result.get("justification", "")
+        message = justification if isinstance(justification, str) and justification else "custom evaluator " + ("passed" if passed else "failed")
+        return CaseScore(
+            metric.metric_id, case_id, score, passed, _dedupe_ids(tuple(refs)),
+            CaseStatus.PASS if passed else CaseStatus.FAIL, message,
+            attempt, on_retry_override, provisional, _safe_raw_value(raw_score),
+            evaluator_version,
+        )
+    except (EvaluationError, TypeError, ValueError, KeyError, AttributeError) as exc:
+        return CaseScore(
+            metric.metric_id, case_id, None, False, (), CaseStatus.ERROR,
+            f"custom evaluator error: {exc}", attempt, on_retry_override,
+            provisional, None, evaluator_version,
+        )
 
 
 def aggregate_metric(

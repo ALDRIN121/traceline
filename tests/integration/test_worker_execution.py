@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from types import SimpleNamespace
 
+from llm_agent_eval.artifacts import ArtifactStore
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.contracts import InvocationResult
+from llm_agent_eval.evaluator_registry import CustomEvaluatorRegistry
 from llm_agent_eval.events import RedactionState, make_event
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.run_plans import RunPlanService
+from llm_agent_eval.rescore import RescoreService
 from llm_agent_eval.storage import Storage
 from llm_agent_eval.versions import VersionStore
 from llm_agent_eval.worker import WorkflowWorker
@@ -147,5 +152,85 @@ def test_worker_binds_proxy_session_records_to_persisted_trace(tmp_path):
         events = storage.get_trace_events(run_id=terminal.result["run_id"], workspace_id="ws")
         assert any(event.source.value == "proxy" for event in events)
         assert sessions and sessions[0].started is False
+    finally:
+        storage.close()
+
+
+def test_worker_runs_approved_custom_evaluator_in_its_separate_sandbox(tmp_path):
+    storage = Storage(tmp_path / "custom-worker.db")
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    project = storage.create_project(workspace_id="ws", name="agent")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("evaluate.py", "# reviewed evaluator")
+    artifact = ArtifactStore(storage, tmp_path / "artifacts", actor).put(
+        "ws", archive.getvalue(), "application/zip"
+    )
+    registry = CustomEvaluatorRegistry(storage, tmp_path / "artifacts", actor)
+    draft = registry.create(project.project_id, {
+        "name": "policy", "artifact_ids": [artifact.artifact_id],
+        "image_digest": "sha256:" + "a" * 64,
+        "entrypoint": ["/usr/bin/python", "/source/evaluate.py"],
+        "score_range": [0, 1], "pass_threshold": 0.5,
+    }, 0)
+    approved = registry.approve(draft.version_id)
+    versions = VersionStore(storage)
+    evaluation = versions.create("evaluation", project.project_id, {"spec": {
+        "spec_version": "1", "name": "custom", "dataset_version": "v1",
+        "metrics": [{"metric_id": "policy", "name": "policy", "type": "scalar",
+          "target": {"type": "trace", "on_missing": "fail"},
+          "evaluator": {"type": "exact_match", "expected": True},
+          "scoring": {"type": "numeric", "range": [0, 1]},
+          "aggregation": {"method": "mean", "on_error": "fail"},
+          "gate": {"min": 0.5}, "provisional": False}],
+    }, "custom_evaluators": {"policy": approved.version_id}}, 0, actor)
+    dataset = versions.create("dataset", project.project_id, {"cases": [
+        {"case_id": "c1", "name": "one", "input": {"q": "hi"}},
+    ]}, 0, actor)
+
+    class FakeEvaluatorSandbox:
+        def __init__(self):
+            self.requests = []
+
+        def evaluate(self, **kwargs):
+            self.requests.append(kwargs)
+            return {"score": 0.9, "evidence_refs": [kwargs["evidence"]["events"][0]["event_id"]]}
+
+    sandbox = FakeEvaluatorSandbox()
+    worker = WorkflowWorker(
+        storage, tmp_path / "artifacts", MockGateway({}), fingerprint_key=b"f" * 32,
+        execution_target_factory=lambda actor, refs, context: (FakeTarget(), {}, ("/source/agent",)),
+        custom_evaluator_sandbox_factory=lambda: sandbox,
+    )
+    try:
+        plans = RunPlanService(storage)
+        plan = plans.plan_run(actor, {
+            "project_id": project.project_id,
+            "evaluation_version_id": evaluation.version_id,
+            "dataset_version_id": dataset.version_id,
+        }, {"tier": "quick"})
+        assert plan.state == "validated"
+        auth = plans.authorize(actor, plan.plan_id, plan.content_digest)
+        job = plans.enqueue_run(worker, actor, plan.plan_id, auth.authorization_id,
+                                plan.content_digest, "custom-once")
+        terminal = worker.service(actor).run_once(job_id=job.job_id)
+        assert terminal.result and terminal.result["state"] == "complete", (terminal.status, terminal.error, terminal.result)
+        scores = storage.get_case_scores(
+            run_id=terminal.result["run_id"], workspace_id="ws", case_id="c1", metric_id="policy",
+        )
+        assert scores[0].evaluator_version == approved.version_id
+        assert scores[0].status == "PASS"
+        assert sandbox.requests[0]["reference"]["input"] == {"q": "hi"}
+        replacement = evaluation.content["spec"]["metrics"][0]
+        rescored = RescoreService(
+            storage, artifact_root=tmp_path / "artifacts",
+            custom_evaluator_sandbox_factory=lambda: sandbox,
+        ).rescore(actor, terminal.result["run_id"], "policy", replacement, 2)
+        assert rescored["state"] == "rescored"
+        assert storage.get_case_scores(
+            run_id=terminal.result["run_id"], workspace_id="ws", case_id="c1", metric_id="policy",
+            score_revision=2,
+        )[0].evaluator_version == approved.version_id
     finally:
         storage.close()

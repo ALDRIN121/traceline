@@ -23,11 +23,16 @@ def _upgrade_sqlite_version_kinds(connection) -> None:
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='object_versions'"
     ).fetchone()
-    if row is None or "'judge_rubric'" in row[0]:
+    if row is None or "'evaluator'" in row[0]:
         return
-    ddl = row[0].replace(
-        "'connection','dashboard'", "'connection','dashboard','model_profile','model_selection','judge_rubric'"
-    )
+    ddl = row[0]
+    for needle in (
+        "'connection','dashboard','model_profile','model_selection','judge_rubric'",
+        "'connection','dashboard'",
+    ):
+        if needle in ddl:
+            ddl = ddl.replace(needle, needle + ",'evaluator'", 1)
+            break
     if ddl == row[0]:
         raise RuntimeError("Unrecognized object_versions schema; migration refused")
     connection.commit()

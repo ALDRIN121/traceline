@@ -10,17 +10,21 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from .contracts import WorkflowError
-from .evaluators import aggregate_metric, evaluate_gate, gate_safe, score_attempt, score_output
+from .evaluators import aggregate_metric, evaluate_gate, gate_safe, score_attempt, score_output, score_custom
+from .evaluator_registry import CustomEvaluatorRegistry
 from .judge_gateway import GatewayJudge, JudgmentContext
 from .rubric_store import RubricStore
 from .spec import Metric
 
 
 class RescoreService:
-    def __init__(self, storage, *, gateway=None, judge_readiness=None):
+    def __init__(self, storage, *, gateway=None, judge_readiness=None,
+                 artifact_root=None, custom_evaluator_sandbox_factory=None):
         self.storage = storage
         self.gateway = gateway
         self.judge_readiness = judge_readiness
+        self.artifact_root = artifact_root
+        self.custom_evaluator_sandbox_factory = custom_evaluator_sandbox_factory
 
     def rescore(
         self,
@@ -66,6 +70,21 @@ class RescoreService:
             )
         selected = [case for case in run.spec.cases if not requested or case.case_id in requested]
         replacement_spec = run.spec.model_copy(update={"metrics": [metric]})
+        custom = None
+        evaluator_version_id = (run.world_config.get("evaluator_versions") or {}).get(metric_id)
+        if evaluator_version_id:
+            if self.artifact_root is None:
+                raise WorkflowError(
+                    "custom evaluator artifact storage is unavailable",
+                    code="rescore_evaluator_unavailable", status=409,
+                )
+            sandbox = (
+                self.custom_evaluator_sandbox_factory()
+                if self.custom_evaluator_sandbox_factory is not None else None
+            )
+            custom = CustomEvaluatorRegistry(
+                self.storage, self.artifact_root, actor,
+            ).execution(evaluator_version_id, sandbox=sandbox)
         scores = []
         for case in selected:
             attempt = next(
@@ -88,7 +107,13 @@ class RescoreService:
             )
             output = self.storage.get_attempt_output(attempt.attempt_id, actor.workspace_id)
             judge = self._judge(actor, metric, output, events)
-            if metric.target.type in {"final_response", "state_change", "workflow_node", "external"}:
+            if custom is not None:
+                score = score_custom(
+                    replacement_spec, case.case_id, events, metric, custom.evaluate,
+                    evaluator_version=custom.version_id,
+                    pass_threshold=custom.pass_threshold, output=output,
+                )
+            elif metric.target.type in {"final_response", "state_change", "workflow_node", "external"}:
                 if output is None:
                     raise WorkflowError(
                         f"output evidence is unavailable for case {case.case_id!r}",

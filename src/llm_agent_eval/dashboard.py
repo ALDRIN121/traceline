@@ -953,6 +953,7 @@ def _resolve_trace_evidence(bind: dict[str, Any], ctx: ResolutionContext) -> dic
                 "status": rec.status,
                 "score": rec.score,
                 "evidence_event_ids": list(rec.evidence_event_ids),
+                "evaluator_version": rec.evaluator_version,
                 "evidence_count": len(rec.evidence_event_ids),
                 "score_revision": rec.score_revision,
                 "is_authoritative": rec.is_authoritative,

@@ -195,6 +195,7 @@ def _case_metric_dict(r: Any) -> dict[str, Any]:
         "status": r.status,
         "score": r.score,
         "raw_value": r.raw_value,
+        "evaluator_version": r.evaluator_version,
         "is_authoritative": r.is_authoritative,
         "on_retry_override": r.on_retry_override,
         "overridden": r.overridden,
@@ -1086,7 +1087,7 @@ def create_app(
     def rescore_metric(run_id: str, metric_id: str, body: RescoreRequest, request: Request) -> Any:
         """Re-score retained evidence without constructing or invoking a target."""
         return RescoreService(
-            store(), gateway=model_gateway,
+            store(), gateway=model_gateway, artifact_root=artifact_root,
             judge_readiness=PersistentJudgeReadinessRegistry(store(), request.state.actor),
         ).rescore(
             request.state.actor, run_id, metric_id, body.metric,

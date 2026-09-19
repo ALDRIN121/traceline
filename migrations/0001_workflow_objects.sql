@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS object_versions (
   workspace_id TEXT NOT NULL,
   version_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('source','knowledge','evaluation','dataset','target','connection','dashboard')),
+  kind TEXT NOT NULL CHECK (kind IN ('source','knowledge','evaluation','dataset','target','connection','dashboard','evaluator','model_profile','model_selection','judge_rubric')),
   parent_id TEXT NOT NULL,
   previous_version_id TEXT,
   content_digest TEXT NOT NULL,

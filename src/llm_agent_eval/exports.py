@@ -71,6 +71,7 @@ class ExportService:
                 "score": row.score,
                 "raw_value": row.raw_value,
                 "evidence_event_ids": list(row.evidence_event_ids),
+                "evaluator_version": row.evaluator_version,
                 "judge_binding": row.judge_binding,
                 "is_authoritative": row.is_authoritative,
                 "on_retry_override": row.on_retry_override,

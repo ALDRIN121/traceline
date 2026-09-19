@@ -484,7 +484,19 @@ It is not an R1 release declaration.
   frameworks. Schedules enforce the implemented frozen-version policy rather
   than accepting an unimplemented refresh policy. Retrieval adapter/framework
   conformance beyond generic HTTP remains open.
-- **Observed suite:** the default suite is **901 passed, 11 skipped, 7
+- **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are
+  stored as immutable `evaluator` versions, require an explicit approval
+  revision, and are selectable only through an evaluation-version binding.
+  Run planning verifies the approved version, project ownership, and matching
+  numeric score range, then freezes the metric-to-evaluator map in the plan.
+  Worker scoring invokes the separate network-disabled evaluator sandbox with
+  capture-redacted evidence/reference objects; bounded typed output, evidence
+  links, evaluator errors, evaluator-version persistence, frozen exports, and
+  evidence-only re-score are covered by API, unit, workflow, and worker-path
+  tests. The remaining evidence item is a live Podman execution using a
+  reviewed evaluator image; the current worker-path acceptance uses a sandbox
+  test double so the suite remains portable.
+- **Observed suite:** the default suite is **909 passed, 11 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
@@ -497,6 +509,6 @@ provider-client HTTPS interception from inside the case and
 direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
 Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
 TTL, and fairness are not rehearsed; LiteLLM
-outbound/cassette fidelity, repaired CrewAI execution, full custom evaluator
-sandbox integration, full export-bundle/CI acceptance, and the complete
+outbound/cassette fidelity, repaired CrewAI execution, live custom evaluator
+sandbox proof, full export-bundle/CI acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.

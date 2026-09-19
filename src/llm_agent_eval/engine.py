@@ -61,9 +61,11 @@ from .evaluators import (
     gate_safe,
     score_output,
     score_attempt,
+    score_custom,
 )
 from .judge import JudgeBinding, JudgeEvaluator, UnconfiguredJudge
 from .judge_gateway import JudgmentContext
+from .evaluator_registry import CustomEvaluatorExecution
 from .lifecycle import (
     AttemptStatus,
     RunCaseStatus,
@@ -193,6 +195,7 @@ class Engine:
         target_adapter: Any = None,
         target_execution_context: Mapping[str, Any] | None = None,
         judge_readiness: Any = None,
+        custom_evaluators: Mapping[str, CustomEvaluatorExecution] | None = None,
     ):
         self.storage = storage
         # Missing judge configuration is an evaluator error, never a fabricated
@@ -212,6 +215,7 @@ class Engine:
         # ephemeral and must never enter the frozen manifest or run storage.
         self.target_execution_context = dict(target_execution_context or {})
         self.judge_readiness = judge_readiness
+        self.custom_evaluators = dict(custom_evaluators or {})
         self._active_judgment_context: JudgmentContext | None = None
         self._should_cancel: Callable[[], bool] | None = None
 
@@ -1009,36 +1013,9 @@ class Engine:
             evidence={event.event_id: event.model_dump(mode="json") for event in kept},
         )
         try:
-            if attempt == 0:
-                # First attempts are authoritative (§11C.3).
-                scores = [
-                    (score_output(
-                        run.spec, case.case_id, candidate_output, metric,
-                        judge=self._judge_for(metric),
-                    ) if candidate_output is not None
-                      and getattr(result, "status", None) == "completed"
-                      and metric.target.type in {"final_response", "state_change", "workflow_node", "external"}
-                     else evaluate_case(
-                         run.spec, case.case_id, kept, metric,
-                         judge=self._judge_for(metric),
-                     ))
-                    for metric in run.spec.metrics
-                ]
-            else:
-                scores = [
-                    (score_output(
-                        run.spec, case.case_id, candidate_output, metric,
-                        judge=self._judge_for(metric), attempt=attempt,
-                        on_retry_override=True,
-                    ) if candidate_output is not None
-                      and getattr(result, "status", None) == "completed"
-                      and metric.target.type in {"final_response", "state_change", "workflow_node", "external"}
-                     else score_attempt(
-                         run.spec, case.case_id, kept, metric,
-                         judge=self._judge_for(metric),
-                     ))
-                    for metric in run.spec.metrics
-                ]
+            scores = self._score_attempt_metrics(
+                run, case.case_id, kept, candidate_output, result.status, attempt,
+            )
         finally:
             self._active_judgment_context = None
         self.storage.upsert_case_metric_results(
@@ -1050,6 +1027,45 @@ class Engine:
             result.exit_code, len(kept), truncated, None, tuple(scores),
             candidate_output,
         )
+
+    def _score_attempt_metrics(
+        self,
+        run: RunRecord,
+        case_id: str,
+        events: Sequence[TraceEvent],
+        output: Any,
+        result_status: str,
+        attempt: int,
+    ) -> list[CaseScore]:
+        """Score every metric through the same custom/standard dispatch seam."""
+        retry = attempt > 0
+        scores: list[CaseScore] = []
+        for metric in run.spec.metrics:
+            custom = self.custom_evaluators.get(metric.metric_id)
+            if custom is not None:
+                scores.append(score_custom(
+                    run.spec, case_id, events, metric, custom.evaluate,
+                    evaluator_version=custom.version_id,
+                    pass_threshold=custom.pass_threshold, output=output,
+                    attempt=attempt, on_retry_override=retry,
+                ))
+                continue
+            if (output is not None and result_status == "completed"
+                    and metric.target.type in {"final_response", "state_change", "workflow_node", "external"}):
+                scores.append(score_output(
+                    run.spec, case_id, output, metric,
+                    judge=self._judge_for(metric), attempt=attempt,
+                    on_retry_override=retry,
+                ))
+            elif retry:
+                scores.append(score_attempt(
+                    run.spec, case_id, events, metric, judge=self._judge_for(metric),
+                ))
+            else:
+                scores.append(evaluate_case(
+                    run.spec, case_id, events, metric, judge=self._judge_for(metric),
+                ))
+        return scores
 
     def _invoke_target(self, run: RunRecord, case: TestCase, workspace_id: str,
                        attempt_id: str, repeat_index: int, attempt: int) -> RunnerInvocationResult:
@@ -1379,9 +1395,20 @@ class Engine:
                 run_id=run.run_id, workspace_id=workspace_id,
                 case_id=case_id, attempt_id=attempt_record.attempt_id,
             )
+            output = self.storage.get_attempt_output(
+                attempt_record.attempt_id, workspace_id,
+            )
             per_repeat.append(
                 [
-                    evaluate_case(run.spec, case_id, events, metric, judge=self._judge_for(metric))
+                    (score_custom(
+                        run.spec, case_id, events, metric,
+                        self.custom_evaluators[metric.metric_id].evaluate,
+                        evaluator_version=self.custom_evaluators[metric.metric_id].version_id,
+                        pass_threshold=self.custom_evaluators[metric.metric_id].pass_threshold,
+                        output=output,
+                    ) if metric.metric_id in self.custom_evaluators else evaluate_case(
+                        run.spec, case_id, events, metric, judge=self._judge_for(metric)
+                    ))
                     for metric in run.spec.metrics
                 ]
             )

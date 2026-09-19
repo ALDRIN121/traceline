@@ -10,6 +10,7 @@ from .auth import Actor
 from .calibration import PersistentJudgeReadinessRegistry
 from .contracts import NotFound, WorkflowError
 from .engine import Engine
+from .evaluator_registry import CustomEvaluatorRegistry
 from .gateway import LiteLLMGateway
 from .judge_gateway import GatewayJudge
 from .profiles import ProfileStore
@@ -31,12 +32,14 @@ class RunExecutionService:
     """Resolve a plan inside the worker and run it exactly once by key."""
 
     def __init__(self, storage: Storage, artifact_root, *, target_factory: Callable | None = None,
-                 judge_gateway=None, proxy_session_factory: Callable | None = None):
+                 judge_gateway=None, proxy_session_factory: Callable | None = None,
+                 custom_evaluator_sandbox_factory: Callable | None = None):
         self.storage = storage
         self.artifact_root = artifact_root
         self.target_factory = target_factory
         self.judge_gateway = judge_gateway
         self.proxy_session_factory = proxy_session_factory
+        self.custom_evaluator_sandbox_factory = custom_evaluator_sandbox_factory
         self.versions = VersionStore(storage)
 
     def execute(self, actor: Actor, command: dict[str, Any], context) -> dict[str, Any]:
@@ -95,11 +98,21 @@ class RunExecutionService:
             return {"state": existing.status, "run_id": existing.run_id, "plan_id": plan.plan_id}
         limits = plan.content.get("limits") or {}
         judge_gateway = self._resolve_judge_gateway(actor, refs)
+        evaluator_registry = CustomEvaluatorRegistry(self.storage, self.artifact_root, actor)
+        evaluator_sandbox = (
+            self.custom_evaluator_sandbox_factory()
+            if self.custom_evaluator_sandbox_factory is not None else None
+        )
+        custom_evaluators = {
+            metric_id: evaluator_registry.execution(version_id, sandbox=evaluator_sandbox)
+            for metric_id, version_id in (plan.content.get("evaluator_versions") or {}).items()
+        }
         engine = Engine(
             self.storage, target_adapter=adapter,
             work_root=self.artifact_root / "ws" / actor.workspace_id / "runs",
             target_execution_context=target_context,
             judge_readiness=PersistentJudgeReadinessRegistry(self.storage, actor),
+            custom_evaluators=custom_evaluators,
         )
         if judge_gateway is not None:
             engine.judge_factory = self._judge_factory(
@@ -119,6 +132,7 @@ class RunExecutionService:
                 "run_plan_id": plan.plan_id,
                 "plan_hash": plan.content_digest,
                 "version_refs": dict(refs),
+                "evaluator_versions": dict(plan.content.get("evaluator_versions") or {}),
             },
         )
         proxy_session = None

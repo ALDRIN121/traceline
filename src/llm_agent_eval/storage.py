@@ -620,6 +620,7 @@ class CaseMetricResultRecord:
     score: float | None
     raw_value: Any
     evidence_event_ids: tuple[str, ...]
+    evaluator_version: str | None
     judge_binding: dict[str, Any] | None
     is_authoritative: bool
     on_retry_override: bool
@@ -1779,6 +1780,7 @@ class Storage:
                 run_id, case_id, s.metric_id, workspace_id, score_revision,
                 s.status.value, s.score, json.dumps(s.raw_value, allow_nan=False),
                 json.dumps(list(s.evidence_event_ids)),
+                s.evaluator_version,
                 judge_binding,
                 1 if s.attempt == 0 else 0,
                 1 if s.on_retry_override else 0,
@@ -1788,13 +1790,14 @@ class Storage:
             self._conn.executemany(
                 "INSERT INTO run_case_metric_results (run_id, case_id, metric_id,"
                 "  workspace_id, score_revision, status, score, raw_value,"
-                "  evidence_event_ids, judge_binding, is_authoritative,"
+                "  evidence_event_ids, evaluator_version, judge_binding, is_authoritative,"
                 "  on_retry_override, computed_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT (run_id, case_id, metric_id, score_revision)"
                 " DO UPDATE SET status = excluded.status, score = excluded.score,"
                 "   raw_value = excluded.raw_value,"
                 "   evidence_event_ids = excluded.evidence_event_ids,"
+                "   evaluator_version = excluded.evaluator_version,"
                 "   judge_binding = excluded.judge_binding,"
                 "   is_authoritative = excluded.is_authoritative,"
                 "   on_retry_override = excluded.on_retry_override,"
@@ -2563,6 +2566,7 @@ def _case_metric_result_from_row(row: sqlite3.Row) -> CaseMetricResultRecord:
         score=row["score"],
         raw_value=_j(row["raw_value"]),
         evidence_event_ids=tuple(_j(row["evidence_event_ids"]) or ()),
+        evaluator_version=row["evaluator_version"],
         judge_binding=_j(row["judge_binding"]),
         is_authoritative=bool(row["is_authoritative"]),
         on_retry_override=bool(row["on_retry_override"]),

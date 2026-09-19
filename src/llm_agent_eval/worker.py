@@ -28,7 +28,8 @@ class WorkflowWorker:
                  fingerprint_key_source: Callable[[], bytes] | None = None,
                  handlers: dict[str, Callable] | None = None, lease_seconds: int = 30,
                  execution_target_factory: Callable | None = None,
-                 proxy_session_factory: Callable | None = None):
+                 proxy_session_factory: Callable | None = None,
+                 custom_evaluator_sandbox_factory: Callable | None = None):
         material = fingerprint_key
         if material is None and fingerprint_key_source is not None:
             material = fingerprint_key_source()
@@ -48,6 +49,7 @@ class WorkflowWorker:
         self.connections = ConnectionService(storage, self.artifact_root / "install-secret.key")
         self.execution_target_factory = execution_target_factory
         self.proxy_session_factory = proxy_session_factory
+        self.custom_evaluator_sandbox_factory = custom_evaluator_sandbox_factory
 
     def queue(self, actor: Actor) -> JobQueue:
         return JobQueue(self.storage, actor, fingerprint_key=self.fingerprint_key,
@@ -100,6 +102,7 @@ class WorkflowWorker:
             return RunExecutionService(
                 storage, self.artifact_root, target_factory=self.execution_target_factory,
                 judge_gateway=self.gateway, proxy_session_factory=self.proxy_session_factory,
+                custom_evaluator_sandbox_factory=self.custom_evaluator_sandbox_factory,
             ).execute(actor, command, context)
         raise WorkflowError("Unknown job kind", code="unknown_job_kind")
 

@@ -4,6 +4,7 @@ import uuid
 import pytest
 
 from llm_agent_eval.auth import Actor
+from llm_agent_eval.artifacts import ArtifactStore
 from llm_agent_eval.contracts import WorkflowError
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.run_plans import RunPlanService
@@ -51,6 +52,54 @@ def test_plan_freezes_authorized_version_refs_and_digest(tmp_path):
         authorization = service.authorize(actor, plan.plan_id, plan.content_digest)
         assert authorization.state == "authorized"
         assert authorization.plan_hash == plan.content_digest
+    finally:
+        storage.close()
+
+
+def test_plan_freezes_only_approved_custom_evaluator_bindings(tmp_path):
+    storage, actor, project, base_evaluation, dataset = _service(tmp_path)
+    try:
+        import io
+        import zipfile
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("evaluate.py", "# evaluator")
+        artifact = ArtifactStore(storage, tmp_path / "artifacts", actor).put(
+            "ws-a", archive.getvalue(), "application/zip"
+        )
+        from llm_agent_eval.evaluator_registry import CustomEvaluatorRegistry
+        registry = CustomEvaluatorRegistry(storage, tmp_path / "artifacts", actor)
+        draft = registry.create(project.project_id, {
+            "name": "policy", "artifact_ids": [artifact.artifact_id],
+            "image_digest": "sha256:" + "a" * 64,
+            "entrypoint": ["/usr/bin/python", "/source/evaluate.py"],
+            "score_range": [0, 1], "pass_threshold": 0.5,
+        }, 0)
+        evaluation = VersionStore(storage).create("evaluation", project.project_id, {
+            "spec": {"metrics": [{"metric_id": "policy", "scoring": {"range": [0, 1]}}]},
+            "custom_evaluators": {"policy": draft.version_id},
+        }, base_evaluation.revision, actor)
+        blocked = RunPlanService(storage).plan_run(actor, {
+            "project_id": project.project_id,
+            "evaluation_version_id": evaluation.version_id,
+            "dataset_version_id": dataset.version_id,
+        }, {})
+        assert blocked.state == "blocked"
+        assert "custom_evaluator_approval_required:policy" in blocked.blockers
+
+        approved = registry.approve(draft.version_id)
+        evaluation = VersionStore(storage).create("evaluation", project.project_id, {
+            "spec": {"metrics": [{"metric_id": "policy", "scoring": {"range": [0, 1]}}]},
+            "custom_evaluators": {"policy": approved.version_id},
+        }, evaluation.revision, actor)
+        plan = RunPlanService(storage).plan_run(actor, {
+            "project_id": project.project_id,
+            "evaluation_version_id": evaluation.version_id,
+            "dataset_version_id": dataset.version_id,
+        }, {})
+        assert plan.state == "validated"
+        assert plan.content["evaluator_versions"] == {"policy": approved.version_id}
     finally:
         storage.close()
 

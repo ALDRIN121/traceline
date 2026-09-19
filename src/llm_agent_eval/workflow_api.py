@@ -16,6 +16,7 @@ from .contracts import WorkflowError
 from .egress.recording import Budget
 from .egress.routes import ProviderRouteRegistry
 from .egress.session import ProxyRunSession
+from .evaluator_registry import CustomEvaluatorRegistry
 from .datasets import DatasetService
 from .previews import PreviewService
 from .profiles import ModelProfile, ProfileStore
@@ -67,6 +68,12 @@ class DatasetImportRequest(BaseModel):
 
 
 class DashboardVersionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0, strict=True)
+    definition: dict[str, Any]
+
+
+class EvaluatorVersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0, strict=True)
     definition: dict[str, Any]
@@ -170,7 +177,7 @@ class JudgeCalibrationLabelRequest(JudgeCalibrationBindingRequest):
 
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
 #: the generic route must never publish attacker-shaped JSON for them.
-PROTECTED_VERSION_KINDS = frozenset({"model_profile", "model_selection", "judge_rubric"})
+PROTECTED_VERSION_KINDS = frozenset({"evaluator", "model_profile", "model_selection", "judge_rubric"})
 
 
 def _readiness_payload(readiness) -> dict[str, Any]:
@@ -550,6 +557,24 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         version = VersionStore(store()).create("knowledge", project_id,
             body.model_dump(exclude={"expected_revision"}), body.expected_revision, request.state.actor)
         return {"state": "draft", "version": asdict(version)}
+
+    @router.post("/projects/{project_id}/evaluator-versions", status_code=201)
+    def create_evaluator_version(project_id: str, body: EvaluatorVersionRequest, request: Request):
+        version = CustomEvaluatorRegistry(
+            store(), artifact_root, request.state.actor,
+        ).create(project_id, body.definition, body.expected_revision)
+        return {"state": "draft", "version": asdict(version)}
+
+    @router.get("/projects/{project_id}/evaluator-versions")
+    def list_evaluator_versions(project_id: str, request: Request):
+        return VersionStore(store()).list("evaluator", project_id, request.state.actor)
+
+    @router.post("/evaluator-versions/{version_id}/approve", status_code=201)
+    def approve_evaluator_version(version_id: str, request: Request):
+        version = CustomEvaluatorRegistry(
+            store(), artifact_root, request.state.actor,
+        ).approve(version_id)
+        return {"state": "approved", "version": asdict(version)}
 
     @router.get("/projects/{project_id}/knowledge/versions")
     def list_knowledge(project_id: str, request: Request):

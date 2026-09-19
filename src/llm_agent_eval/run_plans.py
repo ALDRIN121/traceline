@@ -182,6 +182,61 @@ class RunPlanService:
                             f"target_capability_required:{metric_id}:{capability}"
                         )
 
+        resolved_evaluator_versions: dict[str, str] = {}
+        if evaluation_version_id:
+            evaluation_version = self.versions.get(evaluation_version_id, actor)
+            bindings = evaluation_version.content.get("custom_evaluators", {})
+            if bindings is None:
+                bindings = {}
+            if not isinstance(bindings, Mapping):
+                blockers.append("custom_evaluator_bindings_invalid")
+            else:
+                metric_ids = {
+                    metric.get("metric_id") for metric in (
+                        evaluation_version.content.get("spec", {}).get("metrics", [])
+                        if isinstance(evaluation_version.content.get("spec", {}), Mapping)
+                        else []
+                    ) if isinstance(metric, Mapping)
+                }
+                for metric_id, evaluator_version_id in bindings.items():
+                    if not isinstance(metric_id, str) or metric_id not in metric_ids:
+                        blockers.append(f"custom_evaluator_metric_invalid:{metric_id}")
+                        continue
+                    if not isinstance(evaluator_version_id, str) or not evaluator_version_id:
+                        blockers.append(f"custom_evaluator_version_invalid:{metric_id}")
+                        continue
+                    try:
+                        evaluator_version = self.versions.get(evaluator_version_id, actor)
+                    except NotFound:
+                        blockers.append(f"custom_evaluator_version_missing:{metric_id}")
+                        continue
+                    if evaluator_version.kind != "evaluator":
+                        blockers.append(f"custom_evaluator_version_invalid:{metric_id}")
+                        continue
+                    if evaluator_version.parent_id != normalized_refs.get("project_id"):
+                        blockers.append(f"custom_evaluator_project_mismatch:{metric_id}")
+                        continue
+                    if (evaluator_version.content.get("review") or {}).get("state") != "approved":
+                        blockers.append(f"custom_evaluator_approval_required:{metric_id}")
+                        continue
+                    definition_range = evaluator_version.content.get("score_range")
+                    metric = next(
+                        (
+                            item for item in (
+                                evaluation_version.content.get("spec", {}).get("metrics", [])
+                                if isinstance(evaluation_version.content.get("spec", {}), Mapping)
+                                else []
+                            )
+                            if isinstance(item, Mapping) and item.get("metric_id") == metric_id
+                        ),
+                        None,
+                    )
+                    metric_range = (metric or {}).get("scoring", {}).get("range") if isinstance(metric, Mapping) else None
+                    if (not isinstance(metric_range, list) or metric_range != definition_range):
+                        blockers.append(f"custom_evaluator_score_range_mismatch:{metric_id}")
+                        continue
+                    resolved_evaluator_versions[metric_id] = evaluator_version_id
+
         normalized_limits = json.loads(_canonical(dict(limits)))
         tier = normalized_limits.get("tier")
         if tier is not None and tier not in _TIERS:
@@ -193,7 +248,11 @@ class RunPlanService:
         if type(budget) is not int or budget < 0:
             blockers.append("budget_invalid")
 
-        content = {"version_refs": normalized_refs, "limits": normalized_limits}
+        content = {
+            "version_refs": normalized_refs,
+            "limits": normalized_limits,
+            "evaluator_versions": resolved_evaluator_versions,
+        }
         digest = _digest(content)
         record = self.storage.create_run_plan(
             workspace_id=actor.workspace_id,

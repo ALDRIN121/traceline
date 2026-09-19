@@ -3,7 +3,7 @@
 import pytest
 
 
-@pytest.mark.parametrize("kind", ["model_profile", "model_selection", "judge_rubric"])
+@pytest.mark.parametrize("kind", ["evaluator", "model_profile", "model_selection", "judge_rubric"])
 def test_generic_version_post_rejects_protected_kinds_without_publishing(platform, kind):
     project_id = platform.seed("empty_project")["project_id"]
     path = f"/api/objects/{kind}/{project_id}/versions"
