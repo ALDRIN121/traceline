@@ -446,8 +446,9 @@ It is not an R1 release declaration.
   generation-based reset and `UNCALIBRATED → CALIBRATING → CALIBRATED`
   thresholds. Engine and re-score paths read the persisted readiness registry;
   API routes support label, status, and reset operations. Human dispute/review
-  is covered by the reviewer browser flow; a complete calibrated run acceptance
-  scenario remains open.
+  is covered by the reviewer browser flow. The calibrated worker-path
+  acceptance now records 30 matching labels, executes an authorized judge run,
+  and observes a gate-eligible `PASS`.
 - **Provider protocol coverage:** the recording proxy now validates and meters
   tested OpenAI, Anthropic, and Google request/usage shapes with provider-
   specific dummy-key substitution. Supported HTTPS routes now use the
@@ -522,6 +523,11 @@ It is not an R1 release declaration.
   artifact-root checks passing; the API and worker Compose healthchecks also
   reached `healthy`. This validates prototype service startup only; it does
   not prove the rootless Podman sandbox topology.
+- **Release-platform CI:** the checked-in workflow now declares a fail-closed
+  offline-suite matrix for `ubuntu-latest`, `macos-latest`, and
+  `windows-latest`, while keeping PostgreSQL, integration, and provider-live
+  checks in their dedicated jobs. GitHub-hosted execution is still deployment
+  evidence to be observed rather than claimed from YAML inspection.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
@@ -576,7 +582,9 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **39 tests**. The evidence covers
+  dashboard browser suites pass **40 tests**. The evidence covers
+  a live FastAPI-backed project create/list/detail/knowledge flow in local-owner
+  mode at a 390×844 viewport with keyboard activation, in addition to
   workspace project listing, project creation with the server-observed ID,
   project detail selection, automatic knowledge loading, stale selection
   isolation, and secret-field redaction, in addition to
@@ -597,8 +605,9 @@ It is not an R1 release declaration.
   override submission with dispute lineage, and refreshed overridden state.
   The target-connection, schedule, dispute, and SSE coverage use mocked API
   responses; the legacy run modal explicitly states that its request is not
-  backend authorization; no visual API-backed full-flow screenshot or complete
-  R1 accessibility matrix is claimed.
+  backend authorization; the live flow does not claim release bearer-token
+  authentication, source-import worker reconciliation, or the complete R1
+  accessibility matrix.
 - **Observed suite:** the default suite is **948 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
