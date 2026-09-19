@@ -649,12 +649,13 @@ It is not an R1 release declaration.
   anonymous API rejection, public static-shell loading, fragment token
   consumption/removal, authenticated authoring/dashboard API calls, and no
   token retention in localStorage.
-- **Observed suite:** the default suite is **955 passed, 15 skipped, 10
+- **Observed suite:** the default suite is **959 passed, 15 skipped, 10
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The combined opt-in live
-  proxy/sandbox, HTTPS-client, embedded-LiteLLM, and custom-evaluator selection passes **6 tests**
-  on the observed macOS Podman 6.1.1 host; alternate platforms and external
-  provider credentials remain unverified. The disposable real Compose
+  proxy/sandbox, HTTPS-client, embedded-LiteLLM, custom-evaluator, and local-runtime selection passes **8 tests**
+  on the observed macOS Podman 6.1.1 host (six marker-gated live tests plus
+  two explicit runtime probes); alternate platforms and external provider
+  credentials remain unverified. The disposable real Compose
   rehearsal additionally observed authenticated API access, project creation,
   ZIP upload/import dispatch, and durable worker completion with PostgreSQL.
 
