@@ -548,6 +548,15 @@ It is not an R1 release declaration.
   references without returning values. They are owner-only and accept only
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
+- **Browser UI slice:** on the observed host, the authoring and legacy
+  dashboard browser suites pass **21 tests**. The evidence covers
+  project/session context, source import job reconciliation, knowledge
+  confirmation/correction, dataset mapping and explicit exclusions, canonical
+  preview revisions, cross-tab conflict recovery, keyboard activation,
+  case-row selection, and a review confirmation before the legacy run request.
+  The run modal explicitly states that the legacy request is not backend
+  authorization; no visual API-backed full-flow screenshot or complete R1
+  results/compare/export UX acceptance is claimed.
 - **Observed suite:** the default suite is **927 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
@@ -555,8 +564,9 @@ It is not an R1 release declaration.
   opt-in live HTTPS-client and custom-evaluator checks each pass on that same
   host.
 
-**Still release-blocking:** the specialist-owned authoring/results UI is not
-complete; the trusted proxy-route/session factory exists, but cross-platform
+**Still release-blocking:** the specialist-owned UI slice is verified, but the
+full R1 authoring/results/compare flow is not complete; the trusted
+proxy-route/session factory exists, but cross-platform
 configured-route setup and full containerized deployment topology are not yet
 release-proven;
 provider-client HTTPS interception is proven only on the observed macOS

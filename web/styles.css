@@ -1382,6 +1382,13 @@ tr.case-row[aria-selected="true"]:hover { background: var(--accent-soft); }
   line-height: 1.45;
   margin-bottom: 14px;
 }
+.run-review-summary { display: grid; gap: 10px; margin: 0 0 16px; }
+.run-review-summary > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.run-review-summary dt { color: var(--ink-2); font-size: 12px; font-weight: 650; }
+.run-review-summary dd { margin: 0; overflow-wrap: anywhere; }
+.run-review-spec-details { border-top: 1px solid var(--hairline); padding-top: 12px; }
+.run-review-spec-details summary { cursor: pointer; color: var(--accent-strong); font-size: 12px; font-weight: 650; }
+.run-review-spec-details pre { margin-top: 10px; max-height: 220px; }
 
 /* Form controls */
 .form-group { margin-bottom: 14px; }

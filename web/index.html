@@ -457,6 +457,34 @@
   </div>
 </main>
 
+<div id="modal-run-review" class="modal-backdrop" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-run-review-title">
+    <div class="modal-head">
+      <h3 id="modal-run-review-title" class="modal-title">Review before sending run request</h3>
+      <button type="button" class="btn-close" id="btn-close-run-review" aria-label="Close run review">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-desc">Confirm the selected evaluation details before the existing run request is sent. This review is separate from backend authorization; it does not grant or infer authorization.</p>
+      <dl class="run-review-summary" id="run-review-summary">
+        <div><dt>Evaluation</dt><dd id="run-review-name">—</dd></div>
+        <div><dt>Evaluation ID</dt><dd id="run-review-id" class="mono">—</dd></div>
+        <div><dt>Spec reference</dt><dd id="run-review-spec-ref" class="mono">—</dd></div>
+        <div><dt>Dataset reference</dt><dd id="run-review-dataset-ref" class="mono">—</dd></div>
+        <div><dt>Dashboard reference</dt><dd id="run-review-dashboard-ref" class="mono">—</dd></div>
+      </dl>
+      <details class="run-review-spec-details">
+        <summary>Inspect selected spec</summary>
+        <pre id="run-review-spec" class="code-block"></pre>
+      </details>
+      <p id="run-review-status" class="modal-desc" role="status" aria-live="polite"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="btn-cancel-run-review">Cancel</button>
+      <button type="button" class="btn btn-primary" id="btn-confirm-run-review">Confirm review &amp; send run request</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal-dispute" class="modal-backdrop" hidden>
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-dispute-title">
     <div class="modal-head">

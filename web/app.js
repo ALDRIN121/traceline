@@ -103,6 +103,8 @@ const fmtTokens = (n) => (n == null ? "—" : Number(n).toLocaleString());
 /* A run id, shortened for tight cells. */
 const shortId = (id) => (id && id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id);
 
+let runRequestInFlight = false;
+
 /* Metric values: the method names the resolver exposes (pass_rate, mean, p95,
  * count, …). Pass rates are stored as 0..1. */
 const fmtMetricValue = (method, value) => {
@@ -727,11 +729,7 @@ function renderCaseTable(payload) {
     ]);
 
     if (selectable) {
-      tr.addEventListener("pointerdown", (ev) => {
-        if (ev.button !== 0) return;
-        ev.preventDefault();
-        selectCase(c.selection.value);
-      });
+      tr.addEventListener("click", () => selectCase(c.selection.value));
       tr.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") {
           ev.preventDefault();
@@ -2226,10 +2224,7 @@ function renderEvalsList() {
       el("span", { class: "eval-item-name", text: ev.name || ev.eval_id }),
       el("span", { class: "eval-item-meta", text: ev.run_id ? `run ${shortId(ev.run_id)}` : "no run yet" }),
     ]);
-    btn.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      selectEval(ev.eval_id);
-    });
+    btn.addEventListener("click", () => selectEval(ev.eval_id));
     return btn;
   }));
 }
@@ -2258,25 +2253,70 @@ async function selectEval(evalId) {
   }
 }
 
+function reviewReference(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return value.version_id || value.version || value.name || value.id || fallback;
+}
+
+function openRunReview() {
+  const rec = state.selectedEval;
+  const modal = $("#modal-run-review");
+  const evalId = state.evalId || (rec && rec.eval_id);
+  if (!modal || !rec || !evalId) return;
+
+  const spec = rec.spec || {};
+  const dataset = rec.dataset || spec.dataset || spec.cases;
+  const dashboard = rec.dashboard || {};
+  $("#run-review-name").textContent = rec.name || evalId;
+  $("#run-review-id").textContent = evalId;
+  $("#run-review-spec-ref").textContent = reviewReference(spec.spec_version || spec, "inline spec");
+  $("#run-review-dataset-ref").textContent = Array.isArray(dataset)
+    ? `inline dataset · ${dataset.length} cases`
+    : reviewReference(dataset || spec.dataset_version, "inline dataset");
+  $("#run-review-dashboard-ref").textContent = reviewReference(dashboard, "inline dashboard");
+  $("#run-review-spec").textContent = JSON.stringify(spec, null, 2);
+  const status = $("#run-review-status");
+  if (status) status.textContent = "";
+  modal.hidden = false;
+  $("#btn-confirm-run-review")?.focus();
+}
+
+function closeRunReview() {
+  const modal = $("#modal-run-review");
+  if (modal) modal.hidden = true;
+}
+
+async function submitReviewedEvalRun() {
+  const evalId = state.evalId || (state.selectedEval && state.selectedEval.eval_id);
+  if (!evalId || runRequestInFlight) return;
+  const confirmBtn = $("#btn-confirm-run-review");
+  const status = $("#run-review-status");
+  runRequestInFlight = true;
+  if (confirmBtn) confirmBtn.disabled = true;
+  if (status) status.textContent = "Sending the existing run request…";
+  try {
+    const res = await api(`/api/evals/${encodeURIComponent(evalId)}/run`, { method: "POST" });
+    state.filterRun = res.run_id;
+    closeRunReview();
+    await selectEval(evalId);
+    switchTab("dashboard");
+    await refreshAll();
+  } catch (err) {
+    if (status) status.textContent = `Run request failed: ${err.message}`;
+  } finally {
+    runRequestInFlight = false;
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
 async function runThisEval() {
   const evalId = state.evalId || (state.selectedEval && state.selectedEval.eval_id);
   if (!evalId) {
     alert("Author an evaluation in chat first.");
     return;
   }
-  const btn = $("#btn-run-this-eval");
-  if (btn) btn.disabled = true;
-  try {
-    const res = await api(`/api/evals/${encodeURIComponent(evalId)}/run`, { method: "POST" });
-    state.filterRun = res.run_id;
-    await selectEval(evalId);
-    switchTab("dashboard");
-    await refreshAll();
-  } catch (err) {
-    alert("Failed to run eval: " + err.message);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  if (!runRequestInFlight) openRunReview();
 }
 
 let switchTab = () => {};
@@ -2311,8 +2351,8 @@ function wireTabs() {
     }
   };
 
-  if (tabBuilder) tabBuilder.addEventListener("pointerdown", () => switchTab("builder"));
-  if (tabDashboard) tabDashboard.addEventListener("pointerdown", () => switchTab("dashboard"));
+  if (tabBuilder) tabBuilder.addEventListener("click", () => switchTab("builder"));
+  if (tabDashboard) tabDashboard.addEventListener("click", () => switchTab("dashboard"));
   return { switchTab };
 }
 
@@ -2605,18 +2645,14 @@ function wireArchitectChat() {
   }
 
   if (msgContainer) {
-    msgContainer.addEventListener("pointerdown", (ev) => {
+    msgContainer.addEventListener("click", (ev) => {
       const chipBtn = ev.target.closest(".chat-preset-btn");
       if (chipBtn && chipBtn.dataset.preset) {
-        ev.preventDefault();
         handleSend(chipBtn.dataset.preset);
       }
     });
   }
-  if (btnSend) btnSend.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0) return;
-    handleSend();
-  });
+  if (btnSend) btnSend.addEventListener("click", () => handleSend());
   if (userInput) {
     userInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) {
@@ -2626,15 +2662,14 @@ function wireArchitectChat() {
     });
   }
   if (btnUpload && zipInput) {
-    btnUpload.addEventListener("pointerdown", () => zipInput.click());
+    btnUpload.addEventListener("click", () => zipInput.click());
     zipInput.addEventListener("change", () => {
       const f = zipInput.files && zipInput.files[0];
       if (f) uploadZip(f);
     });
   }
   if (btnSample) {
-    btnSample.addEventListener("pointerdown", async (ev) => {
-      ev.preventDefault();
+    btnSample.addEventListener("click", async () => {
       btnSample.disabled = true;
       try {
         const res = await api("/api/runs/sample", { method: "POST" });
@@ -2648,8 +2683,12 @@ function wireArchitectChat() {
       }
     });
   }
-  if (btnRunEval) btnRunEval.addEventListener("pointerdown", () => runThisEval());
-  if (btnCloseArtifact) btnCloseArtifact.addEventListener("pointerdown", () => setArtifactOpen(false));
+  if (btnRunEval) btnRunEval.addEventListener("click", () => runThisEval());
+  if (btnCloseArtifact) btnCloseArtifact.addEventListener("click", () => setArtifactOpen(false));
+
+  $("#btn-close-run-review")?.addEventListener("click", closeRunReview);
+  $("#btn-cancel-run-review")?.addEventListener("click", closeRunReview);
+  $("#btn-confirm-run-review")?.addEventListener("click", submitReviewedEvalRun);
 }
 
 async function init() {
