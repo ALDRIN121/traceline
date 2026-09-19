@@ -514,15 +514,17 @@ It is not an R1 release declaration.
   Retrieval now also has an explicit `retrieval` target over authoritative
   ranked-chunk events; missing retrieval follows `on_missing`. Stateless JSON
   targets now accept a closed retrieval mapping and emit capture-time-redacted
-  adapter retrieval events, with a conformance matrix that lists only the tested
-  generic HTTP adapter and returns `unsupported_framework` for unverified
-  frameworks. Schedules enforce the implemented frozen-version policy rather
-  than accepting an unimplemented refresh policy. Retrieval adapter/framework
-  conformance beyond generic HTTP remains open. The current R2-focused
+  adapter retrieval events, with a conformance matrix that lists the tested
+  generic HTTP and OpenAI-compatible stateless JSON adapters and returns
+  `unsupported_framework` for unverified frameworks. Schedules enforce the
+  implemented frozen-version policy rather than accepting an unimplemented
+  refresh policy. Retrieval adapter/framework conformance beyond those tested
+  adapters remains open. The current R2-focused
   workflow and integration set (streaming, async, stateful sessions,
-  retrieval, adapter matrix, schedules, and frozen worker paths) passes
-  **28 tests** on the observed host; this is not a cross-platform or
-  additional-framework conformance claim.
+  retrieval, adapter matrix, schedules, frozen worker paths, and the tested
+  OpenAI-compatible stateless JSON adapter) passes **36 tests** on the
+  observed host. The matrix still fails closed for unverified frameworks;
+  this is not a cross-platform or broad framework-conformance claim.
 - **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are
   stored as immutable `evaluator` versions, require an explicit approval
   revision, and are selectable only through an evaluation-version binding.
@@ -543,7 +545,7 @@ It is not an R1 release declaration.
   references without returning values. They are owner-only and accept only
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
-- **Observed suite:** the default suite is **924 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **927 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate

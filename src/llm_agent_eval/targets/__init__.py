@@ -16,9 +16,11 @@ from .http_json import (
     FORBIDDEN_HEADERS, HttpJsonAdapter, UNSUPPORTED_MODES, reject_golden_mapping,
     validate_retrieval_mapping,
 )
+from .http_openai import OpenAICompatibleAdapter
 from .http_stream import HttpStreamAdapter
 from .http_job import HttpJobAdapter
 from .http_session import HttpSessionAdapter
+from .frameworks import adapter_capability
 from .network_policy import EndpointPolicy
 from .openapi import import_openapi
 from .local import LocalTargetAdapter
@@ -46,6 +48,11 @@ class ConnectionService:
             raise WorkflowError("R1 supports only synchronous stateless JSON HTTP", code="unsupported_target_mode")
         if mode not in {"stateless_json", "streaming", "async", "session"}:
             raise WorkflowError("target mode is not supported", code="unsupported_target_mode")
+        framework = str(body.get("framework") or "generic_http").strip().lower()
+        try:
+            capability = adapter_capability(framework, version=mode, require_supported=True)
+        except ValueError as exc:
+            raise WorkflowError("target framework is not supported", code="unsupported_framework") from exc
         if body.get("retry_max") not in (None, 0):
             raise WorkflowError("Remote retries are disabled by default", code="retries_forbidden")
         mapping = body.get("output_mapping") or {}
@@ -76,6 +83,7 @@ class ConnectionService:
         target_id, now = uuid.uuid4().hex, _now()
         content = {
             "kind": {"stateless_json": "http_json", "streaming": "http_stream", "async": "http_job", "session": "http_session"}[mode],
+            "framework": capability.framework,
             "url": url,
             "method": body.get("method") or "POST",
             "auth": auth,
@@ -193,4 +201,6 @@ class ConnectionService:
             return HttpJobAdapter(policy=policy)
         if content.get("kind") == "http_session":
             return HttpSessionAdapter(policy=policy)
+        if content.get("framework") == "openai_compatible":
+            return OpenAICompatibleAdapter(policy)
         return HttpJsonAdapter(policy)

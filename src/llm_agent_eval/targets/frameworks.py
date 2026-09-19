@@ -38,10 +38,23 @@ _GENERIC_HTTP = AdapterCapability(
     ),
 )
 
+_OPENAI_COMPATIBLE = AdapterCapability(
+    framework="openai_compatible",
+    supported=True,
+    versions=("stateless_json",),
+    capabilities={
+        "final_output": "observed",
+        "retrieval": "unavailable",
+        "tool_execution": "unavailable",
+        "provider_cost": "unavailable",
+    },
+    conformance_tests=("tests/workflow/test_openai_compatible_adapter.py",),
+)
+
 
 def supported_adapters() -> tuple[AdapterCapability, ...]:
     """Return the immutable list of adapters with checked-in conformance tests."""
-    return (_GENERIC_HTTP,)
+    return (_GENERIC_HTTP, _OPENAI_COMPATIBLE)
 
 
 def adapter_capability(
