@@ -6,6 +6,7 @@ import argparse
 import io
 from pathlib import Path
 import tempfile
+import threading
 import zipfile
 
 import uvicorn
@@ -73,7 +74,24 @@ def main() -> None:
                 artifact_root=artifact_root,
                 gateway=MockGateway({}),
             )
-            uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+            worker_stop = threading.Event()
+            worker_thread = threading.Thread(
+                target=app.state.workflow_worker.run_forever,
+                args=(app.state.workflow_actor,),
+                kwargs={
+                    "stop_event": worker_stop,
+                    "poll_seconds": 0.05,
+                    "worker_id": "browser-test-worker",
+                },
+                name="browser-test-worker",
+                daemon=True,
+            )
+            worker_thread.start()
+            try:
+                uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+            finally:
+                worker_stop.set()
+                worker_thread.join(timeout=2)
         finally:
             storage.close()
 
