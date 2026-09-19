@@ -502,7 +502,11 @@ It is not an R1 release declaration.
   generic HTTP adapter and returns `unsupported_framework` for unverified
   frameworks. Schedules enforce the implemented frozen-version policy rather
   than accepting an unimplemented refresh policy. Retrieval adapter/framework
-  conformance beyond generic HTTP remains open.
+  conformance beyond generic HTTP remains open. The current R2-focused
+  workflow and integration set (streaming, async, stateful sessions,
+  retrieval, adapter matrix, schedules, and frozen worker paths) passes
+  **28 tests** on the observed host; this is not a cross-platform or
+  additional-framework conformance claim.
 - **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are
   stored as immutable `evaluator` versions, require an explicit approval
   revision, and are selectable only through an evaluation-version binding.
@@ -538,6 +542,6 @@ provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
 are not proven on Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention/TTL
 link verification, and fairness are not rehearsed; LiteLLM
-  outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
+outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
 acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.
