@@ -478,8 +478,9 @@ It is not an R1 release declaration.
   `docker.io/curlimages/curl:8.11.1` client inside a fresh rootless case,
   negotiates TLS through the install-owned CA, and reaches the fixture
   provider only through the managed proxy. The observed proof passed on
-  macOS Podman 6.1.1; live provider-client streaming and alternate-platform
-  proof remain open. A separate repaired CrewAI/Gemini fixture is now checked
+  macOS Podman 6.1.1; the same case also attempts direct no-proxy access to
+  the provider name and a reserved IPv4 address, both of which fail closed.
+  Live provider-client streaming and alternate-platform proof remain open. A separate repaired CrewAI/Gemini fixture is now checked
   in under `fixtures/reference-agent-repaired/`; live execution of that
   dependency-bearing fixture and provider route remains deployment evidence.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,

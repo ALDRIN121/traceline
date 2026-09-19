@@ -105,6 +105,13 @@ def test_live_case_https_client_uses_install_ca_and_proxy(tmp_path: Path):
             f"--data \"$body\" "
             f"https://provider.test:{port}/v1/chat/completions\n"
             "grep -q 'usage' /tmp/provider.response\n"
+            # Deliberately ignore the injected proxy and try both a direct
+            # provider name and a reserved public IPv4 address. Neither
+            # route may reach the fixture from the managed internal network.
+            f"if curl --fail --silent --show-error --max-time 3 --noproxy '*' "
+            f"https://provider.test:{port}/v1/chat/completions >/dev/null 2>&1; then exit 13; fi\n"
+            "if curl --fail --silent --show-error --max-time 3 --noproxy '*' "
+            "https://203.0.113.1:443/ >/dev/null 2>&1; then exit 14; fi\n"
             "printf '{\"answer\":\"ok\"}' > /output/result.json\n",
             encoding="utf-8",
         )
