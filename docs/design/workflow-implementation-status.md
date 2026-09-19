@@ -584,7 +584,7 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **42 tests**. The evidence covers
+  dashboard browser suites pass **44 tests**. The evidence covers
   live FastAPI-backed project create/list/detail/knowledge, ZIP upload →
   durable import worker → knowledge revision refresh, and hosted target
   configure → durable verification → observed verified-version flows in
@@ -593,7 +593,9 @@ It is not an R1 release declaration.
   project detail selection, automatic knowledge loading, stale selection
   isolation, and secret-field redaction, alongside project/session context,
   source import job reconciliation, knowledge
-  confirmation/correction, dataset mapping and explicit exclusions, canonical
+  confirmation/correction, live CSV and JSONL dataset upload with deterministic
+  mapping, label provenance, explicit exclusions and immutable commit/readback,
+  dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
   case-row selection, a review confirmation before the legacy run request, the
   modern Preview plan → explicit authorization → idempotent enqueue flow with
