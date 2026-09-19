@@ -16,6 +16,7 @@ from llm_agent_eval.worker import WorkflowWorker
 class StatefulServer:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
+        self.session_ids: list[str] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -35,12 +36,14 @@ class StatefulServer:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 owner.calls.append((self.path, body))
                 if self.path == "/init":
+                    session_id = f"session-{len(owner.session_ids) + 1}"
+                    owner.session_ids.append(session_id)
                     self._send(200, {
-                        "session_id": "session-1",
+                        "session_id": session_id,
                         "state": "awaiting_input",
                         "requested_input": "Approve?",
                     })
-                elif self.path == "/sessions/session-1/turns":
+                elif self.path.endswith("/turns"):
                     self._send(200, {"state": "completed", "output": {"answer": "approved"}})
                 else:
                     self._send(200, {})
@@ -108,7 +111,10 @@ def test_stateful_target_runs_multi_turn_case_through_worker_and_scores_output(t
             }],
         }}, 0, actor)
         dataset = versions.create("dataset", project.project_id, {"cases": [{
-            "case_id": "c1", "name": "approval", "input": {"q": "refund"},
+            "case_id": "c1", "name": "approval-one", "input": {"q": "refund-one"},
+            "script": script,
+        }, {
+            "case_id": "c2", "name": "approval-two", "input": {"q": "refund-two"},
             "script": script,
         }]}, 0, actor)
         worker = WorkflowWorker(
@@ -133,9 +139,11 @@ def test_stateful_target_runs_multi_turn_case_through_worker_and_scores_output(t
         run_id = terminal.result["run_id"]
         assert storage.get_run_metric_results(run_id, "ws")[0].value == 1.0
         paths = [path for path, _body in server.calls]
-        assert paths.count("/init") == 2  # verification and the actual run
-        assert paths.count("/sessions/session-1/turns") == 2
-        assert paths.count("/sessions/session-1/close") == 2
+        assert paths.count("/init") == 3  # verification plus one fresh session per case
+        assert len([path for path in paths if path.endswith("/turns")]) == 3
+        assert len([path for path in paths if path.endswith("/close")]) == 3
+        assert server.session_ids == ["session-1", "session-2", "session-3"]
+        assert len({path.split("/")[2] for path in paths if path.endswith("/turns")}) == 3
         assert all(event.type.value in {"wait_for_input", "user_response"}
                    for event in storage.get_trace_events(run_id=run_id, workspace_id="ws"))
     finally:

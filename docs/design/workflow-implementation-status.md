@@ -568,7 +568,10 @@ It is not an R1 release declaration.
   attempt with explicit remote uncertainty, and proxy evidence is retained
   even when the adapter ends in cancellation, timeout, or provider failure.
   Stateful session targets now have a full worker-path acceptance case covering
-  verification, scripted approval, multi-turn invocation, cleanup, and scoring.
+  verification, scripted approval, multi-turn invocation, cleanup, and scoring;
+  its two evaluated cases receive distinct server-issued sessions, separate
+  from the verification session, proving the fresh-session/no-state-reuse
+  boundary.
   Retrieval now also has an explicit `retrieval` target over authoritative
   ranked-chunk events; missing retrieval follows `on_missing`. Stateless JSON
   targets now accept a closed retrieval mapping and emit capture-time-redacted
