@@ -1095,6 +1095,24 @@ class Storage:
         return [_schedule_from_row(row) for row in rows]
 
     @_workspace_scoped
+    def set_schedule_state(
+        self, *, workspace_id: str, schedule_id: str, state: str,
+    ) -> ScheduleRecord:
+        if state not in {"active", "paused"}:
+            raise ValueError("invalid schedule state")
+        with self._tx():
+            updated = self._conn.execute(
+                "UPDATE schedules SET state=?,updated_at=? WHERE workspace_id=? AND schedule_id=?",
+                (state, _now(), workspace_id, schedule_id),
+            )
+            if updated.rowcount != 1:
+                raise KeyError("schedule not found")
+        schedule = self.get_schedule(schedule_id, workspace_id)
+        if schedule is None:  # pragma: no cover - defensive
+            raise KeyError("schedule not found")
+        return schedule
+
+    @_workspace_scoped
     def claim_schedule_slot(
         self, *, workspace_id: str, schedule_id: str, slot_key: str,
         slot_at: str, owner: str, created_at: str | None = None,

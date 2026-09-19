@@ -210,3 +210,14 @@ class DurableScheduleService:
             })
             usage["reserved_usd_micros"] = int(usage["reserved_usd_micros"]) + plan_budget
         return queued
+
+    def set_state(self, actor: Actor, schedule_id: str, state: str):
+        """Pause or resume a durable schedule without changing its frozen plan."""
+        actor.require(write=True)
+        if state not in {"active", "paused"}:
+            raise WorkflowError("schedule state is invalid", code="schedule_invalid")
+        if self.storage.get_schedule(schedule_id, actor.workspace_id) is None:
+            raise NotFound()
+        return self.storage.set_schedule_state(
+            workspace_id=actor.workspace_id, schedule_id=schedule_id, state=state,
+        )

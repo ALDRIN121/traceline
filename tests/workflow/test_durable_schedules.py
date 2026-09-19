@@ -60,6 +60,37 @@ def test_daily_schedule_can_skip_nonexistent_dst_time():
     assert slots == []
 
 
+def test_schedule_lifecycle_can_pause_resume_and_stays_durable(tmp_path):
+    storage = Storage(tmp_path / "schedule-lifecycle.db")
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    project = storage.create_project(workspace_id="ws", name="scheduled")
+    versions = VersionStore(storage)
+    evaluation = versions.create("evaluation", project.project_id, {"spec": {"name": "e", "cases": []}}, 0, actor)
+    dataset = versions.create("dataset", project.project_id, {"cases": []}, 0, actor)
+    plans = RunPlanService(storage)
+    plan = plans.plan_run(actor, {
+        "project_id": project.project_id,
+        "evaluation_version_id": evaluation.version_id,
+        "dataset_version_id": dataset.version_id,
+    }, {"tier": "quick"})
+    authorization = plans.authorize(actor, plan.plan_id, plan.content_digest)
+    service = DurableScheduleService(storage)
+    schedule = service.create(
+        actor, plan_id=plan.plan_id, plan_hash=plan.content_digest,
+        authorization_id=authorization.authorization_id,
+        timezone_name="Asia/Kolkata", local_time="09:00",
+    )
+
+    paused = service.set_state(actor, schedule.schedule_id, "paused")
+    assert paused.state == "paused"
+    assert storage.get_schedule(schedule.schedule_id, actor.workspace_id).state == "paused"
+    resumed = service.set_state(actor, schedule.schedule_id, "active")
+    assert resumed.state == "active"
+    assert storage.get_schedule(schedule.schedule_id, actor.workspace_id).state == "active"
+    storage.close()
+
+
 def test_schedule_budget_reconciles_completed_slot_from_authoritative_cost_ledger(tmp_path):
     storage = Storage(tmp_path / "schedule-ledger.db")
     storage.create_schema()

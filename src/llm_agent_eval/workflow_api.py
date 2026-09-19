@@ -425,6 +425,35 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
         )
         return {"state": schedule.state, "schedule": asdict(schedule)}
 
+    @router.get("/schedules")
+    def list_schedules(request: Request):
+        schedules = DurableScheduleService(store()).storage.list_schedules(
+            request.state.actor.workspace_id,
+        )
+        return {"schedules": [asdict(schedule) for schedule in schedules]}
+
+    @router.get("/schedules/{schedule_id}")
+    def get_schedule(schedule_id: str, request: Request):
+        schedule = store().get_schedule(schedule_id, request.state.actor.workspace_id)
+        if schedule is None:
+            raise WorkflowError("Schedule not found", code="not_found", status=404)
+        slots = store().list_schedule_slots(schedule_id, request.state.actor.workspace_id)
+        return {"schedule": asdict(schedule), "slots": [asdict(slot) for slot in slots]}
+
+    @router.post("/schedules/{schedule_id}/pause")
+    def pause_schedule(schedule_id: str, request: Request):
+        schedule = DurableScheduleService(store()).set_state(
+            request.state.actor, schedule_id, "paused",
+        )
+        return {"state": schedule.state, "schedule": asdict(schedule)}
+
+    @router.post("/schedules/{schedule_id}/resume")
+    def resume_schedule(schedule_id: str, request: Request):
+        schedule = DurableScheduleService(store()).set_state(
+            request.state.actor, schedule_id, "active",
+        )
+        return {"state": schedule.state, "schedule": asdict(schedule)}
+
     @router.post("/schedules/{schedule_id}/sweep", status_code=202)
     def sweep_schedule(schedule_id: str, body: ScheduleSweepRequest, request: Request):
         try:
