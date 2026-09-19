@@ -5,7 +5,10 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
+from fastapi.testclient import TestClient
+
 from llm_agent_eval.auth import Actor
+from llm_agent_eval.api import create_app
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.run_plans import RunPlanService
 from llm_agent_eval.rescore import RescoreService
@@ -110,6 +113,22 @@ def test_authorized_hosted_run_scores_observed_output_without_trace(tmp_path, mo
         metric = storage.get_run_metric_results(terminal.result["run_id"], "ws")[0]
         assert metric.value == 1.0
         assert metric.gate_status == "PASS"
+        client = TestClient(create_app(
+            storage=storage, workspace_id="ws", artifact_root=tmp_path / "artifacts",
+            gateway=MockGateway({}),
+        ))
+        frozen = client.post("/api/exports", json={"run_id": terminal.result["run_id"]})
+        assert frozen.status_code == 201
+        export_id = frozen.json()["export_id"]
+        manifest = client.get(f"/api/exports/{export_id}/json")
+        assert manifest.status_code == 200
+        assert manifest.json()["run"]["run_id"] == terminal.result["run_id"]
+        assert manifest.json()["case_metrics"][0]["metric_id"] == "answer"
+        assert client.get(f"/api/exports/{export_id}/csv").status_code == 200
+        assert client.get(f"/api/exports/{export_id}/html").status_code == 200
+        ci = client.get(f"/ci/runs/{terminal.result['run_id']}")
+        assert ci.status_code == 200
+        assert ci.json()["exit_code"] == 2  # one repeat is complete but has no CI confidence interval
         replacement = {
             "metric_id": "answer", "name": "answer changed", "type": "scalar",
             "target": {"type": "final_response", "selector": "$.status", "on_missing": "fail"},
