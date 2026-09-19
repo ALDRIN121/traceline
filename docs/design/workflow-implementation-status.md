@@ -531,8 +531,12 @@ It is not an R1 release declaration.
   stateless JSON adapters and returns `unsupported_framework` for unverified
   frameworks. Schedules enforce the
   implemented frozen-version policy rather than accepting an unimplemented
-  refresh policy. Retrieval adapter/framework conformance beyond those tested
-  adapters remains open. The current R2-focused
+  refresh policy. Durable schedules now expose workspace-scoped list/detail
+  routes and pause/resume lifecycle controls; the authoring Preview can create
+  a schedule only after observing authorization for the exact run-plan hash,
+  then displays slot history and observed lifecycle state. Retrieval
+  adapter/framework conformance beyond those tested adapters remains open. The
+  current R2-focused
   workflow and integration set (streaming, async, stateful sessions,
   retrieval, adapter matrix, schedules, frozen worker paths, and the tested
   OpenAI-compatible, Anthropic Messages, and Google Generative stateless JSON
@@ -560,7 +564,7 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **29 tests**. The evidence covers
+  dashboard browser suites pass **33 tests**. The evidence covers
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
@@ -570,7 +574,9 @@ It is not an R1 release declaration.
   secret references, durable verification polling, failed-verification
   handling, verified target-version persistence, and persisted results
   compare/export actions with bundle links and partial/provisional/incomparable
-  states. The legacy dashboard also consumes the backend's dotted SSE event
+  states. R2 schedule creation/list/detail/pause/resume controls are covered
+  through mocked service responses and preserve the exact authorized plan
+  identity. The legacy dashboard also consumes the backend's dotted SSE event
   names and refreshes authoritative state on stream errors without replaying
   a run submission. The target-connection and SSE coverage use mocked API
   responses; the legacy run modal explicitly states that its request is not

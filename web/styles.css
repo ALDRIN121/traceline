@@ -1418,6 +1418,31 @@ tr.case-row[aria-selected="true"]:hover { background: var(--accent-soft); }
 .run-plan-details { border-top: 1px solid var(--hairline); padding-top: 11px; }
 .run-plan-details summary { cursor: pointer; color: var(--accent-strong); font-size: 12px; font-weight: 650; }
 .run-plan-details pre { margin-top: 10px; max-height: 240px; }
+.schedule-control { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 20px; }
+.schedule-control h4 { color: var(--ink); font-size: .94rem; margin: 0; }
+.schedule-control h5 { color: var(--ink); font-size: .82rem; margin: 0; }
+.schedule-control h6 { color: var(--ink); font-family: var(--font-mono); font-size: .78rem; margin: 0; overflow-wrap: anywhere; }
+.schedule-gate { background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 9px 9px 0; color: var(--ink-2); font-size: .8rem; line-height: 1.45; margin: 14px 0 0; padding: 10px 12px; }
+.schedule-config { border: 0; margin: 14px 0 0; min-inline-size: 0; padding: 0; }
+.schedule-config:disabled { opacity: .72; }
+.schedule-fields { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.schedule-fields label { color: var(--ink-2); display: grid; font-size: .82rem; gap: 6px; }
+.schedule-fields input, .schedule-fields select { background: var(--surface-2); border: 1px solid var(--hairline-strong); border-radius: 9px; color: var(--ink); font: inherit; min-height: 38px; padding: 8px 10px; }
+.schedule-fields input:focus, .schedule-fields select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.schedule-list { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 17px; }
+.schedule-list-head { align-items: baseline; display: flex; gap: 12px; justify-content: space-between; }
+.schedule-list-status { color: var(--ink-3); font-size: .74rem; text-align: right; }
+.schedule-empty { color: var(--ink-2); font-size: .8rem; line-height: 1.45; margin: 11px 0 0; }
+.schedule-item { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 11px; margin-top: 11px; padding: 13px; }
+.schedule-item-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.schedule-state { background: var(--surface-3); border-radius: var(--radius-chip); color: var(--ink-2); font-size: .7rem; font-weight: 650; padding: 4px 7px; text-transform: capitalize; }
+.schedule-state.active { background: var(--green-tint); color: var(--green); }.schedule-state.paused { background: var(--amber-tint); color: var(--amber); }
+.schedule-meta { display: grid; gap: 6px; margin: 12px 0 0; }
+.schedule-meta > div { display: grid; gap: 10px; grid-template-columns: 90px minmax(0, 1fr); }
+.schedule-meta dt { color: var(--ink-3); font-size: .72rem; }.schedule-meta dd { color: var(--ink-2); font-size: .78rem; margin: 0; overflow-wrap: anywhere; }
+.schedule-slot-list { border-top: 1px solid var(--hairline); display: grid; gap: 7px; list-style: none; margin: 12px 0 0; padding: 10px 0 0; }
+.schedule-slot-list li { display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: space-between; }.schedule-slot-list strong { color: var(--ink); font: .72rem var(--font-mono); overflow-wrap: anywhere; }.schedule-slot-list span { color: var(--ink-3); font-size: .72rem; }
+.schedule-slot-error { color: var(--amber); font-size: .78rem; line-height: 1.4; margin: 12px 0 0; }
 .target-connection { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 20px; }
 .target-connection > div:first-child h3 { margin: 0; font-size: .94rem; color: var(--ink); }
 .target-connection > div:first-child p { color: var(--ink-2); font-size: .84rem; line-height: 1.45; margin: 5px 0 0; }
@@ -1579,10 +1604,10 @@ body[data-view="builder"] .builder-workspace { display: block; height: auto; min
 .metric-review { width: min(780px, calc(100% - 32px)); margin: 20px auto 0; padding: 22px; border: 1px solid var(--hairline-strong); border-radius: var(--radius-card); background: var(--surface-1); box-shadow: var(--shadow-pop); }.metric-review > p { color: var(--ink-2); margin: 6px 0 0; }.policy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }.policy-fields label { display: grid; gap: 7px; color: var(--ink-2); font-size: .82rem; }.policy-fields select { min-height: 38px; color: var(--ink); background: var(--surface-2); border: 1px solid var(--hairline-strong); border-radius: 9px; padding-inline: 8px; font: inherit; }.metric-policy-help { font-size: .84rem; }
 @media (max-width: 760px) { .authoring-topline, .authoring-layout { grid-template-columns: 1fr; display: grid; }.authoring-save-state { justify-self: start; }.authoring-layout { gap: 12px; }.authoring-conversation { padding: 19px; }.authoring-pane { min-height: 0; }.reference-cards, .policy-fields, .source-fields { grid-template-columns: 1fr; }.authoring-pane-head { display: block; }.authoring-revision { display: inline-block; margin-top: 11px; }.synthetic-banner { display: grid; }.authoring-tabs { padding-inline: 6px; } }
 @media (max-width: 760px) { .results-actions-head, .results-action-grid { display: grid; grid-template-columns: 1fr; }.results-select-row { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .target-fields { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .target-fields, .schedule-fields { grid-template-columns: 1fr; } .schedule-list-head { align-items: flex-start; flex-direction: column; gap: 5px; } .schedule-list-status { text-align: left; } }
 @media (prefers-reduced-motion: reduce) { .authoring-tab:active, .text-action:active { transform: none; } }
 @media (prefers-reduced-transparency: reduce) { .authoring-conversation { background: var(--surface-2); } }
-@media (prefers-contrast: more) { .authoring-artifact, .reference-card, .metric-review { border-color: var(--ink-2); } }
+@media (prefers-contrast: more) { .authoring-artifact, .reference-card, .metric-review, .schedule-item { border-color: var(--ink-2); } }
 
 /* ---------------------------------------------------------------------------
  * Tab Switcher & Multi-View Navigation

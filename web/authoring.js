@@ -45,6 +45,7 @@
     plan: null, planHash: null, authorization: null,
     requestedRefs: {}, idempotencyKey: null, pending: false,
   };
+  let scheduleState = { schedules: [], pending: false };
 
   const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "", correctionDrafts: {} });
   let draft = emptyDraft();
@@ -141,6 +142,7 @@
       if (pane) pane.hidden = !isActive;
     }
     if (focus) $(`#authoring-${next}-tab`)?.focus();
+    if (next === "preview") refreshSchedules();
   }
 
   async function request(path, options = {}) {
@@ -236,7 +238,7 @@
     const blockers = plan.blockers || result?.blockers || [];
     const state = plan.state || result?.state || "unknown";
     const hash = plan.content_digest || plan.plan_hash || null;
-    runPlanState.plan = plan;
+    runPlanState.plan = { ...plan, state };
     runPlanState.planHash = hash;
     runPlanState.authorization = null;
     runPlanState.requestedRefs = refs;
@@ -256,6 +258,198 @@
     if (status) status.textContent = blockers.length
       ? "This manifest is blocked. Resolve every listed blocker before authorization."
       : state === "validated" ? "Manifest returned validated. Authorization is a separate explicit step." : `Observed plan state: ${state}.`;
+    updateScheduleGate();
+  }
+
+  function scheduleIsAuthorized() {
+    const authorization = runPlanState.authorization;
+    return runPlanState.plan?.state === "validated"
+      && Boolean(runPlanState.planHash)
+      && authorization?.state === "authorized"
+      && authorization.authorization_id
+      && authorization.plan_hash === runPlanState.planHash;
+  }
+
+  function updateScheduleGate() {
+    const authorized = scheduleIsAuthorized();
+    const fieldset = $("#schedule-config-fieldset");
+    const create = $("#create-schedule");
+    const gate = $("#schedule-authorization-gate");
+    if (fieldset) fieldset.disabled = !authorized || scheduleState.pending;
+    if (create) create.disabled = !authorized || scheduleState.pending;
+    if (gate) gate.textContent = authorized
+      ? "Authorization observed for this exact plan. Choose a bounded daily slot."
+      : "Authorize a validated run plan to unlock schedule creation.";
+  }
+
+  function scheduleFormValues() {
+    const timezone = $("#schedule-timezone")?.value.trim() || "";
+    const localTime = $("#schedule-local-time")?.value || "";
+    const requestLimitText = $("#schedule-daily-request-limit")?.value.trim() || "";
+    const budgetText = $("#schedule-daily-usd-budget")?.value.trim() || "";
+    const dailyRequestLimit = Number(requestLimitText);
+    const dailyBudgetUsd = Number(budgetText);
+    if (!timezone || !localTime) throw new Error("Timezone and local time are required");
+    if (!/^\d{2}:\d{2}$/.test(localTime)) throw new Error("Local time must be an HH:MM value");
+    if (!Number.isInteger(dailyRequestLimit) || dailyRequestLimit < 1 || dailyRequestLimit > 10000) {
+      throw new Error("Daily request limit must be a whole number from 1 to 10000");
+    }
+    if (!Number.isFinite(dailyBudgetUsd) || dailyBudgetUsd < 0) {
+      throw new Error("Daily USD budget must be zero or greater");
+    }
+    return {
+      timezone,
+      local_time: localTime,
+      dst_policy: $("#schedule-dst-policy")?.value || "first",
+      daily_request_limit: dailyRequestLimit,
+      daily_budget_usd_micros: Math.round(dailyBudgetUsd * 1_000_000),
+    };
+  }
+
+  function renderScheduleList(schedules) {
+    const list = $("#schedule-list-items");
+    if (!list) return;
+    list.replaceChildren();
+    if (!schedules.length) {
+      appendText(list, "p", "No schedules returned by the service yet.", "schedule-empty");
+      return;
+    }
+    for (const schedule of schedules) {
+      const article = document.createElement("article");
+      article.className = "schedule-item";
+      article.setAttribute("data-schedule-id", schedule.schedule_id || "");
+      const head = document.createElement("div");
+      head.className = "schedule-item-head";
+      appendText(head, "h6", schedule.schedule_id || "Unnamed schedule");
+      appendText(head, "span", schedule.state || "unknown", `schedule-state ${schedule.state || "unknown"}`);
+      article.append(head);
+
+      const meta = document.createElement("dl");
+      meta.className = "schedule-meta";
+      const values = [
+        ["State", `State ${schedule.state || "unknown"}`],
+        ["Slot count", Array.isArray(schedule.slots) ? `${schedule.slots.length} slots` : "Slot count unavailable"],
+        ["Time", `${schedule.local_time || "—"} · ${schedule.timezone || "—"}`],
+        ["DST", schedule.dst_policy || "—"],
+      ];
+      for (const [label, value] of values) {
+        const row = document.createElement("div");
+        appendText(row, "dt", label);
+        appendText(row, "dd", value);
+        meta.append(row);
+      }
+      article.append(meta);
+
+      if (schedule.slotError) {
+        appendText(article, "p", schedule.slotError, "schedule-slot-error");
+      } else if (schedule.slots?.length) {
+        const slotList = document.createElement("ul");
+        slotList.className = "schedule-slot-list";
+        for (const slot of schedule.slots) {
+          const item = document.createElement("li");
+          appendText(item, "strong", slot.slot_at || "Unknown slot");
+          appendText(item, "span", `${slot.state || "unknown"}${slot.job_id ? ` · job ${slot.job_id}` : ""}`);
+          slotList.append(item);
+        }
+        article.append(slotList);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "authoring-actions";
+      const action = schedule.state === "paused" ? "resume" : "pause";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-secondary";
+      button.textContent = action === "pause" ? "Pause" : "Resume";
+      button.setAttribute("aria-label", `${action === "pause" ? "Pause" : "Resume"} schedule ${schedule.schedule_id}`);
+      button.addEventListener("click", () => setScheduleState(schedule.schedule_id, action, button));
+      actions.append(button);
+      article.append(actions);
+      list.append(article);
+    }
+  }
+
+  async function refreshSchedules() {
+    const status = $("#schedule-list-status");
+    if (status) status.textContent = "Loading schedules…";
+    try {
+      const result = await request("/api/schedules");
+      const schedules = Array.isArray(result.schedules) ? result.schedules : [];
+      const detailed = await Promise.all(schedules.map(async (schedule) => {
+        try {
+          const detail = await request(`/api/schedules/${encodeURIComponent(schedule.schedule_id)}`);
+          return { ...schedule, ...(detail.schedule || {}), slots: Array.isArray(detail.slots) ? detail.slots : [] };
+        } catch (error) {
+          return { ...schedule, slots: null, slotError: reportError("Slot details unavailable", error) };
+        }
+      }));
+      scheduleState.schedules = detailed;
+      renderScheduleList(detailed);
+      if (status) status.textContent = detailed.length
+        ? `${detailed.length} schedule${detailed.length === 1 ? "" : "s"} returned by the service.`
+        : "No schedules returned by the service yet.";
+      return true;
+    } catch (error) {
+      scheduleState.schedules = [];
+      renderScheduleList([]);
+      if (status) status.textContent = reportError("Schedules were not loaded", error);
+      return false;
+    }
+  }
+
+  async function createSchedule() {
+    if (!scheduleIsAuthorized() || scheduleState.pending) return;
+    const status = $("#schedule-control-status");
+    scheduleState.pending = true;
+    updateScheduleGate();
+    if (status) status.textContent = "Creating the schedule…";
+    try {
+      const settings = scheduleFormValues();
+      const result = await request("/api/schedules", {
+        method: "POST",
+        body: {
+          plan_id: runPlanState.plan.plan_id,
+          plan_hash: runPlanState.planHash,
+          authorization_id: runPlanState.authorization.authorization_id,
+          ...settings,
+        },
+      });
+      const schedule = result.schedule;
+      const observedState = result.state || schedule?.state;
+      if (!schedule?.schedule_id || !observedState) throw new Error("The service did not return an observed schedule state.");
+      if (status) status.textContent = `Schedule ${observedState}. The service returned ${schedule.schedule_id}.`;
+      setActivity(`Schedule ${schedule.schedule_id} returned ${observedState}; no run is claimed until a slot is observed.`);
+      await refreshSchedules();
+    } catch (error) {
+      if (status) status.textContent = reportError("Schedule was not created", error);
+      setActivity(reportError("Schedule creation needs attention", error));
+    } finally {
+      scheduleState.pending = false;
+      updateScheduleGate();
+    }
+  }
+
+  async function setScheduleState(scheduleId, action, button) {
+    if (!scheduleId || scheduleState.pending) return;
+    const status = $("#schedule-control-status");
+    scheduleState.pending = true;
+    button.disabled = true;
+    if (status) status.textContent = `${action === "pause" ? "Pausing" : "Resuming"} schedule ${scheduleId}…`;
+    try {
+      const result = await request(`/api/schedules/${encodeURIComponent(scheduleId)}/${action}`, { method: "POST" });
+      const observedState = result.state || result.schedule?.state;
+      if (!observedState) throw new Error("The service did not return an observed schedule state.");
+      if (status) status.textContent = `Schedule ${observedState}. The service returned the lifecycle update.`;
+      setActivity(`Schedule ${scheduleId} returned ${observedState}; the UI reflects the observed response.`);
+      await refreshSchedules();
+    } catch (error) {
+      if (status) status.textContent = reportError(`Schedule ${action} was not observed`, error);
+      setActivity(reportError(`Schedule ${action} needs attention`, error));
+      button.disabled = false;
+    } finally {
+      scheduleState.pending = false;
+      updateScheduleGate();
+    }
   }
 
   async function reviewRunManifest() {
@@ -264,6 +458,7 @@
     const refs = runVersionRefs();
     const missing = missingRunPlanBlockers(refs);
     runPlanState = { plan: null, planHash: null, authorization: null, requestedRefs: refs, idempotencyKey: null, pending: false };
+    updateScheduleGate();
     const card = $("#run-plan-review-card");
     if (card) card.hidden = false;
     renderRunPlanRefs(refs);
@@ -304,7 +499,12 @@
       });
       const authorization = result.authorization;
       if (!authorization?.authorization_id) throw new Error("The service did not return an authorization ID.");
-      runPlanState.authorization = authorization;
+      const authorizationState = authorization.state || result.state;
+      if (authorizationState !== "authorized" || authorization.plan_hash !== runPlanState.planHash) {
+        throw new Error("The service did not return authorization for this exact validated plan.");
+      }
+      runPlanState.authorization = { ...authorization, state: authorizationState };
+      updateScheduleGate();
       const enqueue = $("#enqueue-run-plan");
       if (enqueue) enqueue.hidden = false;
       if (status) status.textContent = `Authorization ${authorization.state || result.state || "returned"}. Queueing remains a separate action.`;
@@ -1364,8 +1564,10 @@
     $("#review-run-manifest")?.addEventListener("click", reviewRunManifest);
     $("#authorize-run-plan")?.addEventListener("click", authorizeRunPlan);
     $("#enqueue-run-plan")?.addEventListener("click", enqueueRunPlan);
+    $("#create-schedule")?.addEventListener("click", createSchedule);
     all(".metric-option input:not(:disabled)").forEach((input) => input.addEventListener("change", renderPreviewEditor));
     renderPreviewEditor();
+    updateScheduleGate();
   }
 
   async function reconcilePendingJobs() {

@@ -219,6 +219,26 @@
               <details class="run-plan-details"><summary>Inspect returned plan</summary><pre id="run-plan-content" class="definition-inspector"></pre></details>
               <div class="authoring-actions"><button id="authorize-run-plan" class="btn btn-primary" type="button" hidden>Authorize this manifest</button><button id="enqueue-run-plan" class="btn btn-secondary" type="button" hidden>Queue authorized run</button></div>
               <p id="run-plan-status" class="source-import-status" role="status" aria-live="polite"></p>
+              <section id="schedule-control-card" class="schedule-control" aria-labelledby="schedule-control-heading" aria-live="polite">
+                <div class="dataset-report-head"><div><h4 id="schedule-control-heading">Schedule controls</h4><p>Reuse this exact authorized plan for a bounded daily slot.</p></div><span class="authoring-revision">R2</span></div>
+                <p id="schedule-authorization-gate" class="schedule-gate" role="status">Authorize a validated run plan to unlock schedule creation.</p>
+                <fieldset id="schedule-config-fieldset" class="schedule-config" disabled>
+                  <legend class="visually-hidden">Schedule settings</legend>
+                  <div class="schedule-fields">
+                    <label for="schedule-timezone">Timezone<input id="schedule-timezone" type="text" value="UTC" autocomplete="off" spellcheck="false"></label>
+                    <label for="schedule-local-time">Local time (HH:MM)<input id="schedule-local-time" type="time" value="09:00" step="60"></label>
+                    <label for="schedule-dst-policy">DST policy<select id="schedule-dst-policy"><option value="first">Run the first occurrence</option><option value="skip">Skip ambiguous or missing time</option></select></label>
+                    <label for="schedule-daily-request-limit">Daily request limit<input id="schedule-daily-request-limit" type="number" min="1" max="10000" step="1" value="1" inputmode="numeric"></label>
+                    <label for="schedule-daily-usd-budget">Daily USD budget<input id="schedule-daily-usd-budget" type="number" min="0" step="0.01" value="0" inputmode="decimal"></label>
+                  </div>
+                  <div class="authoring-actions"><button id="create-schedule" class="btn btn-primary" type="button">Create schedule</button></div>
+                </fieldset>
+                <p id="schedule-control-status" class="source-import-status" role="status" aria-live="polite"></p>
+                <div class="schedule-list" aria-labelledby="schedule-list-heading">
+                  <div class="schedule-list-head"><h5 id="schedule-list-heading">Existing schedules</h5><span id="schedule-list-status" class="schedule-list-status" role="status" aria-live="polite">Open Preview to load schedules.</span></div>
+                  <div id="schedule-list-items"></div>
+                </div>
+              </section>
             </section>
           </div>
         </section>
