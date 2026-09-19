@@ -45,7 +45,8 @@ semantics, ZIP/Git ingestion, evidence-backed knowledge versions, CEL for new sc
 predicates, durable harness sessions with a LiteLLM SDK gateway (no LiteLLM Proxy server
 in the run path), versioned dataset import with label provenance, deterministic
 synthetic dashboard previews from a built-in skill, hosted synchronous JSON
-target verification, and tested R2 streaming/async/stateful/retrieval/schedule paths.
+target verification, workspace project bootstrap/list/detail routes, and tested
+R2 streaming/async/stateful/retrieval/schedule paths.
 Rootless sandbox/proxy proof is observed on the configured macOS Podman host, while
 cross-platform containment, production route setup, and shipping PostgreSQL RLS deployment
 remain release-gated workflow-plan work. T10 has a browser-verified onboarding slice, but its
@@ -517,8 +518,9 @@ It is not an R1 release declaration.
 - **Compose/runtime smoke:** a disposable `docker compose up -d --build`
   completed with PostgreSQL healthy, the API and worker running, `/health`
   returning 200, and `/readiness` returning 200 with database and mounted
-  artifact-root checks passing. This validates prototype service startup only;
-  it does not prove the rootless Podman sandbox topology.
+  artifact-root checks passing; the API and worker Compose healthchecks also
+  reached `healthy`. This validates prototype service startup only; it does
+  not prove the rootless Podman sandbox topology.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
@@ -573,7 +575,10 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **34 tests**. The evidence covers
+  dashboard browser suites pass **39 tests**. The evidence covers
+  workspace project listing, project creation with the server-observed ID,
+  project detail selection, automatic knowledge loading, stale selection
+  isolation, and secret-field redaction, in addition to
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
@@ -593,7 +598,7 @@ It is not an R1 release declaration.
   responses; the legacy run modal explicitly states that its request is not
   backend authorization; no visual API-backed full-flow screenshot or complete
   R1 accessibility matrix is claimed.
-- **Observed suite:** the default suite is **945 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **948 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
