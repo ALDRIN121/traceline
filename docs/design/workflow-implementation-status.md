@@ -615,7 +615,7 @@ It is not an R1 release declaration.
   worker, and a local allowlisted stub target rather than a separate release
   worker process or external provider, and does not claim release bearer-token
   authentication or the complete R1 accessibility matrix.
-- **Observed suite:** the default suite is **949 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **950 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
