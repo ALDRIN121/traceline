@@ -55,6 +55,11 @@ services:
         condition: service_completed_successfully
     volumes:
       - eval_artifacts:/var/lib/llm-agent-eval
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   # Workflow jobs only. This image has no Podman socket or agent execution path;
   # enabling sandbox evaluation needs a separately constrained runtime topology.
@@ -75,6 +80,11 @@ services:
     volumes:
       # Artifacts, fingerprint/secret keys, and future install CA survive restarts.
       - eval_artifacts:/var/lib/llm-agent-eval
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1 && test -r /var/lib/llm-agent-eval"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
 volumes:
   eval_pgdata:

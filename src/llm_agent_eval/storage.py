@@ -1242,6 +1242,14 @@ class Storage:
         return _project_from_row(row) if row is not None else None
 
     @_workspace_scoped
+    def list_projects(self, workspace_id: str) -> list[ProjectRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at, project_id",
+            (workspace_id,),
+        ).fetchall()
+        return [_project_from_row(row) for row in rows]
+
+    @_workspace_scoped
     def set_project_smoke_state(
         self,
         project_id: str,

@@ -26,6 +26,16 @@ def test_worker_is_continuous_and_shares_persistent_install_state():
     assert "eval_artifacts" in compose["volumes"]
 
 
+def test_api_and_worker_have_explicit_readiness_healthchecks():
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    services = compose["services"]
+    api_check = services["eval-engine"].get("healthcheck")
+    worker_check = services["eval-worker"].get("healthcheck")
+    assert api_check["test"] == ["CMD", "curl", "--fail", "http://localhost:8000/readiness"]
+    assert api_check["interval"] and api_check["timeout"] and api_check["retries"]
+    assert worker_check["test"] == ["CMD-SHELL", "kill -0 1 && test -r /var/lib/llm-agent-eval"]
+
+
 def test_release_ci_runs_tests_and_fail_closed_scans():
     workflow = yaml.safe_load((ROOT / ".github/workflows/release-checks.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}

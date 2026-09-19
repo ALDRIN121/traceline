@@ -6,13 +6,13 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .artifacts import ArtifactStore
 from .calibration import JudgeCalibrationService
 from .ci_api import exit_code as ci_exit_code
 from .comparisons import ComparisonService
-from .contracts import WorkflowError
+from .contracts import NotFound, WorkflowError
 from .egress.recording import Budget
 from .egress.routes import ProviderRouteRegistry
 from .egress.session import ProxyRunSession
@@ -36,6 +36,27 @@ class VersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0, strict=True)
     content: dict[str, Any]
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    entrypoint: list[str] = Field(default_factory=list, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("project name is required")
+        return value
+
+    @field_validator("entrypoint")
+    @classmethod
+    def _entrypoint_is_bounded(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() or len(item) > 1024 for item in value):
+            raise ValueError("entrypoint items must be non-empty and bounded")
+        return value
 
 
 class KnowledgeRequest(BaseModel):
@@ -270,6 +291,30 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
 
     def artifacts(request):
         return ArtifactStore(store(), artifact_root, request.state.actor)
+
+    @router.post("/projects", status_code=201)
+    def create_project(body: ProjectCreateRequest, request: Request):
+        actor = request.state.actor
+        actor.require(write=True)
+        project = store().create_project(
+            workspace_id=actor.workspace_id,
+            name=body.name,
+            entrypoint=tuple(body.entrypoint),
+        )
+        return {"state": "created", "project": asdict(project)}
+
+    @router.get("/projects")
+    def list_projects(request: Request):
+        actor = request.state.actor
+        return {"projects": [asdict(project) for project in store().list_projects(actor.workspace_id)]}
+
+    @router.get("/projects/{project_id}")
+    def get_project(project_id: str, request: Request):
+        actor = request.state.actor
+        project = store().get_project(project_id, actor.workspace_id)
+        if project is None:
+            raise NotFound()
+        return {"project": asdict(project)}
 
     @router.post("/uploads", status_code=201)
     async def upload_source(request: Request):
