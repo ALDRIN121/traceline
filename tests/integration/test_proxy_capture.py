@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import ThreadPoolExecutor
 import threading
 
 import httpx
@@ -115,3 +116,21 @@ def test_forward_proxy_streams_provider_sse_and_settles_usage():
         assert proxy.budget.spent == 7
     finally:
         proxy.stop()
+
+
+def test_budget_allows_only_two_concurrent_worst_case_reservations():
+    """The T14 acceptance: ten simultaneous 0.02 USD calls fit only twice."""
+    budget = Budget(50_000)
+
+    def reserve_once(_index):
+        try:
+            reservation = budget.reserve(20_000)
+        except Exception as exc:  # public behavior is the typed denial
+            return type(exc).__name__
+        return reservation
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(reserve_once, range(10)))
+
+    assert results.count(20_000) == 2
+    assert results.count("BudgetExceeded") == 8

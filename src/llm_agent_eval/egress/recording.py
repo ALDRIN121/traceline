@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
+import threading
 from typing import Any, Callable, Iterable, Mapping
 
 from ..redaction import redact
@@ -63,28 +64,32 @@ class Budget:
         self.total = budget_usd_micros
         self.spent = 0
         self._reserved = 0
+        self._lock = threading.Lock()
 
     def reserve(self, worst_case_usd_micros: int) -> int:
-        if self._reserved < 0:  # budget closed by an earlier unmeterable event
-            raise BudgetExceeded("budget unavailable: unmeterable traffic observed")
-        if worst_case_usd_micros > self.total - self.spent - self._reserved:
-            raise BudgetExceeded(
-                f"budget exceeded: {_micros(worst_case_usd_micros)} needed, "
-                f"{_micros(self.total - self.spent - self._reserved)} remain"
-            )
-        self._reserved += worst_case_usd_micros
-        return worst_case_usd_micros
+        with self._lock:
+            if self._reserved < 0:  # budget closed by an earlier unmeterable event
+                raise BudgetExceeded("budget unavailable: unmeterable traffic observed")
+            if worst_case_usd_micros > self.total - self.spent - self._reserved:
+                raise BudgetExceeded(
+                    f"budget exceeded: {_micros(worst_case_usd_micros)} needed, "
+                    f"{_micros(self.total - self.spent - self._reserved)} remain"
+                )
+            self._reserved += worst_case_usd_micros
+            return worst_case_usd_micros
 
     def commit(self, reservation: int, observed_usd_micros: int) -> None:
-        self._reserved = max(0, self._reserved - reservation)
-        self.spent += observed_usd_micros
+        with self._lock:
+            self._reserved = max(0, self._reserved - reservation)
+            self.spent += observed_usd_micros
 
     def uncertain(self, reservation: int | None = None) -> None:
         """Close the budget: observed usage was unknown, so the run is unmeterable."""
-        self._reserved = -1
-        if reservation is not None:
-            self.spent += reservation
-            self._reserved = 0 if self._reserved != -1 else -1
+        with self._lock:
+            self._reserved = -1
+            if reservation is not None:
+                self.spent += reservation
+                self._reserved = 0 if self._reserved != -1 else -1
 
 
 class ProviderRoute:

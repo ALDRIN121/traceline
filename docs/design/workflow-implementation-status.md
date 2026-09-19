@@ -442,7 +442,10 @@ It is not an R1 release declaration.
   execution remain deployment evidence.
   CONNECT authority parsing and CA leaf generation now also handle IPv4/IPv6
   literals, with an in-memory hostname-verifying TLS handshake regression
-  test.
+  test. Budget reservation, settlement, and fail-closed uncertainty transitions
+  are lock-protected; the T14 ten-call/0.02 USD worst-case reservation
+  acceptance observes exactly two dispatchable reservations against a 0.05 USD
+  budget.
 - **Production proxy admission:** the default workflow worker now constructs
   a trusted `ProxyRunSession` factory from an installation-owned
   `proxy-routes.json`; route files reject unsafe permissions, duplicates,
