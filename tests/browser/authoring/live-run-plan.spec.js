@@ -25,6 +25,17 @@ test("live authoring plans, authorizes, enqueues, and discovers a completed host
   const seededProjectId = await page.locator(".project-option", { hasText: "Seeded live run agent" }).getAttribute("data-project-id");
   expect(seededProjectId).toMatch(/^[0-9a-f]{32}$/);
 
+  const seededRunsResponse = await page.request.get("/runs?limit=500");
+  expect(seededRunsResponse.ok()).toBeTruthy();
+  const seededRuns = await seededRunsResponse.json();
+  const baselineRun = (seededRuns.runs || []).find(
+    (run) => run.spec?.name === "Live hosted acceptance",
+  );
+  expect(baselineRun).toBeTruthy();
+  expect(baselineRun.status).toBe("complete");
+  const baselineRunId = baselineRun.run_id;
+  expect(baselineRunId).toMatch(/^[0-9a-f]{32}$/);
+
   const evalId = "live-browser-eval";
   const evalResponse = await page.request.get(`/api/evals/${evalId}`);
   expect(evalResponse.ok()).toBeTruthy();
@@ -152,6 +163,29 @@ test("live authoring plans, authorizes, enqueues, and discovers a completed host
   await expect(liveCase).toContainText("PASS");
   await expect(page.locator("#inspector-content")).toContainText("live-case");
   await expect(page.locator("#inspector-content")).toContainText("PASS");
+
+  await page.locator("#refresh-btn").click();
+  await expect(page.locator(`#comparison-baseline option[value="${baselineRunId}"]`)).toBeAttached();
+  await expect(page.locator(`#comparison-candidate option[value="${runId}"]`)).toBeAttached();
+  await page.locator("#comparison-baseline").selectOption(baselineRunId);
+  await page.locator("#comparison-candidate").selectOption(runId);
+  await page.locator("#comparison-metric").selectOption("answer");
+  await expect(page.getByRole("button", { name: "Compare persisted runs" })).toBeEnabled();
+
+  const comparisonResponse = page.waitForResponse((response) => {
+    return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/comparisons";
+  });
+  await page.getByRole("button", { name: "Compare persisted runs" }).click();
+  const comparison = await (await comparisonResponse).json();
+  expect(comparison.state).toBe("comparable");
+  expect(comparison.baseline_run_id).toBe(baselineRunId);
+  expect(comparison.candidate_run_id).toBe(runId);
+  expect(comparison.metric_id).toBe("answer");
+  expect(comparison.cohort).toMatchObject({
+    common_cases: 1,
+    scored_common_cases: 1,
+  });
+  await expect(page.locator("#comparison-result")).toContainText("Comparison returned comparable");
 
   const browserExportResponse = page.waitForResponse((response) => {
     return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/exports";

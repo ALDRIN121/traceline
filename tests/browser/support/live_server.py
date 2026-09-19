@@ -20,6 +20,7 @@ from llm_agent_eval.auth import Actor
 from llm_agent_eval.engine import Engine
 from llm_agent_eval.gateway import MockGateway
 from llm_agent_eval.knowledge import KnowledgeStore
+from llm_agent_eval.run_plans import RunPlanService
 from llm_agent_eval.storage import Storage
 from llm_agent_eval.targets import ConnectionService
 from llm_agent_eval.versions import VersionStore
@@ -175,7 +176,43 @@ def _seed(storage: Storage, artifact_root: Path) -> dict[str, str]:
         "evaluation_version_id": evaluation.version_id,
         "dataset_version_id": dataset.version_id,
         "dashboard_version_id": dashboard_version.version_id,
+        "target_version_id": verified["target_version_id"],
     }
+
+
+def _seed_baseline_run(app, refs: dict[str, str]) -> str:
+    """Create one real completed run for the live comparison cohort."""
+    plans = RunPlanService(app.state.workflow_worker.storage)
+    plan = plans.plan_run(
+        ACTOR,
+        {
+            "project_id": refs["project_id"],
+            "evaluation_version_id": refs["evaluation_version_id"],
+            "dataset_version_id": refs["dataset_version_id"],
+            "target_version_id": refs["target_version_id"],
+            "dashboard_version_id": refs["dashboard_version_id"],
+        },
+        {"tier": "quick"},
+    )
+    if plan.state != "validated" or plan.blockers:
+        raise RuntimeError(f"baseline run plan was not validated: {plan.blockers}")
+    authorization = plans.authorize(ACTOR, plan.plan_id, plan.content_digest)
+    job = plans.enqueue_run(
+        app.state.workflow_worker,
+        ACTOR,
+        plan.plan_id,
+        authorization.authorization_id,
+        plan.content_digest,
+        "browser-baseline-run",
+    )
+    completed = app.state.workflow_worker.service(
+        ACTOR, worker_id="browser-baseline-worker"
+    ).run_once(job_id=job.job_id)
+    if completed is None or completed.status != "completed" or not completed.result:
+        raise RuntimeError(f"baseline run did not complete: {completed}")
+    if completed.result.get("state") != "complete":
+        raise RuntimeError(f"baseline run result was not complete: {completed.result}")
+    return completed.result["run_id"]
 
 
 def main() -> None:
@@ -194,7 +231,7 @@ def main() -> None:
         target_stub_thread = None
         try:
             target_stub, target_stub_thread = _start_target_stub()
-            _seed(storage, artifact_root)
+            refs = _seed(storage, artifact_root)
             app = create_app(
                 storage=storage,
                 engine=Engine(storage, work_root=root / "work"),
@@ -202,6 +239,7 @@ def main() -> None:
                 artifact_root=artifact_root,
                 gateway=MockGateway({}),
             )
+            _seed_baseline_run(app, refs)
             worker_stop = threading.Event()
             worker_thread = threading.Thread(
                 target=app.state.workflow_worker.run_forever,
