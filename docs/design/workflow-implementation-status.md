@@ -565,7 +565,7 @@ It is not an R1 release declaration.
 - **Release-platform CI:** the checked-in workflow now declares a fail-closed
   offline-suite matrix for `ubuntu-latest`, `macos-latest`, and
   `windows-latest`, while keeping PostgreSQL, integration, and provider-live
-  checks in their dedicated jobs. The equivalent local command passed **948
+  checks in their dedicated jobs. The equivalent local command passed **962
   tests** on the observed macOS host; GitHub-hosted execution is still
   deployment evidence to be observed rather than claimed from YAML inspection.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
