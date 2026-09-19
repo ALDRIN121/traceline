@@ -605,7 +605,10 @@ It is not an R1 release declaration.
   secret references, durable verification polling, failed-verification
   handling, verified target-version persistence, and persisted results
   compare/export actions with bundle links and partial/provisional/incomparable
-  states. R2 schedule creation/list/detail/pause/resume controls are covered
+  states. The live hosted acceptance now seeds a real completed baseline run,
+  creates a distinct candidate through the browser plan → authorization →
+  worker path, posts the actual `/api/comparisons` request, and verifies a
+  comparable result rendered by the Dashboard. R2 schedule creation/list/detail/pause/resume controls are covered
   through mocked service responses and preserve the exact authorized plan
   identity. The legacy dashboard also consumes the backend's dotted SSE event
   names and refreshes authoritative state on stream errors without replaying
@@ -624,8 +627,9 @@ It is not an R1 release declaration.
   on the observed macOS Podman 6.1.1 host; alternate platforms and provider
   credentials remain unverified.
 
-**Still release-blocking:** the specialist-owned UI slice is verified, but the
-full R1 authoring/results/compare flow is not complete; the trusted
+**Still release-blocking:** the specialist-owned UI slice and the live
+authoring/results/compare happy path are verified, but the complete R1
+release flow is not complete; the trusted
 proxy-route/session factory exists, but cross-platform
 configured-route setup and full containerized deployment topology are not yet
 release-proven;
