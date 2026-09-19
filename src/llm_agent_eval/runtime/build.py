@@ -13,7 +13,7 @@ import tempfile
 from typing import Callable, Mapping
 import uuid
 
-from .sandbox import SandboxDenied, snapshot_digest
+from .sandbox import PodmanSandbox, SandboxDenied, snapshot_digest
 
 
 class BuildDenied(ValueError):
@@ -63,23 +63,34 @@ class BuildService:
     def __init__(self, *, command_runner: Callable | None = None,
                  environment: Mapping[str, str] | None = None):
         source_env = dict(os.environ if environment is None else environment)
-        self.environment = {key: source_env[key] for key in ("PATH", "HOME", "TMPDIR") if key in source_env}
+        try:
+            podman = PodmanSandbox(environment=source_env)
+        except SandboxDenied as exc:
+            raise BuildDenied("the configured Podman connection is not safe") from exc
+        self.prefix = list(podman.prefix)
+        self.environment = podman.env
         self.command_runner = command_runner or _run_podman
 
     def prepare(self, source_dir: Path, profile: RuntimeProfile) -> BuildJob:
         source_dir = Path(source_dir)
         try:
-            digest = snapshot_digest(source_dir)
+            source_tree = snapshot_digest(source_dir)
         except (OSError, SandboxDenied) as exc:
             raise BuildDenied("source snapshot is not safe for building") from exc
         source_digest = hashlib.sha256(
-            json.dumps(digest, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(source_tree, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         tag = f"llm-agent-eval-build-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory(prefix="llm-agent-build-") as context_name:
             context = Path(context_name)
             staged = context / "source"
             shutil.copytree(source_dir, staged, symlinks=False)
+            try:
+                staged_tree = snapshot_digest(staged)
+            except (OSError, SandboxDenied) as exc:
+                raise BuildDenied("staged source snapshot is not safe") from exc
+            if staged_tree != source_tree:
+                raise BuildDenied("staged source snapshot does not match its digest")
             containerfile = context / "Containerfile"
             containerfile.write_text(
                 f"FROM {profile.base_image}\n"
@@ -88,7 +99,7 @@ class BuildService:
                 encoding="utf-8",
             )
             build = [
-                "podman", "build", "--pull=never", "--network=none",
+                *self.prefix, "build", "--pull=never", "--network=none",
                 "--cap-drop=ALL", "--security-opt=no-new-privileges",
                 "--label", f"llm-agent-eval.source-digest={source_digest}",
                 "--label", f"llm-agent-eval.build-policy={profile.policy_version}",
@@ -100,7 +111,7 @@ class BuildService:
                 raise BuildDenied("restricted image build could not start") from exc
             if result.returncode != 0:
                 raise BuildDenied("restricted image build failed")
-            inspect = ["podman", "image", "inspect", "--format", "{{.Id}}", tag]
+            inspect = [*self.prefix, "image", "inspect", "--format", "{{.Id}}", tag]
             try:
                 result = self.command_runner(inspect, timeout=30, env=self.environment)
             except (OSError, subprocess.SubprocessError) as exc:
