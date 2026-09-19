@@ -587,8 +587,8 @@ It is not an R1 release declaration.
   mode at a 390×844 viewport with keyboard activation, in addition to
   workspace project listing, project creation with the server-observed ID,
   project detail selection, automatic knowledge loading, stale selection
-  isolation, and secret-field redaction, in addition to
-  project/session context, source import job reconciliation, knowledge
+  isolation, and secret-field redaction, alongside project/session context,
+  source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
   case-row selection, a review confirmation before the legacy run request, the
@@ -608,7 +608,7 @@ It is not an R1 release declaration.
   backend authorization; the live flow does not claim release bearer-token
   authentication, source-import worker reconciliation, or the complete R1
   accessibility matrix.
-- **Observed suite:** the default suite is **948 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **949 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
