@@ -40,6 +40,15 @@ def test_release_ci_runs_tests_and_fail_closed_scans():
     workflow = yaml.safe_load((ROOT / ".github/workflows/release-checks.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
+    platform_smoke = jobs["platform-smoke"]
+    assert platform_smoke["strategy"]["matrix"]["os"] == [
+        "ubuntu-latest", "macos-latest", "windows-latest",
+    ]
+    platform_commands = "\n".join(
+        step.get("run", "") for step in platform_smoke["steps"]
+    )
+    assert "requirements-dev.lock" in platform_commands
+    assert "not live and not integration" in platform_commands
     tests = jobs["tests"]
     assert tests["services"]["postgres"]["image"] == "postgres:16-alpine"
     assert "TEST_DATABASE_URL" in tests["env"]
