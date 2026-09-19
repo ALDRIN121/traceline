@@ -18,9 +18,11 @@ what teams actually need to check can be stated exactly.
 This repository is actively implementing the v3 design. The installed package now contains
 verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
 and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
-production provider-route setup, the full UI, PostgreSQL operations rehearsal, repaired reference
-fixture, and the complete release acceptance matrix remain open. The implementation status is the
-source of truth for what has actually been verified.
+production provider-route rehearsal, the full UI, PostgreSQL operations rehearsal, repaired
+reference fixture, and the complete release acceptance matrix remain open. Coordinated backup /
+restore code, owner-managed encrypted secret references, retention cleanup, and operational CLI
+commands are available; the implementation status is the source of truth for what has actually
+been verified.
 
 See the [workflow implementation plan](docs/design/workflow-implementation-plan.md) and the
 [implementation status](docs/design/workflow-implementation-status.md) for the verified boundary

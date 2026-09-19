@@ -441,7 +441,15 @@ It is not an R1 release declaration.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
-  backup/restore, retention enforcement, and export/preview TTLs remain open.
+  backup/restore now uses `pg_dump`/`pg_restore` with a shared checksum
+  manifest; install encryption/identity keys are intentionally excluded and
+  reported as a separate restore prerequisite. Retention enforcement now has
+  dry-run/apply service and CLI paths for expired exports, preview TTL with
+  the latest-20 revision window, abandoned quarantine uploads, and stale
+  staging files while preserving job/version references. Focused operations
+  and CLI checks pass. A live disposable-PostgreSQL backup/restore rehearsal
+  and link verification remain deployment evidence requirements; the code path
+  is no longer an intentional `external_backup_required` gap.
   The Compose PostgreSQL deployment now
   has observed RLS, non-bypass startup, job reclaim, worker fencing, and
   shutdown-abandonment evidence: the disposable `TEST_DATABASE_URL` suite
@@ -496,19 +504,24 @@ It is not an R1 release declaration.
   tests. The remaining evidence item is a live Podman execution using a
   reviewed evaluator image; the current worker-path acceptance uses a sandbox
   test double so the suite remains portable.
-- **Observed suite:** the default suite is **909 passed, 11 skipped, 7
+- **Owner-managed credentials:** authenticated `POST /api/secrets` and
+  `/api/secrets/{secret_id}/rotate` routes create and rotate encrypted secret
+  references without returning values. They are owner-only and accept only
+  the currently supported trusted `proxy` service identity. API and
+  encryption tests pass.
+- **Observed suite:** the default suite is **915 passed, 11 skipped, 7
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
 
 **Still release-blocking:** the specialist-owned authoring/results UI is not
-complete; the trusted proxy-route/session factory exists, but its configured
-route file, credential setup, and full containerized deployment topology are
-not yet release-proven;
+complete; the trusted proxy-route/session factory exists, but cross-platform
+configured-route setup and full containerized deployment topology are not yet
+release-proven;
 provider-client HTTPS interception from inside the case and
 direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
-Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention,
-TTL, and fairness are not rehearsed; LiteLLM
+Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention/TTL
+link verification, and fairness are not rehearsed; LiteLLM
 outbound/cassette fidelity, repaired CrewAI execution, live custom evaluator
 sandbox proof, full export-bundle/CI acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.
