@@ -523,8 +523,13 @@ It is not an R1 release declaration.
   evidence. Frozen `bundle` downloads now package the manifest, CSV, HTML
   report, per-event retained evidence, missing-retention refs, provenance, and
   a SHA-256 file manifest in a deterministic ZIP; API coverage proves later
-  score changes do not alter bundle bytes. Full deployment rehearsal remains
-  open.
+  score changes do not alter bundle bytes. The guarded executable Compose
+  rehearsal (`LLM_AGENT_EVAL_RUN_COMPOSE=1 ...
+  tests/integration/test_compose_rehearsal.py`) now passes **1 test** on the
+  observed host, covering generated credentials, authenticated API access,
+  project creation, ZIP upload, idempotent import dispatch, and completion by
+  the separate worker service. Full deployment recovery and CI-hosted
+  execution remain open.
   Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
@@ -649,7 +654,7 @@ It is not an R1 release declaration.
   anonymous API rejection, public static-shell loading, fragment token
   consumption/removal, authenticated authoring/dashboard API calls, and no
   token retention in localStorage.
-- **Observed suite:** the default suite is **959 passed, 15 skipped, 10
+- **Observed suite:** the default suite is **959 passed, 16 skipped, 10
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The combined opt-in live
   proxy/sandbox, HTTPS-client, embedded-LiteLLM, custom-evaluator, and local-runtime selection passes **8 tests**
