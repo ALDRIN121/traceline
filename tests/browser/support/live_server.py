@@ -30,6 +30,7 @@ WORKSPACE = "browser-workspace"
 ACTOR = Actor("browser-owner", WORKSPACE, "owner")
 TARGET_STUB_PORT = 8766
 LIVE_EVAL_ID = "live-browser-eval"
+LIVE_SCHEDULE_EVAL_ID = "live-browser-schedule-eval"
 
 
 class _TargetStubHandler(BaseHTTPRequestHandler):
@@ -165,11 +166,32 @@ def _seed(storage: Storage, artifact_root: Path) -> dict[str, str]:
         entrypoint=("python", "agent.py"),
         eval_id=LIVE_EVAL_ID,
     )
+    schedule_spec = {**spec, "name": "Live schedule acceptance"}
+    schedule_dashboard = {**dashboard, "name": "Live schedule dashboard"}
+    storage.create_custom_eval(
+        workspace_id=WORKSPACE,
+        name="Live schedule acceptance",
+        spec=schedule_spec,
+        dashboard={
+            "definition": schedule_dashboard,
+            "target_version_id": verified["target_version_id"],
+        },
+        dataset=cases,
+        project_id=plan_project.project_id,
+        entrypoint=("python", "agent.py"),
+        eval_id=LIVE_SCHEDULE_EVAL_ID,
+    )
     evaluation = versions.create(
         "evaluation", LIVE_EVAL_ID, {"spec": spec}, 0, ACTOR,
     )
     dashboard_version = versions.create(
         "dashboard", LIVE_EVAL_ID, {"definition": dashboard}, 0, ACTOR,
+    )
+    versions.create(
+        "evaluation", LIVE_SCHEDULE_EVAL_ID, {"spec": schedule_spec}, 0, ACTOR,
+    )
+    versions.create(
+        "dashboard", LIVE_SCHEDULE_EVAL_ID, {"definition": schedule_dashboard}, 0, ACTOR,
     )
     return {
         "project_id": plan_project.project_id,

@@ -593,7 +593,7 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **45 tests**, plus a separate release-auth
+  dashboard browser suites pass **46 tests**, plus a separate release-auth
   browser acceptance (**1 test**). The evidence covers
   live FastAPI-backed project create/list/detail/knowledge, ZIP upload →
   durable import worker → knowledge revision refresh, and hosted target
@@ -618,14 +618,16 @@ It is not an R1 release declaration.
   states. The live hosted acceptance now seeds a real completed baseline run,
   creates a distinct candidate through the browser plan → authorization →
   worker path, posts the actual `/api/comparisons` request, and verifies a
-  comparable result rendered by the Dashboard. R2 schedule creation/list/detail/pause/resume controls are covered
-  through mocked service responses and preserve the exact authorized plan
-  identity. The legacy dashboard also consumes the backend's dotted SSE event
+  comparable result rendered by the Dashboard. R2 schedule creation/list/detail/pause/resume controls are covered by the
+  authoring tests, including a separate live FastAPI-backed acceptance that
+  preserves and reads back the exact authorized plan identity. Mocked service
+  responses remain for the blocked and error-state controls. The legacy dashboard also consumes the backend's dotted SSE event
   names and refreshes authoritative state on stream errors without replaying
   a run submission. Reviewer dispute/review now covers case selection, additive
   override submission with dispute lineage, and refreshed overridden state.
-  The target-connection, schedule, dispute, and SSE coverage use mocked API
-  responses; the legacy run modal explicitly states that its request is not
+  The target-connection, schedule edge-case, dispute, and SSE coverage use
+  mocked API responses; the live schedule acceptance uses the real service.
+  The legacy run modal explicitly states that its request is not
   backend authorization; the live flow uses temporary SQLite, an in-process
   worker, and a local allowlisted stub target rather than a separate release
   worker process or external provider, and does not claim the complete R1
