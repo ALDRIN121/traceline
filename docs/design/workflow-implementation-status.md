@@ -573,7 +573,7 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **33 tests**. The evidence covers
+  dashboard browser suites pass **34 tests**. The evidence covers
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
@@ -587,7 +587,9 @@ It is not an R1 release declaration.
   through mocked service responses and preserve the exact authorized plan
   identity. The legacy dashboard also consumes the backend's dotted SSE event
   names and refreshes authoritative state on stream errors without replaying
-  a run submission. The target-connection and SSE coverage use mocked API
+  a run submission. Reviewer dispute/review now covers case selection, additive
+  override submission with dispute lineage, and refreshed overridden state.
+  The target-connection, schedule, dispute, and SSE coverage use mocked API
   responses; the legacy run modal explicitly states that its request is not
   backend authorization; no visual API-backed full-flow screenshot or complete
   R1 accessibility matrix is claimed.
