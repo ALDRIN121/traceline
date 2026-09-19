@@ -8,7 +8,7 @@
 <title>Traceline — LLM Agent Evaluation Engine</title>
 <link rel="stylesheet" href="styles.css?v=8">
 <script src="app.js?v=7" defer></script>
-<script src="authoring.js?v=3" defer></script>
+<script src="authoring.js?v=4" defer></script>
 </head>
 <body data-view="builder">
 <a class="skip-link" href="#main">Skip to content</a>
@@ -119,9 +119,26 @@
           <div id="authoring-reference" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-reference-tab">
             <div class="authoring-pane-head"><div><h2>Source and knowledge</h2><p>Import an immutable source snapshot, then review only the report the server returns.</p></div><span id="knowledge-state" class="authoring-revision">Project context required</span></div>
             <section class="project-context" aria-labelledby="project-context-heading">
-              <div><h3 id="project-context-heading">Connect a project</h3><p>Attach an existing project from the platform API, or open this page with <code>?project_id=…</code>. The current API does not expose browser-side project creation.</p></div>
-              <label for="authoring-project-id">Existing project ID<input id="authoring-project-id" type="text" autocomplete="off" spellcheck="false" placeholder="Project ID from the API"></label>
-              <div class="authoring-actions"><button id="connect-project" class="btn btn-primary" type="button">Connect project</button><button id="load-project-report" class="btn btn-secondary" type="button" disabled>Load project report</button></div>
+              <div><h3 id="project-context-heading">Choose a project</h3><p>Select a workspace project to load its knowledge report. New projects are created with a name and optional entrypoint.</p></div>
+              <div class="project-bootstrap-grid">
+                <section class="project-list-panel" aria-labelledby="project-list-heading">
+                  <div class="project-list-head"><h4 id="project-list-heading">Workspace projects</h4><button id="refresh-projects" class="text-action" type="button">Refresh list</button></div>
+                  <p id="project-list-status" class="project-bootstrap-status" role="status" aria-live="polite">Loading projects…</p>
+                  <div id="project-list" class="project-list" aria-label="Available projects"></div>
+                  <p id="project-list-empty" class="project-list-empty" hidden>No projects yet. Create the first one for this workspace.</p>
+                </section>
+                <form id="project-create-form" class="project-create-form">
+                  <h4>Create a project</h4>
+                  <p>Start with a reviewable workspace record. Source import happens after selection.</p>
+                  <label for="authoring-project-name">Project name<input id="authoring-project-name" name="name" type="text" autocomplete="off" required maxlength="255"></label>
+                  <label for="authoring-project-entrypoint">Entrypoint (optional)<input id="authoring-project-entrypoint" name="entrypoint" type="text" autocomplete="off" spellcheck="false" placeholder="python agent.py"></label>
+                  <button id="create-project" class="btn btn-primary" type="submit">Create project</button>
+                  <p id="project-create-status" class="project-bootstrap-status" role="status" aria-live="polite"></p>
+                </form>
+              </div>
+              <section id="selected-project" class="selected-project" aria-labelledby="selected-project-heading" hidden>
+                <div><h4 id="selected-project-heading">Selected project</h4><p id="selected-project-meta"></p></div>
+              </section>
               <p id="project-bootstrap-status" class="project-bootstrap-status" role="status" aria-live="polite">No project attached.</p>
             </section>
             <section class="target-connection" aria-labelledby="target-connection-heading">

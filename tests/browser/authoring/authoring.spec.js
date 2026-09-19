@@ -5,6 +5,17 @@ const { pathToFileURL } = require("url");
 const authoringPage = pathToFileURL(path.resolve(__dirname, "../../../web/index.html")).href;
 const legacyFileOriginApiFailure = /^Fetch API cannot load file:\/\/(?:\/health|\/api\/evals|\/runs\?limit=500|\/api\/projects\/project-a\/knowledge)\. URL scheme "file" is not supported\.$/;
 
+function installEmptyProjectListMock(page) {
+  return page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => String(input) === "/api/projects"
+      ? Promise.resolve(new Response(JSON.stringify({ projects: [] }), {
+        headers: { "content-type": "application/json" },
+      }))
+      : nativeFetch(input, init);
+  });
+}
+
 function expectOnlyKnownFileOriginErrors(errors) {
   expect(errors.every((message) => legacyFileOriginApiFailure.test(message))).toBe(true);
 }
@@ -14,6 +25,7 @@ test("authoring workspace exposes a review-first metric flow", async ({ page }) 
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
+  await installEmptyProjectListMock(page);
   await page.goto(authoringPage);
 
   await expect(page.getByRole("heading", { name: "Evaluation workspace" })).toBeVisible();
@@ -35,6 +47,7 @@ test("authoring workspace retains a draft locally when the page reloads", async 
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
+  await installEmptyProjectListMock(page);
   await page.goto(`${authoringPage}?project_id=project-a`);
   await page.getByRole("tab", { name: "Metrics" }).click();
   await page.getByRole("checkbox", { name: /Response is valid/i }).check();
@@ -70,7 +83,7 @@ test("authoring workspace names the missing project context before source import
 
   await expect(page.getByRole("heading", { name: "Source and knowledge" })).toBeVisible();
   await expect(page.getByText("Project context required")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Load project report" })).toBeDisabled();
+  await expect(page.getByText("No project selected yet.")).toBeVisible();
   await expect(page.getByText("This page never starts an evaluation.")).toBeVisible();
 });
 
@@ -243,6 +256,10 @@ for (const scenario of [
       const json = (body, status = 200) => new Response(JSON.stringify(body), {
         status, headers: { "content-type": "application/json" },
       });
+      const projects = [
+        { project_id: "project-a", name: "Project A", smoke_state: "INGESTED" },
+        { project_id: "project-b", name: "Project B", smoke_state: "INGESTED" },
+      ];
       const delayed = (body) => new Promise((resolve) => {
         window.__finishSourceRequest = () => resolve(outcome === "success"
           ? json(body)
@@ -250,6 +267,9 @@ for (const scenario of [
       });
       window.fetch = async (input, init = {}) => {
         const path = String(input);
+        if (path === "/api/projects") return json({ projects });
+        if (path === "/api/projects/project-a") return json({ project: projects[0] });
+        if (path === "/api/projects/project-b") return json({ project: projects[1] });
         if (path === "/api/uploads") {
           const upload = { state: "uploaded", upload_id: "archive-for-project-a" };
           return phase === "upload" ? delayed(upload) : json(upload);
@@ -274,14 +294,14 @@ for (const scenario of [
     await page.getByRole("button", { name: "Queue source import" }).click();
     await expect.poll(() => page.evaluate(() => typeof window.__finishSourceRequest)).toBe("function");
 
-    await page.getByLabel("Existing project ID").fill("project-b");
-    if (scenario.currentProject === "project-a") await page.getByLabel("Existing project ID").fill("project-a");
+    await page.getByRole("button", { name: "Select Project B" }).click();
+    if (scenario.currentProject === "project-a") await page.getByRole("button", { name: "Select Project A" }).click();
     await page.getByRole("radio", { name: "Git repository" }).check();
     await page.getByLabel("HTTPS Git URL").fill("https://example.com/current-project.git");
     await page.getByLabel("Git ref").fill("main");
     await page.getByRole("button", { name: "Queue source import" }).click();
     await expect(page.locator("#source-import-status")).toContainText("current-project-job");
-    await page.getByRole("button", { name: "Load project report" }).click();
+    await page.getByRole("button", { name: "Refresh report" }).click();
     await expect(page.locator("#knowledge-state")).toHaveText("Report revision 1");
     const currentStatus = await page.locator("#source-import-status").textContent();
     const currentActivity = await page.locator("#authoring-activity-status").textContent();
@@ -297,7 +317,7 @@ for (const scenario of [
     await expect(page.locator("#source-import-status")).toHaveText(currentStatus);
     await expect(page.locator("#authoring-activity-status")).toHaveText(currentActivity);
     await expect(page.locator("#knowledge-state")).toHaveText("Report revision 1");
-    await expect(page.getByLabel("Existing project ID")).toHaveValue(scenario.currentProject);
+    await expect(page.locator("#selected-project-meta")).toContainText(scenario.currentProject);
     if (scenario.phase === "upload" && scenario.outcome === "success" && scenario.currentProject === "project-b") {
       await page.screenshot({ path: testInfo.outputPath("project-b-after-delayed-upload.png"), fullPage: true });
     }
@@ -310,6 +330,12 @@ test("authoring workspace detaches session mutations after switching projects", 
     window.fetch = async (input, init = {}) => {
       const path = String(input);
       const json = (body) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+      if (path === "/api/projects") return json({ projects: [
+        { project_id: "project-a", name: "Project A", smoke_state: "INGESTED" },
+        { project_id: "project-b", name: "Project B", smoke_state: "INGESTED" },
+      ] });
+      if (path === "/api/projects/project-a") return json({ project: { project_id: "project-a", name: "Project A", smoke_state: "INGESTED" } });
+      if (path === "/api/projects/project-b") return json({ project: { project_id: "project-b", name: "Project B", smoke_state: "INGESTED" } });
       if (path === "/api/sessions/session-a") return json({ session_id: "session-a", project_id: "project-a", revision: 1 });
       if (path === "/api/projects/project-a/knowledge") return json({ report_id: "knowledge-a", revision: 1, source_version_id: "source-a", facts: [], pending_questions: [] });
       if (path.includes("/turns")) { window.__turns.push(path); return json({ state: "queued", job_id: "turn-1" }); }
@@ -317,7 +343,7 @@ test("authoring workspace detaches session mutations after switching projects", 
     };
   });
   await page.goto(`${authoringPage}?session_id=session-a`);
-  await page.getByLabel("Existing project ID").fill("project-b");
+  await page.getByRole("button", { name: "Select Project B" }).click();
   await expect(page.getByText("Session detached — project changed to project-b")).toBeVisible();
 
   await page.getByLabel("Authoring note").fill("Update the current project metric");
@@ -337,6 +363,12 @@ test("authoring workspace clears old report facts after a newer project report f
     window.fetch = async (input) => {
       const path = String(input);
       const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      if (path === "/api/projects") return json({ projects: [
+        { project_id: "project-a", name: "Project A", smoke_state: "INGESTED" },
+        { project_id: "project-b", name: "Project B", smoke_state: "INGESTED" },
+      ] });
+      if (path === "/api/projects/project-a") return json({ project: { project_id: "project-a", name: "Project A", smoke_state: "INGESTED" } });
+      if (path === "/api/projects/project-b") return json({ project: { project_id: "project-b", name: "Project B", smoke_state: "INGESTED" } });
       if (path === "/api/projects/project-a/knowledge") return json({
         report_id: "knowledge-a", revision: 1, source_version_id: "source-a",
         facts: [{ fact_id: "a-tool", name: "Agent A tool", kind: "tool", status: "inferred", evidence: [] }], pending_questions: [],
@@ -347,8 +379,7 @@ test("authoring workspace clears old report facts after a newer project report f
   });
   await page.goto(`${authoringPage}?project_id=project-a`);
   await expect(page.getByText("Agent A tool")).toBeVisible();
-  await page.getByLabel("Existing project ID").fill("project-b");
-  await page.getByRole("button", { name: "Load project report" }).click();
+  await page.getByRole("button", { name: "Select Project B" }).click();
 
   await expect(page.getByText("Knowledge report unavailable — import source and wait for the worker")).toBeVisible();
   await expect(page.getByText("Agent A tool")).toHaveCount(0);

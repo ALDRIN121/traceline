@@ -20,6 +20,11 @@
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
+  let projectRecord = null;
+  let projectList = [];
+  let projectListRequestToken = 0;
+  let projectSelectionToken = 0;
+  let projectCreatePending = false;
   if (!targetVersionId) {
     try { targetVersionId = sessionStorage.getItem(`traceline.target-version:${sessionId || projectId || "none"}`) || ""; } catch (_) { /* storage unavailable */ }
   }
@@ -870,44 +875,189 @@
       });
   }
 
-  function setProjectContext(value) {
-    projectId = value.trim();
+  function projectErrorCopy(kind) {
+    return kind === "list"
+      ? "Projects could not be loaded. Try refreshing the list."
+      : "The project could not be selected. Refresh the list and try again.";
+  }
+
+  function renderSelectedProject() {
+    const card = $("#selected-project");
+    const meta = $("#selected-project-meta");
+    if (!card || !meta) return;
+    if (!projectRecord || projectRecord.project_id !== projectId) {
+      card.hidden = false;
+      meta.textContent = "No project selected yet.";
+      return;
+    }
+    card.hidden = false;
+    meta.textContent = `${projectRecord.name || "Unnamed project"} · ${projectRecord.project_id} · ${projectRecord.smoke_state || "state unavailable"}`;
+  }
+
+  function renderProjectList() {
+    const list = $("#project-list");
+    const empty = $("#project-list-empty");
+    if (!list) return;
+    list.replaceChildren();
+    if (empty) empty.hidden = projectList.length > 0;
+    for (const project of projectList) {
+      if (!project?.project_id) continue;
+      const item = document.createElement("article");
+      item.className = "project-option";
+      item.dataset.projectId = project.project_id;
+      const copy = document.createElement("div");
+      copy.className = "project-option-copy";
+      appendText(copy, "strong", project.name || "Unnamed project");
+      appendText(copy, "span", `${project.project_id} · ${project.smoke_state || "state unavailable"}`, "project-option-meta");
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "text-action project-select-action";
+      select.textContent = `Select ${project.name || "project"}`;
+      select.setAttribute("aria-pressed", String(project.project_id === projectId));
+      select.addEventListener("click", () => selectProject(project.project_id));
+      item.append(copy, select);
+      list.append(item);
+    }
+  }
+
+  async function loadProjectList() {
+    const status = $("#project-list-status");
+    const token = ++projectListRequestToken;
+    if (status) status.textContent = "Loading projects…";
+    try {
+      const payload = await request("/api/projects");
+      if (token !== projectListRequestToken) return;
+      projectList = Array.isArray(payload.projects) ? payload.projects.filter((item) => item?.project_id) : [];
+      if (!projectRecord && projectId) {
+        projectRecord = projectList.find((item) => item.project_id === projectId) || null;
+      }
+      renderProjectList();
+      renderSelectedProject();
+      if (status) status.textContent = projectList.length ? `${projectList.length} project${projectList.length === 1 ? "" : "s"} available.` : "No projects yet.";
+    } catch (_) {
+      if (token !== projectListRequestToken) return;
+      projectList = [];
+      renderProjectList();
+      renderSelectedProject();
+      if (status) status.textContent = projectErrorCopy("list");
+    }
+  }
+
+  function setProjectContext(value, record = null) {
+    const nextProjectId = String(value || "").trim();
+    if (nextProjectId !== projectId) {
+      projectSelectionToken += 1;
+      clearKnowledgeReport();
+      projectRecord = null;
+    }
+    projectId = nextProjectId;
+    if (record?.project_id === projectId) projectRecord = record;
     activateDraftScope();
-    const input = $("#authoring-project-id");
-    const load = $("#load-project-report");
     const importButton = $("#queue-source-import");
     const state = $("#knowledge-state");
     const bootstrap = $("#project-bootstrap-status");
-    if (input && input.value !== projectId) input.value = projectId;
-    if (load) load.disabled = !projectId;
     if (importButton) importButton.disabled = !projectId;
     if (!knowledgeReport && state) state.textContent = projectId ? "Source report not loaded" : "Project context required";
     const sourceStatus = $("#source-import-status");
     if (!projectId && sourceStatus) sourceStatus.textContent = "Choose a project before importing a source.";
     if (bootstrap) bootstrap.textContent = projectId
-      ? `Project ${projectId} attached in this browser. Source and dataset objects remain server-owned.`
+      ? `Project ${projectId} is selected. Review it before using its report.`
       : "No project attached.";
     const datasetButton = $("#validate-dataset");
     if (datasetButton) datasetButton.disabled = !projectId;
+    renderProjectList();
+    renderSelectedProject();
   }
 
-  function connectProject() {
-    const input = $("#authoring-project-id");
-    const nextProjectId = input?.value.trim() || "";
-    if (!nextProjectId) {
-      $("#project-bootstrap-status").textContent = "Enter a project ID before connecting.";
-      input?.focus();
+  function setProjectUrl(nextProjectId) {
+    const next = new URL(location.href);
+    if (nextProjectId) next.searchParams.set("project_id", nextProjectId);
+    else next.searchParams.delete("project_id");
+    history.replaceState({}, "", next);
+  }
+
+  async function selectProject(nextProjectId, options = {}) {
+    const requestedProjectId = String(nextProjectId || "").trim();
+    if (!requestedProjectId) return;
+    const session = window.__tracelineAuthoringSession;
+    if (session?.project_id && session.project_id !== requestedProjectId) {
+      window.__tracelineAuthoringSession = null;
+      const binding = $("#authoring-binding-status");
+      if (binding) binding.textContent = `Session detached — project changed to ${requestedProjectId}`;
+      setActivity("Session actions detached. Attach a session for this project before sending authoring changes.");
+    }
+    setProjectContext(requestedProjectId);
+    const selectionToken = ++projectSelectionToken;
+    const contextVersion = options.contextVersion ?? knowledgeContextVersion;
+    if (options.updateUrl !== false) setProjectUrl(requestedProjectId);
+    const bootstrap = $("#project-bootstrap-status");
+    const listStatus = $("#project-list-status");
+    if (bootstrap) bootstrap.textContent = `Loading project ${requestedProjectId}…`;
+    if (listStatus) listStatus.textContent = "Loading selected project…";
+    try {
+      const payload = await request(`/api/projects/${encodeURIComponent(requestedProjectId)}`);
+      if (selectionToken !== projectSelectionToken || requestedProjectId !== projectId || contextVersion !== knowledgeContextVersion) return;
+      const observed = payload?.project;
+      if (!observed?.project_id || observed.project_id !== requestedProjectId) throw new Error("invalid_project_response");
+      projectRecord = observed;
+      projectListRequestToken += 1;
+      projectList = [observed, ...projectList.filter((item) => item.project_id !== requestedProjectId)];
+      renderProjectList();
+      renderSelectedProject();
+      if (bootstrap) bootstrap.textContent = `Project ${requestedProjectId} selected. Loading its knowledge report…`;
+      setActivity("Project selected. Loading the server-owned report…");
+      await loadKnowledgeReport({ selectionToken, contextVersion });
+      if (selectionToken !== projectSelectionToken || requestedProjectId !== projectId) return;
+      if (bootstrap) bootstrap.textContent = `Project ${requestedProjectId} selected.`;
+      refreshDatasetVersion();
+      refreshDashboardVersions();
+    } catch (_) {
+      if (selectionToken !== projectSelectionToken || requestedProjectId !== projectId) return;
+      projectRecord = null;
+      renderSelectedProject();
+      if (bootstrap) bootstrap.textContent = projectErrorCopy("detail");
+      if (listStatus) listStatus.textContent = "Choose another project or refresh the list.";
+      setActivity(projectErrorCopy("detail"));
+    }
+  }
+
+  async function createProject(event) {
+    event.preventDefault();
+    if (projectCreatePending) return;
+    const nameInput = $("#authoring-project-name");
+    const entrypointInput = $("#authoring-project-entrypoint");
+    const status = $("#project-create-status");
+    const name = nameInput?.value.trim() || "";
+    const entrypoint = (entrypointInput?.value.trim() || "").split(/\s+/).filter(Boolean);
+    if (!name) {
+      if (status) status.textContent = "Enter a project name before creating it.";
+      nameInput?.focus();
       return;
     }
-    if (nextProjectId !== projectId) clearKnowledgeReport();
-    setProjectContext(nextProjectId);
-    const next = new URL(location.href);
-    next.searchParams.set("project_id", nextProjectId);
-    history.replaceState({}, "", next);
-    setActivity("Project context attached. Loading the server-owned report…");
-    loadKnowledgeReport();
-    refreshDatasetVersion();
-    refreshDashboardVersions();
+    projectCreatePending = true;
+    const button = $("#create-project");
+    if (button) button.disabled = true;
+    if (status) status.textContent = "Creating project…";
+    try {
+      const payload = await request("/api/projects", {
+        method: "POST",
+        body: { name, entrypoint },
+      });
+      const created = payload?.project;
+      if (!created?.project_id) throw new Error("invalid_project_response");
+      projectListRequestToken += 1;
+      projectList = [created, ...projectList.filter((item) => item.project_id !== created.project_id)];
+      renderProjectList();
+      if (status) status.textContent = `Project created (${payload.state || "created"}). Selecting ${created.project_id}…`;
+      nameInput.value = "";
+      if (entrypointInput) entrypointInput.value = "";
+      await selectProject(created.project_id);
+    } catch (_) {
+      if (status) status.textContent = "Project could not be created. Check the fields and try again.";
+    } finally {
+      projectCreatePending = false;
+      if (button) button.disabled = false;
+    }
   }
 
   function clearRenderedKnowledgeReport() {
@@ -1039,18 +1189,20 @@
     }
   }
 
-  async function loadKnowledgeReport() {
+  async function loadKnowledgeReport(options = {}) {
     const state = $("#knowledge-state");
     if (!projectId) {
       if (state) state.textContent = "Project context required";
       return;
     }
     const requestedProjectId = projectId;
-    const contextVersion = knowledgeContextVersion;
+    const contextVersion = options.contextVersion ?? knowledgeContextVersion;
     const requestToken = ++knowledgeRequestToken;
+    const selectionToken = options.selectionToken ?? projectSelectionToken;
     const isCurrentRequest = () => requestedProjectId === projectId
       && contextVersion === knowledgeContextVersion
-      && requestToken === knowledgeRequestToken;
+      && requestToken === knowledgeRequestToken
+      && selectionToken === projectSelectionToken;
     if (state) state.textContent = "Loading project report…";
     try {
       const report = await request(`/api/projects/${encodeURIComponent(requestedProjectId)}/knowledge`);
@@ -1147,7 +1299,7 @@
   async function queueSourceImport() {
     const status = $("#source-import-status");
     if (!projectId) {
-      if (status) status.textContent = "Project context required — use an existing project ID before importing.";
+      if (status) status.textContent = "Project context required — choose a project before importing.";
       return;
     }
     const requestedProjectId = projectId;
@@ -1814,28 +1966,8 @@
   }
 
   function wireSourceAndActivity() {
-    const projectInput = $("#authoring-project-id");
-    if (projectInput) {
-      projectInput.value = projectId;
-      const handleProjectContextInput = () => {
-        const nextProjectId = projectInput.value.trim();
-        const session = window.__tracelineAuthoringSession;
-        if (session?.project_id && session.project_id !== nextProjectId) {
-          window.__tracelineAuthoringSession = null;
-          const binding = $("#authoring-binding-status");
-          if (binding) binding.textContent = nextProjectId
-            ? `Session detached — project changed to ${nextProjectId}`
-            : "Session detached — project context cleared";
-          setActivity("Session actions detached. Attach a session for this project before sending authoring changes.");
-        }
-        if (nextProjectId !== projectId) clearKnowledgeReport();
-        setProjectContext(nextProjectId);
-      };
-      projectInput.addEventListener("input", handleProjectContextInput);
-      projectInput.addEventListener("change", handleProjectContextInput);
-    }
-    $("#connect-project")?.addEventListener("click", connectProject);
-    $("#load-project-report")?.addEventListener("click", loadKnowledgeReport);
+    $("#project-create-form")?.addEventListener("submit", createProject);
+    $("#refresh-projects")?.addEventListener("click", loadProjectList);
     $("#refresh-knowledge-report")?.addEventListener("click", loadKnowledgeReport);
     all("input[name=source-kind]").forEach((input) => input.addEventListener("change", updateSourceFields));
     $("#queue-source-import")?.addEventListener("click", queueSourceImport);
@@ -1846,6 +1978,7 @@
     $("#keep-conflict-draft")?.addEventListener("click", keepConflictDraft);
     updateSourceFields();
     setProjectContext(projectId);
+    loadProjectList();
   }
 
   document.addEventListener("DOMContentLoaded", () => {

@@ -2524,6 +2524,23 @@ body[data-view="builder"] .builder-workspace { display: block; height: auto; min
    the accent is reserved for the next safe action. */
 .project-bootstrap-status, .dataset-csv-hint, .preview-editor-empty { color: var(--ink-2); font-size: .8rem; line-height: 1.45; margin: 11px 0 0; }
 .project-bootstrap-status { min-height: 1.2em; }
+.project-bootstrap-grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr); margin-top: 18px; }
+.project-list-panel, .project-create-form { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 12px; padding: 14px; }
+.project-list-head { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.project-list-head h4, .project-create-form h4, .selected-project h4 { color: var(--ink); font-size: .85rem; margin: 0; }
+.project-list { display: grid; gap: 8px; margin-top: 12px; }
+.project-option { align-items: center; background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 10px; display: flex; gap: 12px; justify-content: space-between; padding: 11px 12px; }
+.project-option:has(.project-select-action[aria-pressed="true"]) { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.project-option-copy { display: grid; gap: 4px; min-width: 0; }
+.project-option-copy strong { color: var(--ink); font-size: .84rem; overflow-wrap: anywhere; }
+.project-option-meta { color: var(--ink-3); font-family: var(--font-mono); font-size: .7rem; overflow-wrap: anywhere; }
+.project-list-empty { background: var(--surface-1); border: 1px dashed var(--hairline-strong); border-radius: 10px; color: var(--ink-2); font-size: .8rem; line-height: 1.4; margin: 12px 0 0; padding: 12px; }
+.project-create-form { align-content: start; display: grid; gap: 8px; }
+.project-create-form > p { color: var(--ink-2); font-size: .78rem; line-height: 1.4; margin: 0 0 2px; }
+.project-create-form label { color: var(--ink-2); display: grid; font-size: .78rem; gap: 6px; margin-top: 4px; }
+.project-create-form input { background: var(--surface-1); border: 1px solid var(--hairline-strong); border-radius: 9px; color: var(--ink); font: inherit; min-height: 38px; padding: 8px 10px; }
+.selected-project { align-items: center; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--hairline)); border-radius: 10px; display: flex; gap: 14px; justify-content: space-between; margin-top: 14px; padding: 12px 14px; }
+.selected-project p { color: var(--ink-2); font-family: var(--font-mono); font-size: .74rem; margin: 5px 0 0; overflow-wrap: anywhere; }
 .dataset-import-form, .dataset-report, .preview-editor, .preview-result { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 20px; }
 .dataset-import-form h3, .preview-editor h3, .dataset-report h3, .preview-result h3 { color: var(--ink); font-size: .94rem; margin: 0; }
 .dataset-import-form > div > p, .preview-editor > div > p, .dataset-report-head p, .preview-result p { color: var(--ink-2); font-size: .83rem; line-height: 1.45; margin: 5px 0 0; }
@@ -2558,7 +2575,9 @@ body[data-view="builder"] .builder-workspace { display: block; height: auto; min
 
 @media (max-width: 760px) {
   .dataset-mapping-grid, .preview-result-blocks { grid-template-columns: 1fr; }
+  .project-bootstrap-grid { grid-template-columns: 1fr; }
   .dataset-report-head, .authoring-conflict { align-items: stretch; flex-direction: column; }
+  .selected-project { align-items: stretch; flex-direction: column; }
   .authoring-conflict .authoring-actions { margin-top: 5px; }
   .preview-block-row { align-items: flex-start; flex-direction: column; }
 }
