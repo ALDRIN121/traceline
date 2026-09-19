@@ -426,6 +426,12 @@ It is not an R1 release declaration.
   restricted-build → fresh-container → proxy → output → scoring run. Proxy
   capture records are now bound into the worker's authoritative persisted
   trace, including typed usage/cost metadata and capture timestamps. The
+  local target adapter now treats sandbox-produced `trace.jsonl` as untrusted:
+  it rebinds run/case/attempt identity and `source=adapter`, generates trusted
+  event IDs/sequences/timestamps, capture-redacts payloads/errors, and strips
+  provider request IDs, payload references, and cost blocks. Forged proxy
+  authority therefore cannot create billable evidence; focused local/engine
+  tests cover the boundary.
   worker acceptance test covers upload → restricted build → authorization →
   per-case proxy run → output → scoring. The
   container proof uses a raw HTTP relay client because the pinned Alpine

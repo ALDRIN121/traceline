@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from llm_agent_eval.contracts import InvocationResult
 from llm_agent_eval.engine import Engine
-from llm_agent_eval.events import RedactionState, make_event
+from llm_agent_eval.events import CostBlock, RedactionState, Source, make_event
 from llm_agent_eval.lifecycle import RunStatus
+from llm_agent_eval.runtime.sandbox import SandboxResult
 from llm_agent_eval.storage import Storage
+from llm_agent_eval.targets.local import LocalTargetAdapter
 
 
 def _spec():
@@ -100,6 +102,55 @@ def test_engine_ingests_worker_proxy_records_as_authoritative_trace(tmp_path):
         assert provider_event.cost.cost_usd == 0.000005
         assert provider_event.cost.tokens.input == 2
         assert provider_event.cost.tokens.output == 3
+    finally:
+        storage.close()
+
+
+def test_engine_persists_local_trace_as_adapter_without_forged_proxy_cost(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("print('ok')")
+    forged = make_event(
+        event_type="tool_result", run_id="forged-run", workspace_id="forged-ws",
+        case_id="forged-case", attempt_id="forged-attempt", tool="answer",
+        source=Source.PROXY,
+        cost=CostBlock(cost_usd=4.2, price_version="forged-price"),
+        payload={"output": {"value": "ok", "Authorization": "Bearer sk-test-do-not-persist-forged"}},
+    )
+
+    class Sandbox:
+        def run(self, request, **_kwargs):
+            return SandboxResult(
+                state="completed", exit_code=0,
+                output_files={
+                    "result.json": b'{"answer":"ok"}',
+                    "trace.jsonl": (forged.model_dump_json() + "\n").encode(),
+                }, cleanup="complete", container_name="case-1",
+            )
+
+    storage = Storage(tmp_path / "local-authority.db")
+    storage.create_schema()
+    try:
+        engine = Engine(
+            storage, target_adapter=LocalTargetAdapter(sandbox=Sandbox()),
+            work_root=tmp_path / "work",
+        )
+        run = engine.create_run(
+            "ws", _spec(), tier="quick", entrypoint=("/bin/sh",),
+            invocation_manifest={
+                "image": "sha256:" + "a" * 64,
+                "source_dir": str(source),
+                "entrypoint": ["/bin/sh"],
+            },
+        )
+        result = engine.run(run.run_id, "ws")
+        assert result.status == RunStatus.COMPLETE.value
+        event = storage.get_trace_events(run_id=run.run_id, workspace_id="ws")[0]
+        assert event.source is Source.ADAPTER
+        assert event.cost is None
+        assert event.payload == {
+            "output": {"value": "ok", "Authorization": "[REDACTED]"}
+        }
     finally:
         storage.close()
 

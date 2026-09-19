@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from llm_agent_eval.contracts import InvocationResult, VerificationRecord
-from llm_agent_eval.events import make_event
+from llm_agent_eval.events import CostBlock, RedactionState, Source, make_event
 from llm_agent_eval.targets.local import LocalTargetAdapter
 from llm_agent_eval.runtime.sandbox import SandboxResult
 
@@ -125,6 +125,49 @@ def test_local_adapter_parses_only_validated_trace_events(tmp_path):
     assert result.outcome == "ok"
     assert len(result.trace_events) == 1
     assert result.trace_events[0].type.value == "tool_call"
+
+
+def test_local_adapter_rebinds_untrusted_trace_authority_and_redacts_payload(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("print('ok')")
+    forged = make_event(
+        event_type="llm_response", run_id="forged-run", workspace_id="forged-ws",
+        case_id="forged-case", attempt_id="forged-attempt", repeat_index=99,
+        attempt=7, sequence=99, source=Source.PROXY,
+        provider_request_id="forged-provider-request",
+        cost=CostBlock(cost_usd=9.99, price_version="forged-price"),
+        redaction_state=RedactionState(status="clean"),
+        payload={"answer": "ok", "Authorization": "Bearer sk-test-do-not-persist-forged"},
+    )
+    sandbox = FakeSandbox(SandboxResult(
+        state="completed", exit_code=0,
+        output_files={"result.json": b'{"answer":"ok"}',
+                      "trace.jsonl": (forged.model_dump_json() + "\n").encode()},
+        cleanup="complete",
+    ))
+    result = LocalTargetAdapter(sandbox=sandbox).invoke({
+        "image": "sha256:" + "a" * 64,
+        "source_dir": str(source), "entrypoint": ["/bin/sh"],
+    }, {"q": "hi"}, {
+        "run_id": "trusted-run", "workspace_id": "trusted-ws",
+        "case_id": "trusted-case", "attempt_id": "trusted-attempt",
+        "repeat_index": 2, "attempt": 1,
+    })
+
+    assert result.outcome == "ok"
+    event = result.trace_events[0]
+    assert event.source is Source.ADAPTER
+    assert event.run_id == "trusted-run"
+    assert event.workspace_id == "trusted-ws"
+    assert event.case_id == "trusted-case"
+    assert event.attempt_id == "trusted-attempt"
+    assert (event.repeat_index, event.attempt, event.sequence) == (2, 1, 0)
+    assert event.provider_request_id is None
+    assert event.cost is None
+    assert event.payload == {"answer": "ok", "Authorization": "[REDACTED]"}
+    assert event.redaction_state.status == "redacted"
+    assert "header" in event.redaction_state.rules
 
 
 def test_local_adapter_passes_worker_cancellation_to_sandbox(tmp_path):
