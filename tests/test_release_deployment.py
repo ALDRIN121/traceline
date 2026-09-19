@@ -10,7 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_worker_is_continuous_and_shares_persistent_install_state():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     services = compose["services"]
+    credential_init = services["credential-init"]
     api, worker = services["eval-engine"], services["eval-worker"]
+    assert credential_init["image"] == "postgres:16-alpine"
+    assert credential_init["restart"] == "no"
+    assert "eval_credentials:/run/eval-credentials" in credential_init["volumes"]
+    assert "POSTGRES_MAINT_PASSWORD" in credential_init["environment"]
+    assert "POSTGRES_APP_PASSWORD" in credential_init["environment"]
+    assert "POSTGRES_PASSWORD" not in credential_init["environment"]
+    assert services["postgres"]["depends_on"]["credential-init"]["condition"] == "service_completed_successfully"
+    assert services["postgres"]["environment"]["POSTGRES_PASSWORD_FILE"] == "/run/eval-credentials/maint_password"
     assert worker["build"] == api["build"]
     assert worker["command"] == ["eval-engine", "worker"]
     assert worker["restart"] == "unless-stopped"
@@ -18,12 +27,14 @@ def test_worker_is_continuous_and_shares_persistent_install_state():
     for service in (api, worker):
         assert service["environment"]["LLM_AGENT_EVAL_ARTIFACT_ROOT"] == "/var/lib/llm-agent-eval"
         assert "eval_artifacts:/var/lib/llm-agent-eval" in service["volumes"]
-        assert "eval_app:" in service["environment"]["DATABASE_URL"]
+        assert service["environment"]["DATABASE_URL"] == "postgresql://eval_app@postgres:5432/eval_db"
+        assert service["environment"]["PGPASSFILE"] == "/run/eval-credentials/.pgpass"
         assert not service.get("privileged", False)
         assert all("sock" not in mount for mount in service["volumes"])
     assert "ports" not in worker
     assert worker["environment"]["DATABASE_URL"] == api["environment"]["DATABASE_URL"]
     assert "eval_artifacts" in compose["volumes"]
+    assert "eval_credentials" in compose["volumes"]
 
 
 def test_api_and_worker_have_explicit_readiness_healthchecks():
@@ -72,3 +83,28 @@ def test_deployment_image_contains_postgres_client_for_operator_restore():
     assert "postgres:16-bookworm AS postgres16-client" in dockerfile
     assert "COPY --from=postgres16-client" in dockerfile
     assert "pg_restore --version" in dockerfile
+
+
+def test_bootstrap_accepts_a_generated_application_password_file(tmp_path, monkeypatch):
+    from llm_agent_eval import bootstrap_postgres
+
+    password_file = tmp_path / "app_password"
+    password_file.write_text("generated-secret", encoding="utf-8")
+    observed = {}
+
+    def fake_provision(admin_url, username, password):
+        observed.update(admin_url=admin_url, username=username, password=password)
+
+    monkeypatch.setattr(bootstrap_postgres, "provision_application_login", fake_provision)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://eval_maint@postgres:5432/eval_db")
+    monkeypatch.setenv("LLM_AGENT_EVAL_APP_DB_USER", "eval_app")
+    monkeypatch.delenv("LLM_AGENT_EVAL_APP_DB_PASSWORD", raising=False)
+    monkeypatch.setenv("LLM_AGENT_EVAL_APP_DB_PASSWORD_FILE", str(password_file))
+
+    bootstrap_postgres.main()
+
+    assert observed == {
+        "admin_url": "postgresql://eval_maint@postgres:5432/eval_db",
+        "username": "eval_app",
+        "password": "generated-secret",
+    }

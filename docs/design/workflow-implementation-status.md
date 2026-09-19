@@ -397,7 +397,10 @@ It is not an R1 release declaration.
   estimate, budget/quota policy, target capability state, side-effect policy,
   and retry policy. The worker persists the plan's cost-estimate object onto
   the run record; cost remains explicitly `unknown` until a price table is
-  bound.
+  bound. Restricted builds now revalidate the staged source tree against the
+  recorded digest and use the selected rootless Podman connection (including
+  `ENGINE_SOCKET`/user-runtime configuration); a rootful engine is rejected
+  before any build command is issued. Evidence: `tests/runtime/test_build.py`.
 - **Output evidence and re-score:** target/local output is redacted before
   persistence in `attempt_outputs`; deterministic raw values are stored in
   case results. `POST /runs/{run_id}/metrics/{metric_id}/rescore` creates a new
@@ -533,12 +536,15 @@ It is not an R1 release declaration.
   the shared cursor is protected by a worker-only transaction-local service
   identity and advisory lock.
 - **Compose/runtime smoke:** a disposable `docker compose up -d --build`
-  completed with PostgreSQL healthy, the API and worker running, `/health`
-  returning 200, and `/readiness` returning 200 with database and mounted
-  artifact-root checks passing; the API and worker Compose healthchecks also
-  reached `healthy` on the final branch rehearsal, which was then removed with
-  its volumes and network. This validates prototype service startup only; it
-  does not prove the rootless Podman sandbox topology.
+  completed without database password environment variables: the credential-init
+  service generated persistent maintenance/application credentials with private
+  file permissions, PostgreSQL was healthy, the API and worker were running,
+  `/health` and `/readiness` returned 200, and an authenticated project API
+  request returned 200. The API and worker Compose healthchecks also reached
+  `healthy` on the final branch rehearsal, which was then removed with its
+  volumes and network. This validates authenticated prototype deployment
+  startup and credential bootstrap; it does not prove the rootless Podman
+  sandbox topology or full production deployment recovery.
 - **Release-platform CI:** the checked-in workflow now declares a fail-closed
   offline-suite matrix for `ubuntu-latest`, `macos-latest`, and
   `windows-latest`, while keeping PostgreSQL, integration, and provider-live

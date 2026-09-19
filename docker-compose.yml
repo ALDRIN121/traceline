@@ -1,4 +1,53 @@
 services:
+  credential-init:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        mkdir -p /run/eval-credentials
+        generate_secret() {
+          head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 48
+        }
+        write_secret() {
+          path="$$1"
+          supplied="$$2"
+          if [ -s "$$path" ]; then
+            current=$$(cat "$$path")
+            if [ -n "$$supplied" ] && [ "$$current" != "$$supplied" ]; then
+              echo "existing credential does not match the supplied override" >&2
+              exit 1
+            fi
+          else
+            current="$$supplied"
+            if [ -z "$$current" ]; then
+              current=$$(generate_secret)
+            fi
+            case "$$current" in
+              *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@#%=-]*)
+                echo "credentials must use URL-safe characters only" >&2
+                exit 1
+                ;;
+            esac
+            printf '%s' "$$current" > "$$path"
+          fi
+        }
+        write_secret /run/eval-credentials/maint_password "$${POSTGRES_MAINT_PASSWORD:-}"
+        write_secret /run/eval-credentials/app_password "$${POSTGRES_APP_PASSWORD:-}"
+        printf '*:*:eval_db:eval_maint:%s\n*:*:eval_db:eval_app:%s\n' \
+          "$$(cat /run/eval-credentials/maint_password)" \
+          "$$(cat /run/eval-credentials/app_password)" \
+          > /run/eval-credentials/.pgpass
+        chown -R 10001:10001 /run/eval-credentials
+        chmod 0600 /run/eval-credentials/maint_password \
+          /run/eval-credentials/app_password /run/eval-credentials/.pgpass
+    environment:
+      POSTGRES_MAINT_PASSWORD: ${POSTGRES_MAINT_PASSWORD:-}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
+    volumes:
+      - eval_credentials:/run/eval-credentials
+    restart: "no"
+
   postgres:
     image: postgres:16-alpine
     container_name: eval-postgres
@@ -6,11 +55,15 @@ services:
     environment:
       POSTGRES_DB: eval_db
       POSTGRES_USER: eval_maint
-      POSTGRES_PASSWORD: ${POSTGRES_MAINT_PASSWORD:?set POSTGRES_MAINT_PASSWORD in .env}
+      POSTGRES_PASSWORD_FILE: /run/eval-credentials/maint_password
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - eval_pgdata:/var/lib/postgresql/data
+      - eval_credentials:/run/eval-credentials:ro
+    depends_on:
+      credential-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U eval_maint -d eval_db"]
       interval: 5s
@@ -23,12 +76,15 @@ services:
       dockerfile: Dockerfile
     command: ["python", "-m", "llm_agent_eval.bootstrap_postgres"]
     environment:
-      DATABASE_URL: "postgresql://eval_maint:${POSTGRES_MAINT_PASSWORD:?set POSTGRES_MAINT_PASSWORD in .env}@postgres:5432/eval_db"
+      DATABASE_URL: "postgresql://eval_maint@postgres:5432/eval_db"
+      PGPASSFILE: /run/eval-credentials/.pgpass
       LLM_AGENT_EVAL_APP_DB_USER: eval_app
-      LLM_AGENT_EVAL_APP_DB_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}
+      LLM_AGENT_EVAL_APP_DB_PASSWORD_FILE: /run/eval-credentials/app_password
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - eval_credentials:/run/eval-credentials:ro
     restart: "no"
 
   eval-engine:
@@ -40,8 +96,9 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment: &engine-environment
-      DATABASE_URL: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
-      LLM_AGENT_EVAL_DB: "postgresql://eval_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/eval_db"
+      DATABASE_URL: "postgresql://eval_app@postgres:5432/eval_db"
+      LLM_AGENT_EVAL_DB: "postgresql://eval_app@postgres:5432/eval_db"
+      PGPASSFILE: /run/eval-credentials/.pgpass
       LLM_AGENT_EVAL_ARTIFACT_ROOT: "/var/lib/llm-agent-eval"
       LLM_AGENT_EVAL_MODEL_PROVIDER: ${LLM_AGENT_EVAL_MODEL_PROVIDER:-deepseek}
       LLM_AGENT_EVAL_MODEL_BASE_URL: ${LLM_AGENT_EVAL_MODEL_BASE_URL:-https://api.deepseek.com}
@@ -55,6 +112,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - eval_artifacts:/var/lib/llm-agent-eval
+      - eval_credentials:/run/eval-credentials:ro
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8000/readiness"]
       interval: 10s
@@ -80,6 +138,7 @@ services:
     volumes:
       # Artifacts, fingerprint/secret keys, and future install CA survive restarts.
       - eval_artifacts:/var/lib/llm-agent-eval
+      - eval_credentials:/run/eval-credentials:ro
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1 && test -r /var/lib/llm-agent-eval"]
       interval: 10s
@@ -89,3 +148,4 @@ services:
 volumes:
   eval_pgdata:
   eval_artifacts:
+  eval_credentials:

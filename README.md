@@ -73,9 +73,11 @@ To start the current containerized prototype and its local PostgreSQL service:
 docker compose up --build
 ```
 
-The Compose file's local database values are development-only defaults. Supply deployment
-credentials through your environment or deployment secret manager; the image and lockfiles do not
-contain database or provider credentials.
+On first start, Compose generates separate random PostgreSQL maintenance and application
+credentials in the persistent `eval_credentials` volume. They are mounted as private files and
+used through `PGPASSFILE`; no database password is embedded in the image or repository. Operators
+may provide `POSTGRES_MAINT_PASSWORD` and `POSTGRES_APP_PASSWORD` as URL-safe overrides before
+the first start. The image and lockfiles never contain database or provider credentials.
 
 Proxy-enabled local runs also require an install-owned `proxy-routes.json` under the configured
 artifact root. Start from [`proxy-routes.example.json`](proxy-routes.example.json), replace the

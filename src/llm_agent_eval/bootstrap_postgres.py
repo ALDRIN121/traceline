@@ -50,6 +50,15 @@ def main() -> None:
         raise ValueError("DATABASE_URL is required for PostgreSQL bootstrap")
     username = os.environ.get("LLM_AGENT_EVAL_APP_DB_USER", "eval_app")
     password = os.environ.get("LLM_AGENT_EVAL_APP_DB_PASSWORD", "")
+    password_file = os.environ.get("LLM_AGENT_EVAL_APP_DB_PASSWORD_FILE")
+    if not password and password_file:
+        try:
+            with open(password_file, encoding="utf-8") as handle:
+                password = handle.read()
+        except OSError as exc:
+            raise ValueError("application database password file is unavailable") from exc
+        if password.endswith("\n"):
+            password = password[:-1]
     provision_application_login(admin_url, username, password)
 
 
