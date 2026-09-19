@@ -84,6 +84,54 @@ def test_evaluation_run_worker_executes_and_is_idempotent(tmp_path):
         storage.close()
 
 
+def test_evaluation_run_links_custom_eval_for_results_discovery(tmp_path):
+    storage, actor, worker, _plan = _setup(tmp_path)
+    try:
+        project = storage.list_projects(actor.workspace_id)[0]
+        spec = {
+            "spec_version": "1", "name": "indexed-eval", "dataset_version": "v1",
+            "metrics": [{
+                "metric_id": "answer", "name": "answer", "type": "scalar",
+                "target": {"type": "tool_output", "tool": "answer", "selector": "$.value", "occurrence": "last", "on_missing": "fail"},
+                "evaluator": {"type": "exact_match", "expected": "ok"},
+                "scoring": {"type": "binary", "range": [0, 1]},
+                "aggregation": {"method": "pass_rate", "on_error": "fail"},
+                "gate": {"min": 1.0}, "provisional": False,
+            }],
+        }
+        custom = storage.create_custom_eval(
+            workspace_id=actor.workspace_id,
+            name="indexed-eval",
+            spec=spec,
+            dashboard={"name": "Results", "blocks": []},
+            dataset=[{"case_id": "c1", "name": "one", "input": {"q": "hi"}}],
+            project_id=project.project_id,
+        )
+        evaluation = VersionStore(storage).create(
+            "evaluation", custom.eval_id, {"spec": spec}, 0, actor,
+        )
+        dataset = VersionStore(storage).create(
+            "dataset", project.project_id, {"cases": [{
+                "case_id": "c1", "name": "one", "input": {"q": "hi"},
+            }]}, 1, actor,
+        )
+        plan = RunPlanService(storage).plan_run(actor, {
+            "project_id": project.project_id,
+            "evaluation_version_id": evaluation.version_id,
+            "dataset_version_id": dataset.version_id,
+        }, {"tier": "quick"})
+        auth = RunPlanService(storage).authorize(actor, plan.plan_id, plan.content_digest)
+        job = RunPlanService(storage).enqueue_run(
+            worker, actor, plan.plan_id, auth.authorization_id, plan.content_digest, "indexed-once",
+        )
+        terminal = worker.service(actor).run_once(job_id=job.job_id)
+        assert terminal.status == "completed", terminal.error
+        assert terminal.result["state"] == "complete"
+        assert storage.get_custom_eval(custom.eval_id, actor.workspace_id).run_id == terminal.result["run_id"]
+    finally:
+        storage.close()
+
+
 def test_scheduled_slots_create_distinct_measured_runs(tmp_path):
     storage, actor, worker, plan = _setup(tmp_path)
     try:

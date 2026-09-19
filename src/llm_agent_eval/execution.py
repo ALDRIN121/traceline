@@ -95,6 +95,7 @@ class RunExecutionService:
             idempotency_key = f"evaluation-plan:{plan.plan_id}:{plan.content_digest}"
         existing = self.storage.get_run_by_idempotency_key(actor.workspace_id, idempotency_key)
         if existing is not None and existing.status in {"complete", "failed", "cancelled"}:
+            self._link_custom_evaluation_run(actor, evaluation, existing.run_id)
             return {"state": existing.status, "run_id": existing.run_id, "plan_id": plan.plan_id}
         limits = plan.content.get("limits") or {}
         judge_gateway = self._resolve_judge_gateway(actor, refs)
@@ -136,6 +137,7 @@ class RunExecutionService:
                 "evaluator_versions": dict(plan.content.get("evaluator_versions") or {}),
             },
         )
+        self._link_custom_evaluation_run(actor, evaluation, run.run_id)
         proxy_session = None
         if manifest.get("egress") == "proxy":
             if self.proxy_session_factory is None:
@@ -163,6 +165,21 @@ class RunExecutionService:
             if proxy_session is not None:
                 proxy_session.stop()
         return {"state": result.status, "run_id": result.run_id, "plan_id": plan.plan_id}
+
+    def _link_custom_evaluation_run(self, actor: Actor, evaluation, run_id: str) -> None:
+        """Expose a plan-run through the legacy evaluation index when applicable.
+
+        Durable evaluation versions are parented by the custom-evaluation record
+        used by the dashboard index.  Versioned workflow runs must keep that
+        index synchronized, while standalone workflow fixtures may parent the
+        version directly to a project and therefore have nothing to update.
+        """
+        parent_id = getattr(evaluation, "parent_id", None)
+        if not isinstance(parent_id, str) or not parent_id:
+            return
+        if self.storage.get_custom_eval(parent_id, actor.workspace_id) is None:
+            return
+        self.storage.set_custom_eval_run(parent_id, actor.workspace_id, run_id)
 
     def _resolve_judge_gateway(self, actor: Actor, refs: dict[str, str]):
         selection_id = refs.get("model_selection_version_id")
