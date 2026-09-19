@@ -453,9 +453,13 @@ It is not an R1 release declaration.
   dry-run/apply service and CLI paths for expired exports, preview TTL with
   the latest-20 revision window, abandoned quarantine uploads, and stale
   staging files while preserving job/version references. Focused operations
-  and CLI checks pass. A live disposable-PostgreSQL backup/restore rehearsal
-  and link verification remain deployment evidence requirements; the code path
-  is no longer an intentional `external_backup_required` gap.
+  and CLI checks pass. The disposable Compose PostgreSQL 16 rehearsal now
+  passes the real version-matched `pg_dump`/`pg_restore` path with a separate
+  maintenance URL, restored database rows, and artifact retrieval through
+  `ArtifactStore`; the deployment image carries the PostgreSQL 16 client
+  binaries. PostgreSQL retention/link verification and interrupted migration
+  rehearsal remain open; the code path is no longer an intentional
+  `external_backup_required` gap.
   The Compose PostgreSQL deployment now
   has observed RLS, non-bypass startup, job reclaim, worker fencing, and
   shutdown-abandonment evidence: the disposable `TEST_DATABASE_URL` suite
@@ -527,7 +531,7 @@ It is not an R1 release declaration.
   references without returning values. They are owner-only and accept only
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
-- **Observed suite:** the default suite is **921 passed, 11 skipped, 9
+- **Observed suite:** the default suite is **924 passed, 12 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
@@ -540,8 +544,9 @@ configured-route setup and full containerized deployment topology are not yet
 release-proven;
 provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
-are not proven on Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention/TTL
-link verification, and fairness are not rehearsed; LiteLLM
+are not proven on Linux, macOS and WSL2; PostgreSQL retention/TTL link
+verification, interrupted migration recovery, and multi-process fairness are
+not rehearsed; LiteLLM
 outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
 acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.

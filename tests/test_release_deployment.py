@@ -46,3 +46,10 @@ def test_release_ci_runs_tests_and_fail_closed_scans():
         for step in job["steps"]:
             assert not step.get("continue-on-error", False)
             assert "|| true" not in step.get("run", "")
+
+
+def test_deployment_image_contains_postgres_client_for_operator_restore():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "postgres:16-bookworm AS postgres16-client" in dockerfile
+    assert "COPY --from=postgres16-client" in dockerfile
+    assert "pg_restore --version" in dockerfile

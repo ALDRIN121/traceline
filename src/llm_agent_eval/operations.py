@@ -2,8 +2,9 @@
 
 The service is deliberately conservative: SQLite backups are self-contained
 and restore never overwrites an existing destination. PostgreSQL production
-backups remain the operator's ``pg_dump``/artifact-store procedure and are
-reported as an explicit unsupported local operation rather than guessed.
+backups use an explicit maintenance connection for the database dump and the
+application connection only for workspace-scoped artifact enumeration. The
+maintenance URL is never stored in the archive.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -27,9 +29,12 @@ from .contracts import WorkflowError
 
 
 class OperationsService:
-    def __init__(self, storage, artifact_root: Path):
+    def __init__(self, storage, artifact_root: Path, *, maintenance_database_url: str | None = None):
         self.storage = storage
         self.artifact_root = Path(artifact_root).resolve()
+        self.maintenance_database_url = maintenance_database_url or os.environ.get(
+            "LLM_AGENT_EVAL_MAINTENANCE_DATABASE_URL"
+        )
 
     def readiness(self, workspace_id: str) -> dict[str, Any]:
         checks: dict[str, str] = {}
@@ -176,7 +181,9 @@ class OperationsService:
                 deleted += 1
         return deleted
 
-    def backup_postgres(self, actor, destination: Path) -> dict[str, Any]:
+    def backup_postgres(
+        self, actor, destination: Path, *, maintenance_database_url: str | None = None,
+    ) -> dict[str, Any]:
         """Create a coordinated PostgreSQL dump plus workspace artifact archive.
 
         The database dump and artifact files share one checksum manifest.  The
@@ -186,6 +193,12 @@ class OperationsService:
         actor.require(write=True)
         if not self.storage._is_postgres:
             raise WorkflowError("PostgreSQL storage is required", code="storage_kind_invalid", status=409)
+        maintenance_url = maintenance_database_url or self.maintenance_database_url
+        if not maintenance_url:
+            raise WorkflowError(
+                "an explicit PostgreSQL maintenance URL is required for backup",
+                code="maintenance_database_url_required", status=503,
+            )
         dump_tool = shutil.which("pg_dump")
         if dump_tool is None:
             raise WorkflowError("pg_dump is required for PostgreSQL backup", code="backup_tool_unavailable", status=503)
@@ -193,7 +206,7 @@ class OperationsService:
         if destination.exists():
             raise WorkflowError("backup destination already exists", code="backup_exists", status=409)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        database_url, environment = self._safe_database_command(self.storage._db_path)
+        database_url, environment = self._safe_database_command(maintenance_url)
         with tempfile.TemporaryDirectory(prefix="eval-pg-backup-", dir=destination.parent) as temporary:
             root = Path(temporary)
             dump = root / "database.dump"
@@ -236,7 +249,7 @@ class OperationsService:
         username = parsed.username
         netloc = ""
         if username:
-            netloc += username
+            netloc += username + "@"
         if parsed.hostname:
             if ":" in parsed.hostname and not parsed.hostname.startswith("["):
                 netloc += f"[{parsed.hostname}]"
@@ -248,6 +261,8 @@ class OperationsService:
         environment = dict(os.environ)
         if password is not None:
             environment["PGPASSWORD"] = unquote(password)
+        else:
+            environment.pop("PGPASSWORD", None)
         return safe_url, environment
 
     def _write_artifact_bundle(self, root: Path, actor) -> None:
@@ -257,6 +272,19 @@ class OperationsService:
         for record in store.list(actor.workspace_id):
             path = artifact_dir / record.artifact_id
             path.write_bytes(store.get(actor.workspace_id, record.artifact_id))
+
+    @staticmethod
+    def _restore_artifacts(root: Path, destination_artifact_root: Path, workspace_id: str) -> None:
+        if not isinstance(workspace_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", workspace_id):
+            raise WorkflowError("backup manifest workspace is invalid", code="backup_invalid", status=422)
+        artifact_destination = (
+            destination_artifact_root / "ws" / workspace_id / "artifacts"
+        ).resolve()
+        destination_root = destination_artifact_root.resolve()
+        if not artifact_destination.is_relative_to(destination_root):
+            raise WorkflowError("backup manifest workspace is invalid", code="backup_invalid", status=422)
+        artifact_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(root / "artifacts", artifact_destination, dirs_exist_ok=False)
 
     @staticmethod
     def restore_postgres(
@@ -295,6 +323,7 @@ class OperationsService:
                 if manifest.get("storage") != "postgresql" or manifest.get("install_keys") != "excluded_from_archive_restore_separately":
                     raise ValueError
                 files = manifest["files"]
+                workspace_id = manifest["workspace_id"]
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise WorkflowError("backup manifest is invalid", code="backup_invalid", status=422) from exc
             for relative, expected in files.items():
@@ -312,17 +341,23 @@ class OperationsService:
             )
             if completed.returncode != 0:
                 raise WorkflowError("PostgreSQL restore failed", code="restore_failed", status=503)
-            shutil.copytree(root / "artifacts", destination_artifact_root, dirs_exist_ok=False)
+            OperationsService._restore_artifacts(
+                root, destination_artifact_root, workspace_id,
+            )
         return {
             "state": "restored", "database": database_url,
             "artifact_root": str(destination_artifact_root),
             "storage": "postgresql", "install_keys": "required_separately",
         }
 
-    def backup_workspace(self, actor, destination: Path) -> dict[str, Any]:
+    def backup_workspace(
+        self, actor, destination: Path, *, maintenance_database_url: str | None = None,
+    ) -> dict[str, Any]:
         actor.require(write=True)
         if self.storage._is_postgres:
-            return self.backup_postgres(actor, destination)
+            return self.backup_postgres(
+                actor, destination, maintenance_database_url=maintenance_database_url,
+            )
         destination = Path(destination).resolve()
         if destination.exists():
             raise WorkflowError("backup destination already exists", code="backup_exists", status=409)
@@ -386,7 +421,10 @@ class OperationsService:
             manifest_path = root / "manifest.json"
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if manifest.get("storage") != "sqlite" or manifest.get("install_keys") != "excluded_from_archive_restore_separately":
+                    raise ValueError
                 files = manifest["files"]
+                workspace_id = manifest["workspace_id"]
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise WorkflowError("backup manifest is invalid", code="backup_invalid", status=422) from exc
             for relative, expected in files.items():
@@ -398,7 +436,9 @@ class OperationsService:
             shutil.copy2(root / "database.sqlite", destination_db)
             if destination_artifact_root.exists():
                 raise WorkflowError("artifact restore destination already exists", code="restore_exists", status=409)
-            shutil.copytree(root / "artifacts", destination_artifact_root, dirs_exist_ok=False)
+            OperationsService._restore_artifacts(
+                root, destination_artifact_root, workspace_id,
+            )
         return {
             "state": "restored", "database": str(destination_db),
             "artifact_root": str(destination_artifact_root),

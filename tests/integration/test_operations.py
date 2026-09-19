@@ -6,11 +6,14 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.artifacts import ArtifactStore
 from llm_agent_eval.operations import OperationsService
 import llm_agent_eval.operations as operations_module
 from llm_agent_eval.storage import Storage
+from llm_agent_eval.contracts import WorkflowError
 
 
 def test_sqlite_backup_restore_verifies_manifest_and_artifacts(tmp_path):
@@ -35,7 +38,9 @@ def test_sqlite_backup_restore_verifies_manifest_and_artifacts(tmp_path):
     restored_storage.create_schema()
     try:
         assert restored_storage.get_run("__missing__", "ws") is None
-        assert (restored_artifacts / record.artifact_id).read_bytes() == b"evidence"
+        assert ArtifactStore(
+            restored_storage, restored_artifacts, actor,
+        ).get("ws", record.artifact_id) == b"evidence"
     finally:
         restored_storage.close()
 
@@ -143,7 +148,10 @@ def test_postgres_backup_restore_uses_dump_tools_and_keeps_install_keys_outside_
 
         monkeypatch.setattr(storage, "workspace_transaction", local_workspace_transaction)
         backup = tmp_path / "postgres-backup.zip"
-        result = OperationsService(storage, artifacts).backup_postgres(actor, backup)
+        result = OperationsService(
+            storage, artifacts,
+            maintenance_database_url="postgresql://eval_maint:secret@example.test/eval_db",
+        ).backup_postgres(actor, backup)
         assert result["state"] == "ready"
         assert result["storage"] == "postgresql"
         assert result["install_keys"] == "excluded_from_archive_restore_separately"
@@ -157,6 +165,30 @@ def test_postgres_backup_restore_uses_dump_tools_and_keeps_install_keys_outside_
         assert restored["state"] == "restored"
         assert restored["install_keys"] == "required_separately"
         assert commands[1][0] == "/usr/bin/pg_restore"
-        assert (restored_artifacts / record.artifact_id).read_bytes() == b"evidence"
+        assert (
+            restored_artifacts / "ws" / "ws" / "artifacts" / record.artifact_id
+        ).read_bytes() == b"evidence"
+    finally:
+        storage.close()
+
+
+def test_postgres_command_strips_password_but_preserves_authority_separator():
+    safe, environment = operations_module.OperationsService._safe_database_command(
+        "postgresql://eval_maint:p%40ss@example.test:5432/eval_db?sslmode=require"
+    )
+    assert safe == "postgresql://eval_maint@example.test:5432/eval_db?sslmode=require"
+    assert environment["PGPASSWORD"] == "p@ss"
+
+
+def test_postgres_backup_requires_explicit_maintenance_authority(tmp_path):
+    storage = Storage(tmp_path / "source.db")
+    storage.create_schema()
+    storage._is_postgres = True
+    actor = Actor("owner", "ws", "owner")
+    try:
+        with pytest.raises(WorkflowError, match="PostgreSQL maintenance URL"):
+            OperationsService(storage, tmp_path / "artifacts").backup_postgres(
+                actor, tmp_path / "backup.zip",
+            )
     finally:
         storage.close()

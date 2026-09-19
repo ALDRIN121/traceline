@@ -505,6 +505,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
     try:
         result = OperationsService(store, root).backup_workspace(
             Actor("cli-owner", args.workspace, "owner"), Path(args.destination),
+            maintenance_database_url=getattr(args, "postgres_url", None),
         )
         print(json.dumps(result, sort_keys=True))
         return EXIT_OK
@@ -642,6 +643,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("backup", help="create a checksummed SQLite or PostgreSQL workspace backup")
     p.add_argument("destination", type=Path, help="new backup archive path")
+    p.add_argument("--postgres-url", default=None,
+                   help="maintenance PostgreSQL URL used only for pg_dump")
     p.add_argument("--artifact-root", default=None, help="artifact/install root")
     add_common(p)
     p.set_defaults(handler=cmd_backup)

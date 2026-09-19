@@ -1,11 +1,23 @@
-FROM python:3.12-slim
+FROM postgres:16-bookworm AS postgres16-client
+
+FROM python:3.12-bookworm
 
 WORKDIR /app
 
-# Install build essentials if needed and curl for healthchecks
+# Install curl for healthchecks and libpq for the PostgreSQL 16 client tools
+# copied below. The application never uses these tools to execute evaluated
+# agent code.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep dump/restore major-version compatible with the Compose PostgreSQL 16
+# service. Debian's default client package can advance to a newer major and
+# emit restore SQL that the deployed server rejects.
+COPY --from=postgres16-client /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=postgres16-client /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore
+RUN pg_dump --version && pg_restore --version
 
 # Install the resolved runtime dependencies. The lockfile intentionally holds
 # package versions only; deployment credentials come from the environment.

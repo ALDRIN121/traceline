@@ -18,7 +18,7 @@ what teams actually need to check can be stated exactly.
 This repository is actively implementing the v3 design. The installed package now contains
 verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
 and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
-production provider-route rehearsal, the full UI, PostgreSQL operations rehearsal, live execution
+production provider-route rehearsal, the full UI, PostgreSQL retention/migration rehearsal, live execution
 of the repaired reference fixture, and the complete release acceptance matrix remain open.
 Coordinated backup /
 restore code, owner-managed encrypted secret references, retention cleanup, and operational CLI
@@ -93,6 +93,20 @@ local image/runtime setup; they are not counted in the default suite.
 Authenticated API clients can freeze an export with `POST /api/exports` using a run ID and then
 download its immutable `json`, `csv`, or `html` representation from
 `/api/exports/{export_id}/{format}`. Later score revisions do not change a frozen export.
+
+For PostgreSQL backup, provide a separate maintenance connection for `pg_dump`; the application
+connection is RLS-scoped and is never used as an implicit backup authority. For example:
+
+```bash
+eval-engine backup workspace-backup.zip --workspace <workspace-id> \
+  --postgres-url "$LLM_AGENT_EVAL_MAINTENANCE_DATABASE_URL"
+eval-engine restore workspace-backup.zip --postgres-url "$DESTINATION_MAINTENANCE_DATABASE_URL" \
+  --destination-artifact-root ./restored-artifacts
+```
+
+The deployment image carries PostgreSQL 16-compatible dump/restore binaries, and the archive
+excludes install encryption and identity keys; those must be recovered through the operator's
+separate key-management procedure.
 
 R2 stateless JSON targets may also declare a closed `retrieval_mapping` with JSON Pointer fields
 `chunks` (required), `query`, `scores`, and `source`. A successful response emits a redacted,
