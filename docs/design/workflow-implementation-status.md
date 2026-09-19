@@ -566,13 +566,15 @@ It is not an R1 release declaration.
   refresh policy. Durable schedules now expose workspace-scoped list/detail
   routes and pause/resume lifecycle controls; the authoring Preview can create
   a schedule only after observing authorization for the exact run-plan hash,
-  then displays slot history and observed lifecycle state. Retrieval
+  then displays slot history and observed lifecycle state. Scheduler sweeps
+  now pause a schedule whose pinned target verification is stale or malformed
+  and enqueue no further slots. Retrieval
   adapter/framework conformance beyond those tested adapters remains open. The
   current R2-focused
   workflow and integration set (streaming, async, stateful sessions,
   retrieval, adapter matrix, schedules, frozen worker paths, and the tested
   OpenAI-compatible, Anthropic Messages, and Google Generative stateless JSON
-  adapters and durable schedule lifecycle API) passes **42 tests** on the
+  adapters and durable schedule lifecycle API) passes **43 tests** on the
   observed host. The matrix still fails closed for unverified frameworks;
   this is not a cross-platform or broad framework-conformance claim.
 - **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
 import json
+import time as time_module
+import uuid
 
 import pytest
 
@@ -171,3 +173,53 @@ def test_schedule_rejects_unimplemented_version_refresh_policy(tmp_path):
             )
     finally:
         storage.close()
+
+
+def test_schedule_pauses_when_its_pinned_target_verification_expires(tmp_path):
+    storage = Storage(tmp_path / "schedule-stale-target.db")
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    project = storage.create_project(workspace_id="ws", name="scheduled")
+    target_id = uuid.uuid4().hex
+    with storage.workspace_transaction("ws") as conn:
+        conn.execute(
+            "INSERT INTO targets (workspace_id,target_id,project_id,created_at) VALUES (?,?,?,?)",
+            ("ws", target_id, project.project_id, datetime.now(timezone.utc).isoformat()),
+        )
+    versions = VersionStore(storage)
+    evaluation = versions.create("evaluation", project.project_id, {"spec": {"name": "e", "cases": []}}, 0, actor)
+    dataset = versions.create("dataset", project.project_id, {"cases": []}, 0, actor)
+    target = versions.create(
+        "target", target_id,
+        {
+            "kind": "http_json",
+            "verification": {
+                "state": "verified",
+                "expires_at": (datetime.now(timezone.utc) + timedelta(milliseconds=100)).isoformat(),
+                "capabilities": {"final_output": "observed"},
+            },
+        }, 0, actor,
+    )
+    plans = RunPlanService(storage)
+    plan = plans.plan_run(actor, {
+        "project_id": project.project_id,
+        "evaluation_version_id": evaluation.version_id,
+        "dataset_version_id": dataset.version_id,
+        "target_version_id": target.version_id,
+    }, {"tier": "quick"})
+    assert plan.state == "validated", plan.blockers
+    authorization = plans.authorize(actor, plan.plan_id, plan.content_digest)
+    schedule = DurableScheduleService(storage).create(
+        actor, plan_id=plan.plan_id, plan_hash=plan.content_digest,
+        authorization_id=authorization.authorization_id,
+        timezone_name="Asia/Kolkata", local_time="09:00",
+    )
+    time_module.sleep(0.15)
+
+    worker = WorkflowWorker(
+        storage, tmp_path / "artifacts", MockGateway({}), fingerprint_key=b"f" * 32,
+    )
+    assert worker.sweep_schedules(
+        actor, schedule.schedule_id, date(2026, 3, 7), date(2026, 3, 7), owner="worker-a",
+    ) == []
+    assert storage.get_schedule(schedule.schedule_id, "ws").state == "paused"

@@ -139,6 +139,25 @@ class DurableScheduleService:
                 or authorization is None or authorization.state != "authorized"
                 or datetime.fromisoformat(authorization.expires_at) <= datetime.now(utc_timezone.utc)):
             return []
+        target_version_id = (plan.content.get("version_refs") or {}).get("target_version_id")
+        if target_version_id:
+            try:
+                target = RunPlanService(self.storage).versions.get(target_version_id, actor)
+                verification = target.content.get("verification") or {}
+                expires_at = verification.get("expires_at")
+                stale = verification.get("state") != "verified"
+                if not stale:
+                    try:
+                        stale = datetime.fromisoformat(expires_at) <= datetime.now(utc_timezone.utc)
+                    except (TypeError, ValueError):
+                        stale = True
+            except NotFound:
+                stale = True
+            if stale:
+                self.storage.set_schedule_state(
+                    workspace_id=actor.workspace_id, schedule_id=schedule_id, state="paused",
+                )
+                return []
         local = time.fromisoformat(schedule.local_time)
         schedule_shape = Schedule(schedule.schedule_id, schedule.timezone, local, schedule.dst_policy)
         slots = due_daily_slots(
