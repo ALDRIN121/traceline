@@ -18,7 +18,7 @@ what teams actually need to check can be stated exactly.
 This repository is actively implementing the v3 design. The installed package now contains
 verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
 and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
-production provider-route rehearsal, the full UI, PostgreSQL retention/link verification, live execution
+production provider-route rehearsal, the full UI, broader PostgreSQL retention/link deployment audits, live execution
 of the repaired reference fixture, and the complete release acceptance matrix remain open.
 Coordinated backup /
 restore code, owner-managed encrypted secret references, retention cleanup, and operational CLI

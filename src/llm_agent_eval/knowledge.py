@@ -41,6 +41,9 @@ class KnowledgeStore:
                 merged = dict(fact)
                 merged["status"] = "user_confirmed"
                 merged["confirmed_by"] = prior.get("confirmed_by")
+                for field in ("summary", "original_summary", "correction_note"):
+                    if field in prior:
+                        merged[field] = prior[field]
                 facts.append(merged)
             else:
                 facts.append(dict(fact))
@@ -106,6 +109,14 @@ class KnowledgeStore:
             fact["status"] = "user_confirmed"
             fact["confirmed_by"] = actor.actor_id
             fact["observed_in_attempt_id"] = None
+            if "summary" in correction:
+                summary = correction["summary"]
+                if not isinstance(summary, str) or not summary.strip():
+                    raise WorkflowError("A correction summary must be non-empty text")
+                if "original_summary" not in fact:
+                    fact["original_summary"] = fact.get("summary", "")
+                fact["summary"] = summary.strip()
+                fact["correction_note"] = summary.strip()
         content = {
             "source_version_id": current["source_version_id"],
             "discovery_digest": self._versions().get(report_id, actor).content.get("discovery_digest"),

@@ -2442,6 +2442,63 @@ body[data-view="builder"] .builder-workspace { display: block; height: auto; min
   margin-bottom: 16px;
 }
 
+/* Durable authoring surfaces: the API owns revisions; the browser owns only
+   the draft and the current interaction. Dense data stays opaque and legible;
+   the accent is reserved for the next safe action. */
+.project-bootstrap-status, .dataset-csv-hint, .preview-editor-empty { color: var(--ink-2); font-size: .8rem; line-height: 1.45; margin: 11px 0 0; }
+.project-bootstrap-status { min-height: 1.2em; }
+.dataset-import-form, .dataset-report, .preview-editor, .preview-result { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 20px; }
+.dataset-import-form h3, .preview-editor h3, .dataset-report h3, .preview-result h3 { color: var(--ink); font-size: .94rem; margin: 0; }
+.dataset-import-form > div > p, .preview-editor > div > p, .dataset-report-head p, .preview-result p { color: var(--ink-2); font-size: .83rem; line-height: 1.45; margin: 5px 0 0; }
+.dataset-import-form > label, .preview-editor > label { color: var(--ink-2); display: grid; font-size: .82rem; gap: 6px; margin-top: 14px; }
+.dataset-import-form input[type="file"], .dataset-import-form select, .dataset-import-form input[type="text"], .preview-editor input[type="text"] { background: var(--surface-2); border: 1px solid var(--hairline-strong); border-radius: 9px; color: var(--ink); font: inherit; min-height: 38px; padding: 8px 10px; }
+.dataset-mapping-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px; }
+.dataset-mapping-grid label { color: var(--ink-2); display: grid; font-size: .82rem; gap: 6px; }
+.dataset-mapping-grid select, .dataset-mapping-grid input { background: var(--surface-2); border: 1px solid var(--hairline-strong); border-radius: 9px; color: var(--ink); font: inherit; min-height: 38px; padding: 8px 10px; }
+.dataset-report-head { align-items: flex-start; display: flex; gap: 14px; justify-content: space-between; }
+.dataset-table-wrap { border: 1px solid var(--hairline); border-radius: 11px; margin-top: 15px; max-width: 100%; overflow-x: auto; }
+.dataset-table { border-collapse: collapse; min-width: 620px; width: 100%; }
+.dataset-table th, .dataset-table td { border-bottom: 1px solid var(--hairline); padding: 10px; text-align: left; vertical-align: top; }
+.dataset-table th { background: var(--surface-2); color: var(--ink-2); font-size: .72rem; font-weight: 650; letter-spacing: .01em; position: sticky; top: 0; }
+.dataset-table td { color: var(--ink-2); font-size: .78rem; max-width: 210px; overflow-wrap: anywhere; }
+.dataset-table td strong { color: var(--ink); display: block; font-family: var(--font-mono); font-size: .75rem; }
+.dataset-table td small { color: var(--ink-3); display: block; margin-top: 3px; }
+.dataset-label { border-radius: var(--radius-chip); display: inline-flex; font-size: .72rem; font-weight: 650; padding: 4px 7px; }
+.dataset-label.approved { background: var(--green-tint); color: var(--green); }.dataset-label.inferred { background: var(--amber-tint); color: var(--amber); }.dataset-label.missing { background: var(--surface-3); color: var(--ink-3); }
+.fact-correction-editor { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 10px; display: grid; gap: 8px; margin-top: 12px; padding: 10px; }
+.fact-correction-input { background: var(--surface-1); border: 1px solid var(--hairline-strong); border-radius: 8px; color: var(--ink); font: inherit; line-height: 1.4; padding: 8px; resize: vertical; }
+.preview-block-editor { display: grid; gap: 7px; margin-top: 14px; }
+.preview-block-row { align-items: center; background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 9px; display: flex; gap: 10px; justify-content: space-between; padding: 10px 11px; }
+.preview-block-binding { color: var(--ink-2); font-size: .78rem; }
+.preview-synthetic-badge { background: var(--violet-tint); border-radius: var(--radius-chip); color: var(--violet); font-size: .72rem; font-weight: 650; padding: 5px 8px; }
+.preview-result-blocks { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
+.preview-result-block { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 11px; padding: 14px; }
+.preview-result-block h4 { color: var(--ink); font-family: var(--font-mono); font-size: .78rem; margin: 0 0 10px; overflow-wrap: anywhere; }
+.preview-result-value { color: var(--accent-strong); display: block; font-size: 1.25rem; letter-spacing: -.02em; }
+.authoring-conflict { align-items: center; background: var(--amber-tint); border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--hairline)); border-radius: var(--radius-card); display: flex; gap: 18px; justify-content: space-between; margin: 16px auto 0; max-width: 1180px; padding: 15px 17px; }
+.authoring-conflict strong { color: var(--ink); font-size: .9rem; }.authoring-conflict p { color: var(--ink-2); font-size: .8rem; line-height: 1.4; margin: 4px 0 0; }
+.authoring-conflict .authoring-actions { margin-top: 0; }
+
+@media (max-width: 760px) {
+  .dataset-mapping-grid, .preview-result-blocks { grid-template-columns: 1fr; }
+  .dataset-report-head, .authoring-conflict { align-items: stretch; flex-direction: column; }
+  .authoring-conflict .authoring-actions { margin-top: 5px; }
+  .preview-block-row { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .authoring-tab:active, .text-action:active, .btn:active { transform: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .authoring-conversation, .authoring-artifact, .authoring-conflict { backdrop-filter: none; background: var(--surface-1); }
+}
+
+@media (prefers-contrast: more) {
+  .dataset-table-wrap, .dataset-table th, .dataset-table td, .preview-result-block, .preview-block-row, .fact-correction-editor { border-color: currentColor; }
+  .authoring-conflict { border-width: 2px; }
+}
+
 @media (max-width: 960px) {
   .dashboards-shell { flex-direction: column; }
   .evals-pane { flex: none; max-height: 220px; width: 100%; }

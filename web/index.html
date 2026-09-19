@@ -105,7 +105,7 @@
           <div id="authoring-activity-status" class="authoring-activity-status" role="status" aria-live="polite">Attach a saved session to send authoring notes.</div>
           <label class="authoring-note" for="authoring-note"><span>Authoring note</span><textarea id="authoring-note" rows="3" placeholder="Describe a metric or correction to review…"></textarea></label>
           <button id="send-authoring-note" class="btn btn-secondary" type="button">Send note</button>
-          <p class="authoring-quiet">Attach a saved session with <code>?session_id=…</code> to resume its exact decision state.</p>
+          <p class="authoring-quiet">Attach a saved session with <code>?session_id=…</code> to resume its exact decision state. Notes never start a run.</p>
         </section>
 
         <section class="authoring-artifact" aria-label="Authoring artifact">
@@ -119,9 +119,10 @@
           <div id="authoring-reference" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-reference-tab">
             <div class="authoring-pane-head"><div><h2>Source and knowledge</h2><p>Import an immutable source snapshot, then review only the report the server returns.</p></div><span id="knowledge-state" class="authoring-revision">Project context required</span></div>
             <section class="project-context" aria-labelledby="project-context-heading">
-              <div><h3 id="project-context-heading">Project context</h3><p>Enter an existing project ID, or open this page with <code>?project_id=…</code>. This interface cannot create projects.</p></div>
+              <div><h3 id="project-context-heading">Connect a project</h3><p>Attach an existing project from the platform API, or open this page with <code>?project_id=…</code>. The current API does not expose browser-side project creation.</p></div>
               <label for="authoring-project-id">Existing project ID<input id="authoring-project-id" type="text" autocomplete="off" spellcheck="false" placeholder="Project ID from the API"></label>
-              <div class="authoring-actions"><button id="load-project-report" class="btn btn-secondary" type="button" disabled>Load project report</button></div>
+              <div class="authoring-actions"><button id="connect-project" class="btn btn-primary" type="button">Connect project</button><button id="load-project-report" class="btn btn-secondary" type="button" disabled>Load project report</button></div>
+              <p id="project-bootstrap-status" class="project-bootstrap-status" role="status" aria-live="polite">No project attached.</p>
             </section>
             <section class="source-import" aria-labelledby="source-import-heading">
               <div><h3 id="source-import-heading">Import source</h3><p>Source import is queued. A worker must complete it before a knowledge report is available.</p></div>
@@ -137,7 +138,7 @@
               <div id="knowledge-questions" class="knowledge-questions"></div>
               <div id="knowledge-facts" class="reference-cards"></div>
             </section>
-            <div class="authoring-callout"><strong>Correction-safe:</strong> confirmation creates a server revision. Text corrections are not available in the current API, so this UI preserves the report and names that recovery limit.</div>
+            <div class="authoring-callout"><strong>Correction-safe:</strong> confirmations and text corrections create immutable knowledge revisions. The original source snapshot is never changed.</div>
           </div>
 
           <div id="authoring-metrics" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-metrics-tab" hidden>
@@ -154,17 +155,53 @@
           </div>
 
           <div id="authoring-dataset" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-dataset-tab" hidden>
-            <div class="authoring-pane-head"><div><h2>Review test data</h2><p>Mapping and labels are versioned independently from agent requests.</p></div><span class="authoring-revision">No dataset version</span></div>
-            <div class="dataset-empty"><h3>Bring representative cases</h3><p>CSV, JSON, and JSONL imports report every mapping error. Missing labels stay missing; they are never filled in automatically.</p><button type="button" class="btn btn-secondary" data-authoring-next="dataset">Map a dataset</button></div>
+            <div class="authoring-pane-head"><div><h2>Review test data</h2><p>Map source fields, inspect labels, then commit an immutable dataset revision.</p></div><span id="dataset-revision" class="authoring-revision">No dataset version</span></div>
+            <section class="dataset-import-form" aria-labelledby="dataset-import-heading">
+              <div><h3 id="dataset-import-heading">Import cases</h3><p>Uploads are sent to the service for validation. Empty, null, inferred and approved labels stay distinct.</p></div>
+              <label for="dataset-file">CSV, JSON or JSONL file<input id="dataset-file" type="file" accept=".csv,.json,.jsonl,text/csv,application/json,application/x-ndjson"></label>
+              <div class="dataset-mapping-grid">
+                <label for="dataset-format">Format<select id="dataset-format"><option value="jsonl">JSONL</option><option value="json">JSON array</option><option value="csv">CSV</option></select></label>
+                <label for="dataset-case-id">Case ID field / pointer<input id="dataset-case-id" type="text" value="/case_id" placeholder="/case_id or case_id"></label>
+                <label for="dataset-input-field">Input field / pointer<input id="dataset-input-field" type="text" value="/input" placeholder="/input or message"></label>
+                <label for="dataset-expected-field">Expected answer field / pointer<input id="dataset-expected-field" type="text" value="/expected" placeholder="/expected or answer"></label>
+                <label for="dataset-label-status">Label status field / pointer<input id="dataset-label-status" type="text" value="/label_status" placeholder="/label_status or label_status"></label>
+              </div>
+              <div class="dataset-csv-hint" id="dataset-csv-hint" hidden>CSV input is mapped to <code>input</code>; expected values are mapped to <code>answer</code>. Use column names rather than JSON pointers.</div>
+              <div class="authoring-actions"><button id="validate-dataset" class="btn btn-primary" type="button">Validate mapping</button><button id="clear-dataset" class="btn btn-secondary" type="button">Clear import</button></div>
+              <p id="dataset-import-status" class="source-import-status" role="status" aria-live="polite">Choose a project and a dataset file to begin.</p>
+            </section>
+            <section id="dataset-report-card" class="dataset-report" aria-live="polite" hidden>
+              <div class="dataset-report-head"><div><h3>Mapping report</h3><p id="dataset-report-meta"></p></div><span id="dataset-coverage" class="authoring-revision"></span></div>
+              <div id="dataset-report-callout" class="authoring-callout"></div>
+              <div class="dataset-table-wrap"><table class="dataset-table"><caption class="visually-hidden">Dataset mapping and label review</caption><thead><tr><th scope="col">Keep</th><th scope="col">Case</th><th scope="col">Input</th><th scope="col">Expected</th><th scope="col">Label</th></tr></thead><tbody id="dataset-report-rows"></tbody></table></div>
+              <div class="authoring-actions"><button id="commit-dataset" class="btn btn-primary" type="button">Commit dataset revision</button></div>
+              <p id="dataset-commit-status" class="source-import-status" role="status" aria-live="polite"></p>
+            </section>
           </div>
 
           <div id="authoring-preview" class="authoring-pane" role="tabpanel" aria-labelledby="authoring-preview-tab" hidden>
             <div class="synthetic-banner"><strong>Synthetic preview</strong><span>No agent has been evaluated</span></div>
-            <div class="authoring-pane-head"><div><h2>Review the dashboard shape</h2><p>A preview uses the canonical component registry and declared ranges only.</p></div><span class="authoring-revision">No revision saved</span></div>
-            <div class="preview-empty"><div class="preview-placeholder"></div><p>Save metric and dataset decisions to create an immutable preview revision.</p></div>
+            <div class="authoring-pane-head"><div><h2>Review the dashboard shape</h2><p>Save canonical dashboard JSON, then ask the worker for deterministic synthetic data.</p></div><span id="preview-revision" class="authoring-revision">No revision saved</span></div>
+            <section class="preview-editor" aria-labelledby="preview-editor-heading">
+              <div><h3 id="preview-editor-heading">Presentation definition</h3><p>Only registered components and closed bindings are sent to the dashboard API.</p></div>
+              <label for="preview-name">Dashboard name<input id="preview-name" type="text" value="Evaluation overview"></label>
+              <div id="preview-block-editor" class="preview-block-editor"></div>
+              <div class="authoring-actions"><button id="save-preview-definition" class="btn btn-primary" type="button">Save dashboard revision</button><button id="undo-preview-definition" class="btn btn-secondary" type="button" disabled>Undo to previous revision</button><button id="inspect-preview-definition" class="btn btn-secondary" type="button" aria-expanded="false">Inspect JSON</button></div>
+              <pre id="preview-definition-inspector" class="definition-inspector" hidden aria-label="Dashboard definition inspection"></pre>
+              <p id="preview-save-status" class="source-import-status" role="status" aria-live="polite">Connect an evaluation to save a dashboard revision.</p>
+            </section>
+            <section id="preview-result-card" class="preview-result" aria-live="polite" hidden>
+              <div class="dataset-report-head"><div><h3>Generated preview data</h3><p id="preview-result-meta"></p></div><span class="preview-synthetic-badge">synthetic</span></div>
+              <div id="preview-result-blocks" class="preview-result-blocks"></div>
+            </section>
           </div>
         </section>
       </div>
+
+      <section id="authoring-conflict-card" class="authoring-conflict" role="alert" hidden>
+        <div><strong id="authoring-conflict-title">Another tab saved a newer revision.</strong><p id="authoring-conflict-detail"></p></div>
+        <div class="authoring-actions"><button id="reload-conflict" class="btn btn-primary" type="button">Reload latest</button><button id="keep-conflict-draft" class="btn btn-secondary" type="button">Keep my draft</button></div>
+      </section>
 
       <section id="metric-review-card" class="metric-review" aria-live="polite" hidden>
         <div><h2>Review selected metrics</h2><p>These choices change evaluation meaning. They are not defaults.</p></div>

@@ -8,6 +8,9 @@
   const all = (selector) => [...document.querySelectorAll(selector)];
   const params = new URLSearchParams(location.search);
   const sessionId = params.get("session_id");
+  let evaluationId = (params.get("eval_id") || "").trim();
+  let evaluationVersionId = (params.get("evaluation_version_id") || "").trim();
+  let datasetVersionId = (params.get("dataset_version_id") || "").trim();
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
@@ -17,8 +20,20 @@
   let draftStorageKey = null;
   const jobPollers = new Map();
   let pendingSessionMutation = false;
+  const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const revisionChannel = typeof BroadcastChannel === "function"
+    ? new BroadcastChannel("traceline-authoring-revisions") : null;
+  let conflictState = null;
+  let datasetState = {
+    datasetId: null, uploadId: null, reportId: null, report: null,
+    versionId: null, revision: 0, excluded: new Set(), mapping: null,
+  };
+  let previewState = {
+    definition: null, revision: 0, activeVersionId: null,
+    previousDefinition: null, components: [], preview: null,
+  };
 
-  const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "" });
+  const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "", correctionDrafts: {} });
   let draft = emptyDraft();
   function draftKey() {
     const boundSessionId = window.__tracelineAuthoringSession?.session_id || sessionId || "";
@@ -130,6 +145,8 @@
       const error = new Error(payload?.error?.message || "The saved authoring session could not be reached.");
       error.code = payload?.error?.code;
       error.correlationId = payload?.error?.correlation_id;
+      error.details = payload?.error?.details || {};
+      error.status = response.status;
       throw error;
     }
     return payload;
@@ -149,6 +166,83 @@
     if (status) status.textContent = message;
   }
 
+  function showConflict(kind, message, refresh) {
+    conflictState = { kind, refresh };
+    const card = $("#authoring-conflict-card");
+    const title = $("#authoring-conflict-title");
+    const detail = $("#authoring-conflict-detail");
+    if (title) title.textContent = kind === "knowledge"
+      ? "The knowledge report changed in another tab."
+      : kind === "dataset" ? "The dataset changed in another tab." : "The dashboard changed in another tab.";
+    if (detail) detail.textContent = message || "Reload the latest revision or keep this tab's unsaved draft for review.";
+    if (card) card.hidden = false;
+  }
+
+  function hideConflict() {
+    conflictState = null;
+    const card = $("#authoring-conflict-card");
+    if (card) card.hidden = true;
+  }
+
+  function broadcastRevision(kind, revision, versionId) {
+    const message = { source: tabId, projectId, evaluationId, kind, revision, versionId };
+    try { revisionChannel?.postMessage(message); } catch (_) { /* browser without channels */ }
+    try { localStorage.setItem("traceline.authoring-revision", JSON.stringify(message)); } catch (_) { /* storage unavailable */ }
+  }
+
+  function hasUnsavedAuthoringDraft() {
+    return selected().length > 0 || Boolean(draft.customIntent) || Boolean(datasetState.report)
+      || (previewState.definition && previewState.activeVersionId && previewState.definition !== previewDefinition());
+  }
+
+  function handleRevisionMessage(message) {
+    if (!message || message.source === tabId || message.projectId !== projectId) return;
+    if (message.kind === "dashboard" && message.evaluationId !== evaluationId) return;
+    const currentRevision = message.kind === "knowledge" ? (knowledgeReport?.revision || 0)
+      : message.kind === "dataset" ? datasetState.revision : previewState.revision;
+    if (Number(message.revision || 0) <= currentRevision) return;
+    const refresh = message.kind === "knowledge" ? loadKnowledgeReport
+      : message.kind === "dataset" ? refreshDatasetVersion : refreshDashboardVersions;
+    showConflict(message.kind, `Revision ${message.revision} is now current on another tab.`, refresh);
+  }
+
+  function installRevisionListeners() {
+    revisionChannel?.addEventListener("message", (event) => handleRevisionMessage(event.data));
+    window.addEventListener("storage", (event) => {
+      if (event.key !== "traceline.authoring-revision" || !event.newValue) return;
+      try { handleRevisionMessage(JSON.parse(event.newValue)); } catch (_) { /* ignore malformed local state */ }
+    });
+    window.addEventListener("beforeunload", () => revisionChannel?.close());
+  }
+
+  function pendingJobsKey() {
+    return projectId ? `traceline.authoring-jobs.v1:${projectId}:${sessionId || "none"}` : null;
+  }
+
+  function pendingJobs() {
+    const key = pendingJobsKey();
+    if (!key) return [];
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch (_) { return []; }
+  }
+
+  function rememberJob(jobId, kind) {
+    const key = pendingJobsKey();
+    if (!key || !jobId) return;
+    const jobs = pendingJobs().filter((item) => item.jobId !== jobId);
+    jobs.push({ jobId, kind, projectId, evaluationId });
+    try { localStorage.setItem(key, JSON.stringify(jobs)); } catch (_) { /* storage unavailable */ }
+  }
+
+  function forgetJob(jobId) {
+    const key = pendingJobsKey();
+    if (!key) return;
+    const jobs = pendingJobs().filter((item) => item.jobId !== jobId);
+    try { localStorage.setItem(key, JSON.stringify(jobs)); } catch (_) { /* storage unavailable */ }
+  }
+
   function setSessionMutationPending(pending) {
     pendingSessionMutation = pending;
     const send = $("#send-authoring-note");
@@ -161,9 +255,9 @@
     return detail ? String(detail) : "The worker did not complete the job.";
   }
 
-  function watchJob(jobId, isCurrentContext, onTerminal) {
+  function watchJob(jobId, isCurrentContext, onTerminal, kind = "workflow") {
     if (!jobId || jobPollers.has(jobId)) return;
-    const watcher = { stopped: false, timer: null };
+    const watcher = { stopped: false, timer: null, delay: 300 };
     jobPollers.set(jobId, watcher);
     const stop = () => {
       watcher.stopped = true;
@@ -177,16 +271,20 @@
         if (watcher.stopped || !isCurrentContext()) return stop();
         if (["completed", "failed", "cancelled"].includes(job.status)) {
           stop();
+          forgetJob(jobId);
           await onTerminal(job);
           return;
         }
+        watcher.delay = 500;
       } catch (_) {
         // A worker can be briefly unavailable during startup. Keep the local
         // draft and retry instead of presenting a queued change as completed.
+        watcher.delay = Math.min(5000, watcher.delay * 1.7);
       }
-      if (!watcher.stopped) watcher.timer = setTimeout(tick, 500);
+      if (!watcher.stopped) watcher.timer = setTimeout(tick, watcher.delay);
     };
-    watcher.timer = setTimeout(tick, 500);
+    rememberJob(jobId, kind);
+    watcher.timer = setTimeout(tick, watcher.delay);
   }
 
   async function refreshBoundSession(sessionAtQueue) {
@@ -233,12 +331,37 @@
     const load = $("#load-project-report");
     const importButton = $("#queue-source-import");
     const state = $("#knowledge-state");
+    const bootstrap = $("#project-bootstrap-status");
     if (input && input.value !== projectId) input.value = projectId;
     if (load) load.disabled = !projectId;
     if (importButton) importButton.disabled = !projectId;
     if (!knowledgeReport && state) state.textContent = projectId ? "Source report not loaded" : "Project context required";
     const sourceStatus = $("#source-import-status");
     if (!projectId && sourceStatus) sourceStatus.textContent = "Choose a project before importing a source.";
+    if (bootstrap) bootstrap.textContent = projectId
+      ? `Project ${projectId} attached in this browser. Source and dataset objects remain server-owned.`
+      : "No project attached.";
+    const datasetButton = $("#validate-dataset");
+    if (datasetButton) datasetButton.disabled = !projectId;
+  }
+
+  function connectProject() {
+    const input = $("#authoring-project-id");
+    const nextProjectId = input?.value.trim() || "";
+    if (!nextProjectId) {
+      $("#project-bootstrap-status").textContent = "Enter a project ID before connecting.";
+      input?.focus();
+      return;
+    }
+    if (nextProjectId !== projectId) clearKnowledgeReport();
+    setProjectContext(nextProjectId);
+    const next = new URL(location.href);
+    next.searchParams.set("project_id", nextProjectId);
+    history.replaceState({}, "", next);
+    setActivity("Project context attached. Loading the server-owned report…");
+    loadKnowledgeReport();
+    refreshDatasetVersion();
+    refreshDashboardVersions();
   }
 
   function clearRenderedKnowledgeReport() {
@@ -333,11 +456,38 @@
       }
       const correction = document.createElement("button");
       correction.type = "button";
-      correction.className = "text-action correction-unavailable";
-      correction.disabled = true;
-      correction.textContent = "Text correction unavailable";
-      correction.title = "The current knowledge API supports confirmation only.";
+      correction.className = "text-action";
+      correction.textContent = "Correct finding";
+      correction.setAttribute("aria-expanded", "false");
+      const editor = document.createElement("div");
+      editor.className = "fact-correction-editor";
+      editor.hidden = true;
+      const label = appendText(editor, "label", "Correction", "visually-hidden");
+      const textarea = document.createElement("textarea");
+      textarea.rows = 3;
+      textarea.className = "fact-correction-input";
+      textarea.value = draft.correctionDrafts?.[fact.fact_id] || "";
+      textarea.placeholder = "State the corrected understanding…";
+      textarea.setAttribute("aria-label", `Correction for ${fact.name || "finding"}`);
+      label.setAttribute("for", `correction-${fact.fact_id}`);
+      textarea.id = `correction-${fact.fact_id}`;
+      textarea.addEventListener("input", () => {
+        draft.correctionDrafts = { ...(draft.correctionDrafts || {}), [fact.fact_id]: textarea.value };
+        saveDraft("Correction retained in this browser");
+      });
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "btn btn-sm btn-primary";
+      save.textContent = "Save correction revision";
+      save.addEventListener("click", () => saveFactCorrection(fact.fact_id, textarea, save));
+      editor.append(textarea, save);
+      correction.addEventListener("click", () => {
+        editor.hidden = !editor.hidden;
+        correction.setAttribute("aria-expanded", String(!editor.hidden));
+        if (!editor.hidden) textarea.focus();
+      });
       item.append(correction);
+      item.append(editor);
       facts.append(item);
     }
   }
@@ -391,11 +541,47 @@
       });
       if (requestedProjectId !== projectId || contextVersion !== knowledgeContextVersion || reportAtRequest !== knowledgeReport) return;
       renderKnowledgeReport(report);
+      broadcastRevision("knowledge", report.revision, report.report_id);
       $("#knowledge-report-heading")?.focus();
       setActivity("Finding confirmed. The service returned a new knowledge report revision.");
     } catch (error) {
       button.disabled = false;
+      if (error.code === "conflict") showConflict("knowledge", "The report revision is stale. Reload it before confirming.", loadKnowledgeReport);
       setActivity(reportError("Finding was not confirmed", error));
+    }
+  }
+
+  async function saveFactCorrection(factId, textarea, button) {
+    const correction = textarea?.value.trim();
+    if (!knowledgeReport || !projectId || !correction) {
+      setActivity("Write a correction before saving it.");
+      textarea?.focus();
+      return;
+    }
+    const reportAtRequest = knowledgeReport;
+    button.disabled = true;
+    setActivity("Saving the knowledge correction…");
+    try {
+      const created = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/confirm`, {
+        method: "POST",
+        body: {
+          expected_revision: reportAtRequest.revision,
+          report_id: reportAtRequest.report_id,
+          corrections: [{ fact_id: factId, status: "user_confirmed", summary: correction }],
+        },
+      });
+      if (reportAtRequest !== knowledgeReport) return;
+      await loadKnowledgeReport();
+      broadcastRevision("knowledge", created.revision, created.report_id);
+      setActivity("Correction saved. The service returned a new knowledge report revision.");
+      draft.correctionDrafts = { ...(draft.correctionDrafts || {}) };
+      delete draft.correctionDrafts[factId];
+      saveDraft("Correction revision saved");
+      $("#knowledge-report-heading")?.focus();
+    } catch (error) {
+      if (error.code === "conflict") showConflict("knowledge", "The report changed before this correction was saved.", loadKnowledgeReport);
+      setActivity(reportError("Correction was not saved", error));
+      button.disabled = false;
     }
   }
 
@@ -438,7 +624,7 @@
         const url = $("#source-git-url")?.value.trim();
         const ref = $("#source-git-ref")?.value.trim();
         if (!url || !ref) throw new Error("Provide both an HTTPS Git URL and an explicit ref");
-        source = { kind: "git", url, ref };
+        source = { kind: "git", repo_url: url, ref };
       }
       if (!isCurrentContext()) return;
       if (status) status.textContent = "Queueing source import…";
@@ -452,6 +638,7 @@
       const state = $("#knowledge-state");
       if (state) state.textContent = "Import queued — report pending";
       setActivity(`Source import ${queued.state}; no source claim has been made yet.`);
+      rememberJob(queued.job_id, "source_import");
       watchJob(queued.job_id, isCurrentContext, async (job) => {
         if (job.status === "completed") {
           if (status) status.textContent = "Import completed. Loading the new project report…";
@@ -460,12 +647,436 @@
         }
         if (status) status.textContent = `Import ${job.status}: ${jobFailure(job)}`;
         setActivity(`Source import ${job.status}: ${jobFailure(job)}`);
-      });
+      }, "source_import");
     } catch (error) {
       if (!isCurrentContext()) return;
       if (status) status.textContent = reportError("Source import was not queued", error);
       setActivity(reportError("Source import recovery needed", error));
     }
+  }
+
+  function datasetFormat() {
+    return $("#dataset-format")?.value || "jsonl";
+  }
+
+  function datasetMapping() {
+    const format = datasetFormat();
+    const caseId = $("#dataset-case-id")?.value.trim();
+    const input = $("#dataset-input-field")?.value.trim();
+    const expected = $("#dataset-expected-field")?.value.trim();
+    const label = $("#dataset-label-status")?.value.trim();
+    if (!caseId || !input || !expected) throw new Error("Case ID, input and expected mappings are required");
+    if (format === "csv") {
+      return {
+        format, case_id: caseId,
+        input_fields: { query: input },
+        expected_fields: { answer: expected },
+        label_status: label || null,
+      };
+    }
+    return { format, case_id: caseId, input, expected, label_status: label || null };
+  }
+
+  function updateDatasetFormat() {
+    const hint = $("#dataset-csv-hint");
+    if (hint) hint.hidden = datasetFormat() !== "csv";
+    const file = $("#dataset-file")?.files?.[0];
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".csv")) $("#dataset-format").value = "csv";
+    else if (name.endsWith(".json")) $("#dataset-format").value = "json";
+    else if (name.endsWith(".jsonl")) $("#dataset-format").value = "jsonl";
+    if (hint) hint.hidden = datasetFormat() !== "csv";
+  }
+
+  function labelTone(status) {
+    return status === "approved" ? "approved" : status === "inferred" ? "inferred" : "missing";
+  }
+
+  function renderDatasetReport(report) {
+    const card = $("#dataset-report-card");
+    const rows = $("#dataset-report-rows");
+    if (!card || !rows || !report) return;
+    card.hidden = false;
+    const coverage = report.label_coverage || {};
+    $("#dataset-report-meta").textContent = `${report.cases?.length || 0} cases · ${coverage.approved || 0} approved labels · ${coverage.missing || 0} missing`;
+    $("#dataset-coverage").textContent = `${coverage.approved || 0}/${coverage.total || 0} approved`;
+    $("#dataset-report-callout").textContent = "Review each row before committing. Exclusions are explicit and create a new immutable dataset revision; missing labels are never promoted to gold automatically.";
+    rows.replaceChildren();
+    for (const item of report.cases || []) {
+      const tr = document.createElement("tr");
+      const keepCell = document.createElement("td");
+      const keep = document.createElement("input");
+      keep.type = "checkbox";
+      keep.checked = !datasetState.excluded.has(item.case_id);
+      keep.setAttribute("aria-label", `Keep case ${item.case_id}`);
+      keep.addEventListener("change", () => {
+        if (keep.checked) datasetState.excluded.delete(item.case_id);
+        else datasetState.excluded.add(item.case_id);
+        saveDraft("Dataset exclusions retained in this browser");
+      });
+      keepCell.append(keep);
+      const caseCell = document.createElement("td");
+      appendText(caseCell, "strong", item.case_id || "—");
+      if (item.metadata?.row_number || item.row_number) appendText(caseCell, "small", `row ${item.metadata?.row_number || item.row_number}`);
+      const inputCell = document.createElement("td");
+      inputCell.textContent = JSON.stringify(item.input ?? null);
+      const expectedCell = document.createElement("td");
+      expectedCell.textContent = JSON.stringify(item.expected ?? null);
+      const labelCell = document.createElement("td");
+      const badge = appendText(labelCell, "span", item.label_status || "missing", `dataset-label ${labelTone(item.label_status)}`);
+      badge.title = item.label_provenance ? `Provenance: ${item.label_provenance}` : "No independent label provenance";
+      tr.append(keepCell, caseCell, inputCell, expectedCell, labelCell);
+      rows.append(tr);
+    }
+  }
+
+  async function validateDataset() {
+    const status = $("#dataset-import-status");
+    if (!projectId) {
+      if (status) status.textContent = "Connect a project before importing cases.";
+      return;
+    }
+    const file = $("#dataset-file")?.files?.[0];
+    if (!file) {
+      if (status) status.textContent = "Choose a CSV, JSON or JSONL file first.";
+      return;
+    }
+    try {
+      const mapping = datasetMapping();
+      if (status) status.textContent = "Uploading dataset…";
+      const upload = await request("/api/uploads", {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (status) status.textContent = "Validating mapping and labels…";
+      const report = await request(`/api/projects/${encodeURIComponent(projectId)}/datasets/imports`, {
+        method: "POST",
+        body: {
+          upload_id: upload.upload_id,
+          dataset_id: datasetState.datasetId || null,
+          mapping,
+          metric_requirements: [
+            { metric_id: "latency", class: "health", requires_label: false },
+            { metric_id: "accuracy", class: "accuracy", requires_label: true },
+          ],
+        },
+      });
+      datasetState = {
+        datasetId: report.dataset_id, uploadId: upload.upload_id, reportId: report.report_id,
+        report, versionId: datasetState.versionId, revision: datasetState.revision,
+        excluded: new Set(), mapping,
+      };
+      renderDatasetReport(report);
+      if (status) status.textContent = "Mapping validated. Nothing is committed until you choose the rows to keep.";
+      setActivity("Dataset mapping validated by the service; review the label provenance before committing.");
+      const next = new URL(location.href);
+      next.searchParams.set("dataset_id", report.dataset_id);
+      history.replaceState({}, "", next);
+    } catch (error) {
+      if (status) status.textContent = reportError("Dataset was not validated", error);
+      setActivity(reportError("Dataset mapping needs attention", error));
+    }
+  }
+
+  async function refreshDatasetVersion() {
+    if (!datasetState.datasetId && !params.get("dataset_id")) return;
+    const id = datasetState.datasetId || params.get("dataset_id");
+    try {
+      const listing = await request(`/api/objects/dataset/${encodeURIComponent(id)}/versions`);
+      datasetState.datasetId = id;
+      datasetState.revision = Number(listing.active_revision || 0);
+      datasetState.versionId = listing.active_version_id || null;
+      if (datasetState.versionId) {
+        const version = await request(`/api/datasets/${encodeURIComponent(id)}/versions/${encodeURIComponent(datasetState.versionId)}`);
+        datasetState.report = version;
+        renderDatasetReport(version);
+      }
+      datasetVersionId = datasetState.versionId || datasetVersionId;
+      updateDatasetRevisionLabel();
+    } catch (error) {
+      if (error.code !== "not_found") setActivity(reportError("Dataset version could not be refreshed", error));
+    }
+  }
+
+  function updateDatasetRevisionLabel() {
+    const label = $("#dataset-revision");
+    if (label) label.textContent = datasetState.versionId ? `Revision ${datasetState.revision}` : "No dataset version";
+  }
+
+  async function commitDataset() {
+    const status = $("#dataset-commit-status");
+    if (!datasetState.datasetId || !datasetState.reportId) {
+      if (status) status.textContent = "Validate a mapping before committing a dataset.";
+      return;
+    }
+    try {
+      const listing = await request(`/api/objects/dataset/${encodeURIComponent(datasetState.datasetId)}/versions`);
+      const expectedRevision = Number(listing.active_revision || 0);
+      const result = await request(`/api/datasets/${encodeURIComponent(datasetState.datasetId)}/commit`, {
+        method: "POST",
+        body: {
+          report_id: datasetState.reportId,
+          explicit_exclusions: [...datasetState.excluded],
+          expected_revision: expectedRevision,
+        },
+      });
+      datasetState.revision = result.revision;
+      datasetState.versionId = result.version_id;
+      datasetVersionId = result.version_id;
+      updateDatasetRevisionLabel();
+      const next = new URL(location.href);
+      next.searchParams.set("dataset_version_id", result.version_id);
+      history.replaceState({}, "", next);
+      broadcastRevision("dataset", result.revision, result.version_id);
+      if (status) status.textContent = `Dataset revision ${result.revision} committed. ${datasetState.excluded.size} explicit exclusion(s).`;
+      setActivity("Dataset committed. The service returned a new immutable version.");
+      renderDatasetReport({ ...datasetState.report, exclusions: [...datasetState.excluded].map((case_id) => ({ case_id, reason: "explicit" })) });
+    } catch (error) {
+      if (error.code === "conflict") showConflict("dataset", "A newer dataset revision exists; reload it before committing.", refreshDatasetVersion);
+      if (status) status.textContent = reportError("Dataset was not committed", error);
+    }
+  }
+
+  function clearDataset() {
+    datasetState = { datasetId: null, uploadId: null, reportId: null, report: null, versionId: null, revision: 0, excluded: new Set(), mapping: null };
+    if ($("#dataset-report-card")) $("#dataset-report-card").hidden = true;
+    if ($("#dataset-file")) $("#dataset-file").value = "";
+    if ($("#dataset-import-status")) $("#dataset-import-status").textContent = projectId ? "Choose a dataset file to begin." : "Choose a project and a dataset file to begin.";
+    updateDatasetRevisionLabel();
+  }
+
+  function previewDefinition() {
+    const metricIds = selected();
+    const registryVersion = Number($("#preview-registry-version")?.value || 1);
+    return {
+      version: 3,
+      name: $("#preview-name")?.value.trim() || "Evaluation overview",
+      registry_version: registryVersion,
+      layout: { type: "grid", columns: 12 },
+      filters: [{ id: "run", type: "run_selector", default: "latest" }],
+      blocks: metricIds.map((metricId, index) => ({
+        component: "metric_summary", span: index % 2 === 0 ? 6 : 6,
+        bind: { metric: metricId, run: "$filters.run", stat: metricId === "latency" ? "mean" : "pass_rate" },
+      })),
+    };
+  }
+
+  function renderPreviewEditor() {
+    const editor = $("#preview-block-editor");
+    if (!editor) return;
+    editor.replaceChildren();
+    const metricIds = selected();
+    if (!metricIds.length) {
+      appendText(editor, "p", "Select at least one metric to add a registered summary block.", "preview-editor-empty");
+      return;
+    }
+    for (const metricId of metricIds) {
+      const row = document.createElement("div");
+      row.className = "preview-block-row";
+      appendText(row, "span", metricId, "mono");
+      appendText(row, "span", metricId === "latency" ? "mean" : "pass_rate", "preview-block-binding");
+      editor.append(row);
+    }
+  }
+
+  function renderPreviewResult(preview) {
+    const card = $("#preview-result-card");
+    const blocks = $("#preview-result-blocks");
+    if (!card || !blocks || !preview) return;
+    card.hidden = false;
+    $("#preview-result-meta").textContent = `Generator ${preview.generator_version || "?"} · data hash ${String(preview.data_hash || "").slice(0, 12)}… · no gate result`;
+    blocks.replaceChildren();
+    for (const block of preview.blocks || []) {
+      const item = document.createElement("article");
+      item.className = "preview-result-block";
+      appendText(item, "h4", block.metric_id || block.component || "registered component");
+      appendText(item, "strong", block.placeholder ? "Placeholder" : String(block.sample), "preview-result-value");
+      appendText(item, "p", block.placeholder ? (block.reason || "No declared range") : "Deterministic synthetic example; not a measured result.");
+      blocks.append(item);
+    }
+  }
+
+  function renderPreviewDefinitionInspector() {
+    const inspector = $("#preview-definition-inspector");
+    if (inspector && !inspector.hidden) inspector.textContent = JSON.stringify(previewDefinition(), null, 2);
+  }
+
+  async function refreshDashboardVersions() {
+    if (!evaluationId && window.__tracelineAuthoringSession?.evaluation_id) evaluationId = window.__tracelineAuthoringSession.evaluation_id;
+    if (!evaluationId) return;
+    try {
+      const listing = await request(`/api/objects/dashboard/${encodeURIComponent(evaluationId)}/versions`);
+      const activeVersion = listing.versions?.find((item) => item.version_id === listing.active_version_id);
+      previewState.revision = Number(listing.active_revision || 0);
+      previewState.activeVersionId = listing.active_version_id || null;
+      if (activeVersion) {
+        previewState.definition = activeVersion.content?.definition || activeVersion.content;
+        previewState.previousDefinition = listing.versions?.[listing.versions.length - 2]?.content?.definition || null;
+        $("#preview-name").value = previewState.definition.name || "Evaluation overview";
+      } else {
+        previewState.definition = previewDefinition();
+      }
+      renderPreviewEditor();
+      updatePreviewRevisionLabel();
+    } catch (error) {
+      if (error.code !== "not_found") setActivity(reportError("Dashboard revisions could not be refreshed", error));
+    }
+  }
+
+  function updatePreviewRevisionLabel() {
+    const label = $("#preview-revision");
+    if (label) label.textContent = previewState.activeVersionId ? `Revision ${previewState.revision}` : "No revision saved";
+    const undo = $("#undo-preview-definition");
+    if (undo) undo.disabled = !previewState.previousDefinition || !previewState.activeVersionId;
+  }
+
+  async function queuePreviewJob(versionId) {
+    const status = $("#preview-save-status");
+    if (!evaluationVersionId || !datasetVersionId) {
+      if (status) status.textContent = "Dashboard revision saved. Preview generation needs an evaluation version and committed dataset version.";
+      return;
+    }
+    try {
+      const queued = await request(`/api/dashboard-versions/${encodeURIComponent(versionId)}/preview`, {
+        method: "POST",
+        headers: { "Idempotency-Key": operationKey() },
+        body: { evaluation_version_id: evaluationVersionId, dataset_version_id: datasetVersionId, generator_version: "1" },
+      });
+      if (status) status.textContent = `Preview ${queued.state}. Worker job ${queued.job_id} is awaiting completion.`;
+      watchJob(queued.job_id, () => true, async (job) => {
+        if (job.status === "completed") {
+          previewState.preview = job.result || {};
+          renderPreviewResult(previewState.preview);
+          if (status) status.textContent = "Synthetic preview generated from the saved canonical definition.";
+          setActivity("Preview worker completed; no evaluation was started.");
+        } else if (status) status.textContent = `Preview ${job.status}: ${jobFailure(job)}`;
+      }, "dashboard_preview");
+    } catch (error) {
+      if (status) status.textContent = reportError("Preview was not queued", error);
+    }
+  }
+
+  async function savePreviewDefinition(definition = previewDefinition(), isUndo = false) {
+    const status = $("#preview-save-status");
+    if (!evaluationId) {
+      if (status) status.textContent = "Connect a saved evaluation/session before saving a dashboard revision.";
+      return;
+    }
+    if (!definition.blocks.length) {
+      if (status) status.textContent = "Select at least one metric before saving the dashboard.";
+      return;
+    }
+    const before = previewState.definition;
+    try {
+      if (status) status.textContent = "Saving dashboard revision…";
+      const result = await request(`/api/dashboards/${encodeURIComponent(evaluationId)}/versions`, {
+        method: "POST",
+        body: { expected_revision: previewState.revision, definition },
+      });
+      const version = result.version;
+      previewState.previousDefinition = before;
+      previewState.definition = definition;
+      previewState.revision = version.revision;
+      previewState.activeVersionId = version.version_id;
+      updatePreviewRevisionLabel();
+      broadcastRevision("dashboard", version.revision, version.version_id);
+      if (status) status.textContent = isUndo
+        ? `Undo saved as dashboard revision ${version.revision}.`
+        : `Dashboard revision ${version.revision} saved and validated.`;
+      setActivity("Dashboard definition saved by the service; presentation is still separate from run approval.");
+      await queuePreviewJob(version.version_id);
+    } catch (error) {
+      if (error.code === "conflict") showConflict("dashboard", "A newer dashboard revision exists; reload it before saving.", refreshDashboardVersions);
+      if (status) status.textContent = reportError("Dashboard revision was not saved", error);
+    }
+  }
+
+  function wireDataset() {
+    $("#dataset-file")?.addEventListener("change", updateDatasetFormat);
+    $("#dataset-format")?.addEventListener("change", updateDatasetFormat);
+    $("#validate-dataset")?.addEventListener("click", validateDataset);
+    $("#commit-dataset")?.addEventListener("click", commitDataset);
+    $("#clear-dataset")?.addEventListener("click", clearDataset);
+  }
+
+  function wirePreview() {
+    $("#preview-name")?.addEventListener("input", renderPreviewDefinitionInspector);
+    $("#save-preview-definition")?.addEventListener("click", () => savePreviewDefinition());
+    $("#undo-preview-definition")?.addEventListener("click", () => savePreviewDefinition(previewState.previousDefinition, true));
+    $("#inspect-preview-definition")?.addEventListener("click", (event) => {
+      const inspector = $("#preview-definition-inspector");
+      if (!inspector) return;
+      inspector.hidden = !inspector.hidden;
+      inspector.textContent = JSON.stringify(previewDefinition(), null, 2);
+      event.currentTarget.setAttribute("aria-expanded", String(!inspector.hidden));
+      event.currentTarget.textContent = inspector.hidden ? "Inspect JSON" : "Hide JSON";
+    });
+    all(".metric-option input:not(:disabled)").forEach((input) => input.addEventListener("change", renderPreviewEditor));
+    renderPreviewEditor();
+  }
+
+  async function reconcilePendingJobs() {
+    for (const pending of pendingJobs()) {
+      if (pending.projectId !== projectId) continue;
+      if (pending.kind === "source_import") {
+        const requestedProjectId = projectId;
+        watchJob(pending.jobId, () => requestedProjectId === projectId, async (job) => {
+          const status = $("#source-import-status");
+          if (job.status === "completed") {
+            if (status) status.textContent = "Import completed while this page was away. Loading the project report…";
+            await loadKnowledgeReport();
+          } else {
+            if (status) status.textContent = `Import ${job.status}: ${jobFailure(job)}`;
+            setActivity(`Source import ${job.status}: ${jobFailure(job)}`);
+          }
+        }, "source_import");
+      } else if (pending.kind === "session_turn" && window.__tracelineAuthoringSession) {
+        const sessionAtQueue = window.__tracelineAuthoringSession;
+        watchJob(pending.jobId,
+          () => window.__tracelineAuthoringSession?.session_id === sessionAtQueue.session_id && projectId === sessionAtQueue.project_id,
+          async (job) => {
+            if (job.status === "completed") {
+              try {
+                await refreshBoundSession(sessionAtQueue);
+                setActivity("Authoring worker completed while this page was away; the session was reconciled from the service.");
+              } finally { setSessionMutationPending(false); }
+            } else {
+              setActivity(`Authoring change ${job.status}: ${jobFailure(job)} Your local draft is retained.`);
+              setSessionMutationPending(false);
+            }
+          }, "session_turn");
+      } else if (pending.kind === "dashboard_preview") {
+        watchJob(pending.jobId, () => true, async (job) => {
+          if (job.status === "completed") {
+            previewState.preview = job.result || {};
+            renderPreviewResult(previewState.preview);
+            $("#preview-save-status").textContent = "Synthetic preview reconciled from the completed worker job.";
+          } else {
+            $("#preview-save-status").textContent = `Preview ${job.status}: ${jobFailure(job)}`;
+          }
+        }, "dashboard_preview");
+      }
+    }
+  }
+
+  async function reloadConflict() {
+    const current = conflictState;
+    hideConflict();
+    if (!current?.refresh) return;
+    try {
+      await current.refresh();
+      setActivity("Latest revision loaded. Review any local draft before saving again.");
+    } catch (error) {
+      setActivity(reportError("The latest revision could not be loaded", error));
+    }
+  }
+
+  function keepConflictDraft() {
+    hideConflict();
+    saveDraft("Local draft kept after a cross-tab conflict");
+    setActivity("Your local draft is kept. Reload the latest revision manually before committing it.");
   }
 
   async function sendAuthoringNote() {
@@ -507,7 +1118,12 @@
     const binding = $("#authoring-binding-status");
     if (!sessionId) {
       setProjectContext(projectId);
-      if (projectId) loadKnowledgeReport();
+      if (projectId) {
+        loadKnowledgeReport();
+        refreshDatasetVersion();
+        refreshDashboardVersions();
+        reconcilePendingJobs();
+      }
       return;
     }
     if (binding) binding.textContent = "Loading saved authoring session…";
@@ -517,8 +1133,15 @@
       const saveState = $("#authoring-save-state");
       if (saveState) saveState.textContent = "Saved session restored";
       window.__tracelineAuthoringSession = session;
+      evaluationId = session.evaluation_id || evaluationId;
+      evaluationVersionId = session.evaluation_version_id || evaluationVersionId;
       setProjectContext(session.project_id || projectId);
-      if (projectId) loadKnowledgeReport();
+      if (projectId) {
+        loadKnowledgeReport();
+        refreshDatasetVersion();
+        refreshDashboardVersions();
+        reconcilePendingJobs();
+      }
     } catch (error) {
       if (binding) binding.textContent = `Saved session unavailable: ${error.message}`;
       setActivity(reportError("Saved session unavailable", error));
@@ -654,19 +1277,25 @@
       projectInput.addEventListener("input", handleProjectContextInput);
       projectInput.addEventListener("change", handleProjectContextInput);
     }
+    $("#connect-project")?.addEventListener("click", connectProject);
     $("#load-project-report")?.addEventListener("click", loadKnowledgeReport);
     $("#refresh-knowledge-report")?.addEventListener("click", loadKnowledgeReport);
     all("input[name=source-kind]").forEach((input) => input.addEventListener("change", updateSourceFields));
     $("#queue-source-import")?.addEventListener("click", queueSourceImport);
     $("#send-authoring-note")?.addEventListener("click", sendAuthoringNote);
+    $("#reload-conflict")?.addEventListener("click", reloadConflict);
+    $("#keep-conflict-draft")?.addEventListener("click", keepConflictDraft);
     updateSourceFields();
     setProjectContext(projectId);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    installRevisionListeners();
     wireTabs();
     wireMetrics();
     wireSourceAndActivity();
+    wireDataset();
+    wirePreview();
     all("[data-authoring-next]").forEach((button) => button.addEventListener("click", () => {
       const target = button.dataset.authoringNext;
       setTab(target === "dataset" ? "dataset" : target === "source" || target === "review" ? "reference" : target);

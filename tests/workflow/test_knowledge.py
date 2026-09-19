@@ -40,7 +40,11 @@ def test_confirm_then_source_update_marks_review_needed_and_survives_restart(pla
         {
             "expected_revision": report["revision"],
             "report_id": report["report_id"],
-            "corrections": [{"fact_id": fact["fact_id"], "status": "user_confirmed"}],
+            "corrections": [{
+                "fact_id": fact["fact_id"],
+                "status": "user_confirmed",
+                "summary": "The agent checks refund eligibility before issuing a refund.",
+            }],
         },
     )
     assert confirmed["http_status"] == 201
@@ -49,6 +53,9 @@ def test_confirm_then_source_update_marks_review_needed_and_survives_restart(pla
         item["fact_id"] == fact["fact_id"] and item["status"] == "user_confirmed"
         for item in confirmed["body"]["facts"]
     )
+    corrected = next(item for item in confirmed["body"]["facts"] if item["fact_id"] == fact["fact_id"])
+    assert corrected["summary"] == "The agent checks refund eligibility before issuing a refund."
+    assert corrected["original_summary"] == fact.get("summary", "")
 
     updated = platform.seed("dynamic_tool_repo_updated", project_id=s["project_id"])
     imported = platform.post(

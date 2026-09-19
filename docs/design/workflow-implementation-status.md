@@ -463,8 +463,13 @@ It is not an R1 release declaration.
   checksum-verified PostgreSQL migration journal:
   a disposable database successfully recovered after its final journal row was
   removed, and refused a tampered checksum. PostgreSQL retention/link
-  verification remains open; the code path is no longer an intentional
-  `external_backup_required` gap.
+  verification now includes a disposable PostgreSQL retention rehearsal with
+  21 preview artifacts, a version-linked preview, an expired export, and an
+  abandoned quarantine upload: dry-run/apply deleted only the eligible
+  records, preserved the latest-20 and version-linked artifacts, and removed
+  the expired export/upload. Broader production retention/link audits and
+  deployment-specific scheduling evidence remain open; the code path is no
+  longer an intentional `external_backup_required` gap.
   The Compose PostgreSQL deployment now
   has observed RLS, non-bypass startup, job reclaim, worker fencing, and
   shutdown-abandonment evidence: the disposable `TEST_DATABASE_URL` suite
@@ -551,8 +556,8 @@ configured-route setup and full containerized deployment topology are not yet
 release-proven;
 provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
-are not proven on Linux, macOS and WSL2; PostgreSQL retention/TTL link
-verification remains open; LiteLLM
+are not proven on Linux, macOS and WSL2; broader PostgreSQL retention/TTL
+deployment audits and link verification remain open; LiteLLM
 outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
 acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.
