@@ -19,7 +19,7 @@ from .egress.session import ProxyRunSession
 from .evaluator_registry import CustomEvaluatorRegistry
 from .datasets import DatasetService
 from .previews import PreviewService
-from .profiles import ModelProfile, ProfileStore
+from .profiles import ModelProfile, ProfileStore, require_admin
 from .rubric_store import RubricContent, RubricStore
 from .schedules import DurableScheduleService
 from .run_plans import RunPlanService
@@ -175,9 +175,33 @@ class JudgeCalibrationLabelRequest(JudgeCalibrationBindingRequest):
     label_id: str | None = Field(default=None, min_length=1, max_length=255)
 
 
+class SecretCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    secret_type: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
+    value: str = Field(min_length=1, max_length=16_384)
+    allowed_services: list[str] = Field(min_length=1, max_length=4)
+
+
+class SecretRotateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str = Field(min_length=1, max_length=16_384)
+    allowed_services: list[str] = Field(min_length=1, max_length=4)
+
+
 #: Kinds with dedicated, validated creation paths (ProfileStore, RubricStore);
 #: the generic route must never publish attacker-shaped JSON for them.
 PROTECTED_VERSION_KINDS = frozenset({"evaluator", "model_profile", "model_selection", "judge_rubric"})
+SUPPORTED_SECRET_SERVICES = frozenset({"proxy"})
+
+
+def _validate_secret_services(services: list[str]) -> set[str]:
+    normalized = {item.strip() for item in services if isinstance(item, str) and item.strip()}
+    if len(normalized) != len(services) or not normalized or not normalized <= SUPPORTED_SECRET_SERVICES:
+        raise WorkflowError(
+            "allowed_services contains an unsupported service",
+            code="secret_service_invalid", status=422,
+        )
+    return normalized
 
 
 def _readiness_payload(readiness) -> dict[str, Any]:
@@ -508,6 +532,37 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
             project_id, body.rubric, body.expected_revision, request.state.actor,
         )
         return {"state": "draft", "version": asdict(version)}
+
+    @router.post("/secrets", status_code=201)
+    def create_secret(body: SecretCreateRequest, request: Request):
+        require_admin(request.state.actor)
+        allowed_services = _validate_secret_services(body.allowed_services)
+        secret = SecretStore(
+            store(), request.state.actor, Path(artifact_root) / "install-secret.key",
+        ).put(body.secret_type, body.value, allowed_services=allowed_services)
+        return {
+            "state": "active",
+            "secret": {
+                "secret_id": secret.secret_id,
+                "secret_type": secret.secret_type,
+                "allowed_services": sorted(secret.allowed_services),
+            },
+        }
+
+    @router.post("/secrets/{secret_id}/rotate")
+    def rotate_secret(secret_id: str, body: SecretRotateRequest, request: Request):
+        require_admin(request.state.actor)
+        allowed_services = _validate_secret_services(body.allowed_services)
+        secret = SecretStore(
+            store(), request.state.actor, Path(artifact_root) / "install-secret.key",
+        ).rotate(secret_id, body.value, allowed_services=allowed_services)
+        return {
+            "state": "active",
+            "secret": {
+                "secret_id": secret.secret_id,
+                "allowed_services": sorted(secret.allowed_services),
+            },
+        }
 
     @router.post("/judge-calibration/labels", status_code=201)
     def add_judge_calibration_label(body: JudgeCalibrationLabelRequest, request: Request):
