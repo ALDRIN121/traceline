@@ -924,6 +924,31 @@ class Storage:
             finally:
                 self._scope_workspace = previous
 
+    @contextmanager
+    def system_transaction(self, service_identity: str):
+        """Run a trusted non-tenant coordination transaction.
+
+        System coordination rows still carry a workspace marker and forced RLS.
+        The service identity is transaction-local, so a pooled application
+        connection cannot retain worker authority after this block ends.
+        """
+        if not isinstance(service_identity, str) or not service_identity:
+            raise ValueError("service identity is required")
+        with _CONNECTION_LOCK:
+            if self._scope_workspace is not None:
+                raise ValueError("system coordination cannot nest inside a workspace transaction")
+            with self._tx():
+                if self._is_postgres:
+                    self._conn.execute(
+                        "SELECT set_config('app.workspace_id', ?, true)",
+                        ("__system__",),
+                    ).fetchall()
+                    self._conn.execute(
+                        "SELECT set_config('app.service_identity', ?, true)",
+                        (service_identity,),
+                    ).fetchall()
+                yield self._conn
+
     def create_schema(self, *, migrate: bool = False) -> None:
         """Create tables under maintenance credentials, or open a ready app DB.
 
@@ -1452,9 +1477,9 @@ class Storage:
             raise ValueError("keep_revisions must be nonnegative")
         rows = self._conn.execute(
             "SELECT result_json, updated_at FROM jobs WHERE workspace_id=? AND status='completed' "
-            "AND command_json LIKE '%dashboard_preview%' AND result_json IS NOT NULL "
+            "AND command_json LIKE ? AND result_json IS NOT NULL "
             "ORDER BY updated_at DESC, job_id DESC",
-            (workspace_id,),
+            (workspace_id, "%dashboard_preview%"),
         ).fetchall()
         artifact_ids: set[str] = set()
         retained_revisions = 0

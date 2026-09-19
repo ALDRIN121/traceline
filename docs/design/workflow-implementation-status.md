@@ -459,8 +459,11 @@ It is not an R1 release declaration.
   passes the real version-matched `pg_dump`/`pg_restore` path with a separate
   maintenance URL, restored database rows, and artifact retrieval through
   `ArtifactStore`; the deployment image carries the PostgreSQL 16 client
-  binaries. PostgreSQL retention/link verification and interrupted migration
-  rehearsal remain open; the code path is no longer an intentional
+  binaries. The interrupted-migration rehearsal is now covered by a
+  checksum-verified PostgreSQL migration journal:
+  a disposable database successfully recovered after its final journal row was
+  removed, and refused a tampered checksum. PostgreSQL retention/link
+  verification remains open; the code path is no longer an intentional
   `external_backup_required` gap.
   The Compose PostgreSQL deployment now
   has observed RLS, non-bypass startup, job reclaim, worker fencing, and
@@ -481,8 +484,10 @@ It is not an R1 release declaration.
   run idempotency keys instead of collapsing into one plan-level run. The
   worker also exposes explicit operator-approved workspace actors with
   round-robin claiming so one busy workspace cannot monopolize a multi-
-  workspace process; the multi-process PostgreSQL fairness rehearsal remains
-  open.
+  workspace process. A disposable PostgreSQL rehearsal with two spawned
+  processes, one busy workspace, and one single-job workspace passed **1 test**;
+  the shared cursor is protected by a worker-only transaction-local service
+  identity and advisory lock.
 - **Compose/runtime smoke:** a disposable `docker compose up -d --build`
   completed with PostgreSQL healthy, the API and worker running, `/health`
   returning 200, and `/readiness` returning 200 with database and mounted
@@ -533,7 +538,7 @@ It is not an R1 release declaration.
   references without returning values. They are owner-only and accept only
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
-- **Observed suite:** the default suite is **924 passed, 12 skipped, 9
+- **Observed suite:** the default suite is **924 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
@@ -547,8 +552,7 @@ release-proven;
 provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
 are not proven on Linux, macOS and WSL2; PostgreSQL retention/TTL link
-verification, interrupted migration recovery, and multi-process fairness are
-not rehearsed; LiteLLM
+verification remains open; LiteLLM
 outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
 acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.

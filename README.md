@@ -18,7 +18,7 @@ what teams actually need to check can be stated exactly.
 This repository is actively implementing the v3 design. The installed package now contains
 verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
 and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
-production provider-route rehearsal, the full UI, PostgreSQL retention/migration rehearsal, live execution
+production provider-route rehearsal, the full UI, PostgreSQL retention/link verification, live execution
 of the repaired reference fixture, and the complete release acceptance matrix remain open.
 Coordinated backup /
 restore code, owner-managed encrypted secret references, retention cleanup, and operational CLI
@@ -106,7 +106,9 @@ eval-engine restore workspace-backup.zip --postgres-url "$DESTINATION_MAINTENANC
 
 The deployment image carries PostgreSQL 16-compatible dump/restore binaries, and the archive
 excludes install encryption and identity keys; those must be recovered through the operator's
-separate key-management procedure.
+separate key-management procedure. PostgreSQL bootstrap migrations are recorded in a
+checksum-verified, forced-RLS journal and can safely replay a migration whose journal write was
+interrupted; changed migration SQL is rejected.
 
 R2 stateless JSON targets may also declare a closed `retrieval_mapping` with JSON Pointer fields
 `chunks` (required), `query`, `scores`, and `source`. A successful response emits a redacted,

@@ -72,6 +72,7 @@ def test_all_workspace_tables_have_forced_rls(app_connection):
         "harness_sessions", "harness_messages", "datasets", "dataset_import_reports", "targets",
         "run_plans", "run_authorizations",
         "export_snapshots",
+        "schema_migrations", "worker_dispatch_cursors",
     }
     # Switch back only for PostgreSQL catalog metadata; no tenant data is read.
     app_connection.execute("RESET ROLE")

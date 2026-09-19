@@ -191,8 +191,9 @@ class SecretStore:
             raise WorkflowError("Trusted service identity is required", code="forbidden", status=403)
         with self.storage.workspace_transaction(self.actor.workspace_id) as conn:
             rows = [dict(row) for row in conn.execute(
-                "SELECT secret_id,ciphertext,allowed_services_json FROM secret_refs WHERE workspace_id=? AND ciphertext NOT LIKE 'v1.%'",
-                (self.actor.workspace_id,),
+                "SELECT secret_id,ciphertext,allowed_services_json FROM secret_refs "
+                "WHERE workspace_id=? AND ciphertext NOT LIKE ?",
+                (self.actor.workspace_id, "v1.%"),
             ).fetchall()]
             decoded = []
             for row in rows:

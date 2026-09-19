@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
+import hashlib
+import json
 from typing import Callable, Sequence
 
 from .auth import Actor
@@ -83,13 +85,66 @@ class WorkflowWorker:
             raise ValueError("cursor must be a nonnegative integer")
         if any(not isinstance(actor, Actor) or not actor.workspace_id for actor in actors):
             raise ValueError("actors must be valid workspace identities")
-        start = cursor % len(actors)
+        start = self._fair_start(actors, cursor, worker_id)
         for offset in range(len(actors)):
             actor = actors[(start + offset) % len(actors)]
             result = self.run_once(actor, worker_id=worker_id)
             if result is not None:
                 return result, (start + offset + 1) % len(actors)
         return None, (start + 1) % len(actors)
+
+    def _fair_start(
+        self, actors: Sequence[Actor], cursor: int, worker_id: str | None,
+    ) -> int:
+        """Reserve a round-robin start position across worker processes.
+
+        SQLite keeps the caller-owned cursor for its single-process mode. The
+        PostgreSQL worker pool uses a transaction-local worker identity and an
+        advisory lock around a durable cursor, so two processes sharing a pool
+        cannot both begin at the busiest workspace.
+        """
+        start = cursor % len(actors)
+        if not self.storage._is_postgres:
+            return start
+        pool_id = worker_id or "workflow-service"
+        if not isinstance(pool_id, str) or not 1 <= len(pool_id) <= 255:
+            raise ValueError("worker pool identity must be a bounded string")
+        actor_digest = hashlib.sha256(
+            json.dumps([actor.workspace_id for actor in actors], separators=(",", ":")).encode()
+        ).hexdigest()
+        with self.storage.system_transaction("worker") as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"workflow-fair:{pool_id}",),
+            ).fetchall()
+            row = conn.execute(
+                "SELECT actor_digest,cursor FROM worker_dispatch_cursors "
+                "WHERE workspace_id=? AND pool_id=? FOR UPDATE",
+                ("__system__", pool_id),
+            ).fetchone()
+            if row is None or row[0] != actor_digest:
+                start = 0
+                conn.execute(
+                    "INSERT INTO worker_dispatch_cursors "
+                    "(workspace_id,pool_id,actor_digest,cursor,updated_at) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT (workspace_id,pool_id) DO UPDATE SET "
+                    "actor_digest=excluded.actor_digest,cursor=excluded.cursor,updated_at=excluded.updated_at",
+                    (
+                        "__system__", pool_id, actor_digest, (start + 1) % len(actors),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            else:
+                start = int(row[1]) % len(actors)
+                conn.execute(
+                    "UPDATE worker_dispatch_cursors SET cursor=?,updated_at=? "
+                    "WHERE workspace_id=? AND pool_id=?",
+                    (
+                        (start + 1) % len(actors), datetime.now(timezone.utc).isoformat(),
+                        "__system__", pool_id,
+                    ),
+                )
+        return start
 
     def run_fair_forever(
         self, actors: Sequence[Actor], *, stop_event, poll_seconds=0.5, worker_id=None,
