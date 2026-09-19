@@ -1900,18 +1900,32 @@ function connectSSE(runId) {
       if (livePill) livePill.classList.add("is-active");
       if (liveText) liveText.textContent = "Live Stream";
     };
-    es.addEventListener("case_completed", () => {
+    es.addEventListener("case.completed", () => {
       loadRunDetailQuietly();
     });
-    es.addEventListener("metric_scored", () => {
+    es.addEventListener("metric.updated", () => {
       loadRunDetailQuietly();
     });
-    es.addEventListener("run_completed", () => {
+    es.addEventListener("run.state", () => {
       closeSSE();
       refreshAll();
     });
-    es.onerror = () => {
+    es.addEventListener("run.failed", () => {
       closeSSE();
+      refreshAll();
+    });
+    es.addEventListener("run.cancelled", () => {
+      closeSSE();
+      refreshAll();
+    });
+    es.addEventListener("run.resumed", () => {
+      loadRunDetailQuietly();
+    });
+    es.onerror = () => {
+      if (livePill) livePill.classList.remove("is-active");
+      if (liveText) liveText.textContent = "Reconnecting…";
+      loadRunDetailQuietly();
+      schedulePolling();
     };
   } catch (_) {
     closeSSE();

@@ -560,7 +560,7 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **27 tests**. The evidence covers
+  dashboard browser suites pass **29 tests**. The evidence covers
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
@@ -570,10 +570,12 @@ It is not an R1 release declaration.
   secret references, durable verification polling, failed-verification
   handling, verified target-version persistence, and persisted results
   compare/export actions with bundle links and partial/provisional/incomparable
-  states. The target-connection coverage uses mocked API responses; the
-  legacy run modal explicitly states that its request is not backend
-  authorization; no visual API-backed full-flow screenshot or complete R1
-  accessibility matrix is claimed.
+  states. The legacy dashboard also consumes the backend's dotted SSE event
+  names and refreshes authoritative state on stream errors without replaying
+  a run submission. The target-connection and SSE coverage use mocked API
+  responses; the legacy run modal explicitly states that its request is not
+  backend authorization; no visual API-backed full-flow screenshot or complete
+  R1 accessibility matrix is claimed.
 - **Observed suite:** the default suite is **934 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
