@@ -390,7 +390,12 @@ It is not an R1 release declaration.
   longer persists a host source path in the run manifest. Plan admission now
   rejects tool/retrieval metrics when the target verification receipt declares
   those evidence capabilities unavailable. Hosted output-only runs and a
-  judge-backed run are covered by integration tests.
+  judge-backed run are covered by integration tests. Plans also freeze an
+  explicit execution summary: tier, case/repeat/attempt counts, duration
+  estimate, budget/quota policy, target capability state, side-effect policy,
+  and retry policy. The worker persists the plan's cost-estimate object onto
+  the run record; cost remains explicitly `unknown` until a price table is
+  bound.
 - **Output evidence and re-score:** target/local output is redacted before
   persistence in `attempt_outputs`; deterministic raw values are stored in
   case results. `POST /runs/{run_id}/metrics/{metric_id}/rescore` creates a new
@@ -554,18 +559,21 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **25 tests**. The evidence covers
+  dashboard browser suites pass **27 tests**. The evidence covers
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
   case-row selection, a review confirmation before the legacy run request, the
   modern Preview plan → explicit authorization → idempotent enqueue flow with
-  a precise missing-target blocker path, and persisted results compare/export
-  actions with bundle links and partial/provisional/incomparable states. The
+  a precise missing-target blocker path, hosted target configuration through
+  secret references, durable verification polling, failed-verification
+  handling, verified target-version persistence, and persisted results
+  compare/export actions with bundle links and partial/provisional/incomparable
+  states. The target-connection coverage uses mocked API responses; the
   legacy run modal explicitly states that its request is not backend
   authorization; no visual API-backed full-flow screenshot or complete R1
   accessibility matrix is claimed.
-- **Observed suite:** the default suite is **930 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **934 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
