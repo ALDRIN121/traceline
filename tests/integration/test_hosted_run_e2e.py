@@ -90,33 +90,48 @@ def test_authorized_hosted_run_scores_observed_output_without_trace(tmp_path, mo
         dataset = versions.create("dataset", project.project_id, {"cases": [
             {"case_id": "c1", "name": "one", "input": {"q": "run"}},
         ]}, 0, actor)
-        worker = WorkflowWorker(
-            storage, tmp_path / "artifacts", MockGateway({}), fingerprint_key=b"f" * 32,
+        app = create_app(
+            storage=storage, workspace_id="ws", artifact_root=tmp_path / "artifacts",
+            gateway=MockGateway({}),
         )
-        plans = RunPlanService(storage)
-        plan = plans.plan_run(actor, {
-            "project_id": project.project_id,
-            "evaluation_version_id": evaluation.version_id,
-            "dataset_version_id": dataset.version_id,
-            "target_version_id": verified["target_version_id"],
-        }, {"tier": "quick"})
-        assert plan.state == "validated"
-        authorization = plans.authorize(actor, plan.plan_id, plan.content_digest)
-        job = plans.enqueue_run(
-            worker, actor, plan.plan_id, authorization.authorization_id,
-            plan.content_digest, "hosted-once",
+        client = TestClient(app)
+        planned = client.post("/api/run-plans", json={
+            "version_refs": {
+                "project_id": project.project_id,
+                "evaluation_version_id": evaluation.version_id,
+                "dataset_version_id": dataset.version_id,
+                "target_version_id": verified["target_version_id"],
+            },
+            "limits": {"tier": "quick"},
+        })
+        assert planned.status_code == 201, planned.text
+        plan = planned.json()["plan"]
+        assert plan["state"] == "validated"
+        authorized = client.post(
+            f"/api/run-plans/{plan['plan_id']}/authorize",
+            json={"plan_hash": plan["content_digest"], "ttl_seconds": 600},
         )
-        terminal = worker.service(actor).run_once(job_id=job.job_id)
+        assert authorized.status_code == 201, authorized.text
+        authorization = authorized.json()["authorization"]
+        submitted = client.post(
+            "/api/runs",
+            headers={"Idempotency-Key": "hosted-once"},
+            json={
+                "plan_id": plan["plan_id"],
+                "plan_hash": plan["content_digest"],
+                "authorization_id": authorization["authorization_id"],
+            },
+        )
+        assert submitted.status_code == 202, submitted.text
+        terminal = app.state.workflow_worker.service(actor).run_once(
+            job_id=submitted.json()["job_id"],
+        )
         assert terminal.status == "completed", (terminal.error, terminal.result)
         assert terminal.result["state"] == "complete"
         assert agent.calls == 2  # one verification smoke plus one measured case
         metric = storage.get_run_metric_results(terminal.result["run_id"], "ws")[0]
         assert metric.value == 1.0
         assert metric.gate_status == "PASS"
-        client = TestClient(create_app(
-            storage=storage, workspace_id="ws", artifact_root=tmp_path / "artifacts",
-            gateway=MockGateway({}),
-        ))
         frozen = client.post("/api/exports", json={"run_id": terminal.result["run_id"]})
         assert frozen.status_code == 201
         export_id = frozen.json()["export_id"]
