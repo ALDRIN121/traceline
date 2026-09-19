@@ -51,10 +51,36 @@ _OPENAI_COMPATIBLE = AdapterCapability(
     conformance_tests=("tests/workflow/test_openai_compatible_adapter.py",),
 )
 
+_ANTHROPIC_MESSAGES = AdapterCapability(
+    framework="anthropic_messages",
+    supported=True,
+    versions=("stateless_json",),
+    capabilities={
+        "final_output": "observed",
+        "retrieval": "unavailable",
+        "tool_execution": "unavailable",
+        "provider_cost": "unavailable",
+    },
+    conformance_tests=("tests/workflow/test_provider_adapters.py",),
+)
+
+_GOOGLE_GENERATIVE = AdapterCapability(
+    framework="google_generative",
+    supported=True,
+    versions=("stateless_json",),
+    capabilities={
+        "final_output": "observed",
+        "retrieval": "unavailable",
+        "tool_execution": "unavailable",
+        "provider_cost": "unavailable",
+    },
+    conformance_tests=("tests/workflow/test_provider_adapters.py",),
+)
+
 
 def supported_adapters() -> tuple[AdapterCapability, ...]:
     """Return the immutable list of adapters with checked-in conformance tests."""
-    return (_GENERIC_HTTP, _OPENAI_COMPATIBLE)
+    return (_GENERIC_HTTP, _OPENAI_COMPATIBLE, _ANTHROPIC_MESSAGES, _GOOGLE_GENERATIVE)
 
 
 def adapter_capability(

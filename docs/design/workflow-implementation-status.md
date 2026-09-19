@@ -521,14 +521,16 @@ It is not an R1 release declaration.
   ranked-chunk events; missing retrieval follows `on_missing`. Stateless JSON
   targets now accept a closed retrieval mapping and emit capture-time-redacted
   adapter retrieval events, with a conformance matrix that lists the tested
-  generic HTTP and OpenAI-compatible stateless JSON adapters and returns
-  `unsupported_framework` for unverified frameworks. Schedules enforce the
+  generic HTTP, OpenAI-compatible, Anthropic Messages, and Google Generative
+  stateless JSON adapters and returns `unsupported_framework` for unverified
+  frameworks. Schedules enforce the
   implemented frozen-version policy rather than accepting an unimplemented
   refresh policy. Retrieval adapter/framework conformance beyond those tested
   adapters remains open. The current R2-focused
   workflow and integration set (streaming, async, stateful sessions,
   retrieval, adapter matrix, schedules, frozen worker paths, and the tested
-  OpenAI-compatible stateless JSON adapter) passes **36 tests** on the
+  OpenAI-compatible, Anthropic Messages, and Google Generative stateless JSON
+  adapters) passes **40 tests** on the
   observed host. The matrix still fails closed for unverified frameworks;
   this is not a cross-platform or broad framework-conformance claim.
 - **Custom evaluator advanced path:** operator-supplied evaluator ZIPs are

@@ -17,6 +17,7 @@ from .http_json import (
     validate_retrieval_mapping,
 )
 from .http_openai import OpenAICompatibleAdapter
+from .http_provider import AnthropicMessagesAdapter, GoogleGenerativeAdapter
 from .http_stream import HttpStreamAdapter
 from .http_job import HttpJobAdapter
 from .http_session import HttpSessionAdapter
@@ -53,6 +54,16 @@ class ConnectionService:
             capability = adapter_capability(framework, version=mode, require_supported=True)
         except ValueError as exc:
             raise WorkflowError("target framework is not supported", code="unsupported_framework") from exc
+        model = body.get("model")
+        max_tokens = body.get("max_tokens")
+        if framework in {"anthropic_messages", "google_generative"}:
+            if not isinstance(model, str) or not model:
+                raise WorkflowError("provider envelope targets require model", code="provider_model_required")
+            if type(max_tokens) is not int or not 1 <= max_tokens <= 1_000_000:
+                raise WorkflowError(
+                    "provider envelope targets require bounded max_tokens",
+                    code="provider_max_tokens_invalid",
+                )
         if body.get("retry_max") not in (None, 0):
             raise WorkflowError("Remote retries are disabled by default", code="retries_forbidden")
         mapping = body.get("output_mapping") or {}
@@ -84,6 +95,8 @@ class ConnectionService:
         content = {
             "kind": {"stateless_json": "http_json", "streaming": "http_stream", "async": "http_job", "session": "http_session"}[mode],
             "framework": capability.framework,
+            "model": model,
+            "max_tokens": max_tokens,
             "url": url,
             "method": body.get("method") or "POST",
             "auth": auth,
@@ -203,4 +216,8 @@ class ConnectionService:
             return HttpSessionAdapter(policy=policy)
         if content.get("framework") == "openai_compatible":
             return OpenAICompatibleAdapter(policy)
+        if content.get("framework") == "anthropic_messages":
+            return AnthropicMessagesAdapter(policy)
+        if content.get("framework") == "google_generative":
+            return GoogleGenerativeAdapter(policy)
         return HttpJsonAdapter(policy)
