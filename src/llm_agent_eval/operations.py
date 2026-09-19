@@ -14,11 +14,13 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .artifacts import ArtifactStore
 from .contracts import WorkflowError
@@ -174,13 +176,152 @@ class OperationsService:
                 deleted += 1
         return deleted
 
+    def backup_postgres(self, actor, destination: Path) -> dict[str, Any]:
+        """Create a coordinated PostgreSQL dump plus workspace artifact archive.
+
+        The database dump and artifact files share one checksum manifest.  The
+        install encryption/identity keys are deliberately excluded; operators
+        must back those up through their separate key-management procedure.
+        """
+        actor.require(write=True)
+        if not self.storage._is_postgres:
+            raise WorkflowError("PostgreSQL storage is required", code="storage_kind_invalid", status=409)
+        dump_tool = shutil.which("pg_dump")
+        if dump_tool is None:
+            raise WorkflowError("pg_dump is required for PostgreSQL backup", code="backup_tool_unavailable", status=503)
+        destination = Path(destination).resolve()
+        if destination.exists():
+            raise WorkflowError("backup destination already exists", code="backup_exists", status=409)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        database_url, environment = self._safe_database_command(self.storage._db_path)
+        with tempfile.TemporaryDirectory(prefix="eval-pg-backup-", dir=destination.parent) as temporary:
+            root = Path(temporary)
+            dump = root / "database.dump"
+            completed = subprocess.run(
+                [dump_tool, "--format=custom", "--no-owner", "--file", str(dump), database_url],
+                check=False, capture_output=True, env=environment,
+            )
+            if completed.returncode != 0 or not dump.is_file():
+                raise WorkflowError("PostgreSQL dump failed", code="backup_failed", status=503)
+            self._write_artifact_bundle(root, actor)
+            checksums = {
+                relative.as_posix(): hashlib.sha256((root / relative).read_bytes()).hexdigest()
+                for relative in [PurePosixPath("database.dump")]
+            }
+            checksums.update({
+                path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (root / "artifacts").rglob("*") if path.is_file()
+            })
+            (root / "manifest.json").write_text(json.dumps({
+                "schema": 1, "storage": "postgresql", "workspace_id": actor.workspace_id,
+                "install_keys": "excluded_from_archive_restore_separately", "files": checksums,
+            }, sort_keys=True), encoding="utf-8")
+            with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(root.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(root).as_posix())
+        return {
+            "state": "ready", "path": str(destination), "workspace_id": actor.workspace_id,
+            "storage": "postgresql", "install_keys": "excluded_from_archive_restore_separately",
+        }
+
+    @staticmethod
+    def _safe_database_command(database_url: str) -> tuple[str, dict[str, str]]:
+        if not isinstance(database_url, str) or not database_url.startswith(("postgresql://", "postgres://")):
+            raise WorkflowError("PostgreSQL database URL is required", code="database_url_invalid", status=503)
+        parsed = urlsplit(database_url)
+        if not parsed.hostname:
+            raise WorkflowError("PostgreSQL database URL is invalid", code="database_url_invalid", status=503)
+        password = parsed.password
+        username = parsed.username
+        netloc = ""
+        if username:
+            netloc += username
+        if parsed.hostname:
+            if ":" in parsed.hostname and not parsed.hostname.startswith("["):
+                netloc += f"[{parsed.hostname}]"
+            else:
+                netloc += parsed.hostname
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        safe_url = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+        environment = dict(os.environ)
+        if password is not None:
+            environment["PGPASSWORD"] = unquote(password)
+        return safe_url, environment
+
+    def _write_artifact_bundle(self, root: Path, actor) -> None:
+        artifact_dir = root / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        store = ArtifactStore(self.storage, self.artifact_root, actor)
+        for record in store.list(actor.workspace_id):
+            path = artifact_dir / record.artifact_id
+            path.write_bytes(store.get(actor.workspace_id, record.artifact_id))
+
+    @staticmethod
+    def restore_postgres(
+        backup: Path, destination_database_url: str, destination_artifact_root: Path,
+    ) -> dict[str, Any]:
+        """Restore and verify a PostgreSQL/artifact bundle into fresh targets."""
+        backup, destination_artifact_root = Path(backup).resolve(), Path(destination_artifact_root).resolve()
+        if destination_artifact_root.exists():
+            raise WorkflowError("artifact restore destination already exists", code="restore_exists", status=409)
+        restore_tool = shutil.which("pg_restore")
+        if restore_tool is None:
+            raise WorkflowError("pg_restore is required for PostgreSQL restore", code="restore_tool_unavailable", status=503)
+        database_url, environment = OperationsService._safe_database_command(destination_database_url)
+        with tempfile.TemporaryDirectory(prefix="eval-pg-restore-") as temporary:
+            root = Path(temporary).resolve()
+            try:
+                with zipfile.ZipFile(backup) as archive:
+                    for member in archive.infolist():
+                        relative = PurePosixPath(member.filename)
+                        if (relative.is_absolute() or ".." in relative.parts
+                                or "\\" in member.filename or not relative.parts):
+                            raise WorkflowError("backup contains an unsafe path", code="backup_invalid", status=422)
+                        target = (root / relative.as_posix()).resolve()
+                        if not target.is_relative_to(root):
+                            raise WorkflowError("backup contains an unsafe path", code="backup_invalid", status=422)
+                        if member.is_dir():
+                            target.mkdir(parents=True, exist_ok=True)
+                        else:
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with archive.open(member) as source, target.open("xb") as destination:
+                                shutil.copyfileobj(source, destination)
+            except (OSError, zipfile.BadZipFile) as exc:
+                raise WorkflowError("backup archive is invalid", code="backup_invalid", status=422) from exc
+            try:
+                manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+                if manifest.get("storage") != "postgresql" or manifest.get("install_keys") != "excluded_from_archive_restore_separately":
+                    raise ValueError
+                files = manifest["files"]
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise WorkflowError("backup manifest is invalid", code="backup_invalid", status=422) from exc
+            for relative, expected in files.items():
+                path = (root / relative).resolve()
+                if (not path.is_relative_to(root) or not path.is_file()
+                        or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
+                    raise WorkflowError("backup checksum verification failed", code="backup_corrupt", status=422)
+            dump = root / "database.dump"
+            if not dump.is_file() or not (root / "artifacts").is_dir():
+                raise WorkflowError("backup database dump or artifact bundle is missing", code="backup_invalid", status=422)
+            completed = subprocess.run(
+                [restore_tool, "--exit-on-error", "--no-owner", "--dbname", database_url, str(dump)],
+                check=False, capture_output=True, env=environment,
+            )
+            if completed.returncode != 0:
+                raise WorkflowError("PostgreSQL restore failed", code="restore_failed", status=503)
+            shutil.copytree(root / "artifacts", destination_artifact_root, dirs_exist_ok=False)
+        return {
+            "state": "restored", "database": database_url,
+            "artifact_root": str(destination_artifact_root),
+            "storage": "postgresql", "install_keys": "required_separately",
+        }
+
     def backup_workspace(self, actor, destination: Path) -> dict[str, Any]:
         actor.require(write=True)
         if self.storage._is_postgres:
-            raise WorkflowError(
-                "PostgreSQL backup must use the operator's coordinated database and artifact-store procedure",
-                code="external_backup_required", status=409,
-            )
+            return self.backup_postgres(actor, destination)
         destination = Path(destination).resolve()
         if destination.exists():
             raise WorkflowError("backup destination already exists", code="backup_exists", status=409)
@@ -203,14 +344,18 @@ class OperationsService:
                 checksums[f"artifacts/{record.artifact_id}"] = hashlib.sha256(data).hexdigest()
             checksums["database.sqlite"] = hashlib.sha256(db_path.read_bytes()).hexdigest()
             (root / "manifest.json").write_text(json.dumps({
-                "schema": 1, "workspace_id": actor.workspace_id,
+                "schema": 1, "storage": "sqlite", "workspace_id": actor.workspace_id,
+                "install_keys": "excluded_from_archive_restore_separately",
                 "files": checksums,
             }, sort_keys=True), encoding="utf-8")
             with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for path in sorted(root.rglob("*")):
                     if path.is_file():
                         archive.write(path, path.relative_to(root).as_posix())
-        return {"state": "ready", "path": str(destination), "workspace_id": actor.workspace_id}
+        return {
+            "state": "ready", "path": str(destination), "workspace_id": actor.workspace_id,
+            "storage": "sqlite", "install_keys": "excluded_from_archive_restore_separately",
+        }
 
     @staticmethod
     def restore_sqlite(backup: Path, destination_db: Path, destination_artifact_root: Path) -> dict[str, Any]:
@@ -252,4 +397,8 @@ class OperationsService:
             if destination_artifact_root.exists():
                 raise WorkflowError("artifact restore destination already exists", code="restore_exists", status=409)
             shutil.copytree(root / "artifacts", destination_artifact_root, dirs_exist_ok=False)
-        return {"state": "restored", "database": str(destination_db), "artifact_root": str(destination_artifact_root)}
+        return {
+            "state": "restored", "database": str(destination_db),
+            "artifact_root": str(destination_artifact_root),
+            "storage": "sqlite", "install_keys": "required_separately",
+        }

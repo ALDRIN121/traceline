@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
 import json
+import subprocess
+from pathlib import Path
 
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.artifacts import ArtifactStore
 from llm_agent_eval.operations import OperationsService
+import llm_agent_eval.operations as operations_module
 from llm_agent_eval.storage import Storage
 
 
@@ -108,4 +112,51 @@ def test_readiness_checks_the_mounted_artifact_root(tmp_path):
         assert result == {"status": "ready", "checks": {"database": "ok", "artifact_root": "ok"}}
     finally:
         mount_parent.chmod(0o755)
+        storage.close()
+
+
+def test_postgres_backup_restore_uses_dump_tools_and_keeps_install_keys_outside_archive(tmp_path, monkeypatch):
+    db = tmp_path / "source.db"
+    artifacts = tmp_path / "artifacts"
+    storage = Storage(db)
+    storage.create_schema()
+    actor = Actor("owner", "ws", "owner")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if "--file" in command:
+            output = command[command.index("--file") + 1]
+            Path(output).write_bytes(b"pg-dump")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(operations_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(operations_module.subprocess, "run", fake_run)
+    try:
+        record = ArtifactStore(storage, artifacts, actor).put("ws", b"evidence", "text/plain")
+        storage._is_postgres = True
+        storage._db_path = "postgresql://eval_app:secret@example.test/eval_db"
+
+        @contextmanager
+        def local_workspace_transaction(_workspace_id):
+            yield storage._conn
+
+        monkeypatch.setattr(storage, "workspace_transaction", local_workspace_transaction)
+        backup = tmp_path / "postgres-backup.zip"
+        result = OperationsService(storage, artifacts).backup_postgres(actor, backup)
+        assert result["state"] == "ready"
+        assert result["storage"] == "postgresql"
+        assert result["install_keys"] == "excluded_from_archive_restore_separately"
+        assert commands[0][0] == "/usr/bin/pg_dump"
+        assert "secret" not in commands[0]
+
+        restored_artifacts = tmp_path / "restored-artifacts"
+        restored = OperationsService.restore_postgres(
+            backup, "postgresql://eval_app:secret@example.test/restored", restored_artifacts,
+        )
+        assert restored["state"] == "restored"
+        assert restored["install_keys"] == "required_separately"
+        assert commands[1][0] == "/usr/bin/pg_restore"
+        assert (restored_artifacts / record.artifact_id).read_bytes() == b"evidence"
+    finally:
         storage.close()
