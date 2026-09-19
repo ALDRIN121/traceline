@@ -426,7 +426,13 @@ It is not an R1 release declaration.
   per-case proxy run → output → scoring. The
   container proof uses a raw HTTP relay client because the pinned Alpine
   BusyBox client does not implement the required HTTPS CONNECT flow; a real
-  provider-client HTTPS proof from inside the case remains open.
+  provider-client HTTPS proof from inside the case remains open. The egress
+  seam now also supports explicitly enabled provider SSE routes: bounded
+  OpenAI/Anthropic/Google usage events are accumulated and settled at stream
+  completion, unknown usage closes the budget, the listener forwards the
+  stream without persisting body text, and stream cassettes record/replay
+  canonical redacted frames. Live provider-client streaming and alternate-
+  platform proof remain open.
 - **Production proxy admission:** the default workflow worker now constructs
   a trusted `ProxyRunSession` factory from an installation-owned
   `proxy-routes.json`; route files reject unsafe permissions, duplicates,
@@ -444,11 +450,14 @@ It is not an R1 release declaration.
   tested OpenAI, Anthropic, and Google request/usage shapes with provider-
   specific dummy-key substitution. Supported HTTPS routes now use the
   embedded LiteLLM Router outbound seam, while generic/local HTTP remains an
-  explicit fixture fallback. The opt-in HTTPS case now uses a pinned
+  explicit fixture fallback. Explicitly enabled SSE routes now forward
+  bounded OpenAI/Anthropic/Google stream frames, settle usage at stream end,
+  and close the budget when usage is missing or malformed; stream cassettes
+  replay canonical redacted frames without upstream billing. The opt-in HTTPS case now uses a pinned
   `docker.io/curlimages/curl:8.11.1` client inside a fresh rootless case,
   negotiates TLS through the install-owned CA, and reaches the fixture
   provider only through the managed proxy. The observed proof passed on
-  macOS Podman 6.1.1; full stream-aware interception and alternate-platform
+  macOS Podman 6.1.1; live provider-client streaming and alternate-platform
   proof remain open. A separate repaired CrewAI/Gemini fixture is now checked
   in under `fixtures/reference-agent-repaired/`; live execution of that
   dependency-bearing fixture and provider route remains deployment evidence.
@@ -582,7 +591,7 @@ It is not an R1 release declaration.
   responses; the legacy run modal explicitly states that its request is not
   backend authorization; no visual API-backed full-flow screenshot or complete
   R1 accessibility matrix is claimed.
-- **Observed suite:** the default suite is **936 passed, 15 skipped, 9
+- **Observed suite:** the default suite is **945 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
@@ -597,7 +606,7 @@ release-proven;
 provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
 are not proven on Linux, macOS and WSL2; broader PostgreSQL retention/TTL
-deployment audits and link verification remain open; LiteLLM
-outbound/cassette fidelity, live repaired CrewAI execution, full deployment
-export/CI rehearsal, and the complete
-E01–E32 / UX acceptance matrix remain unfinished.
+deployment audits and link verification remain open; live LiteLLM
+provider-client fidelity, live repaired CrewAI execution, full deployment
+export/CI rehearsal, and the complete E01–E32 / UX acceptance matrix remain
+unfinished.

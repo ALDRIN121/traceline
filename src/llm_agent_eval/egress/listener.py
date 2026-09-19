@@ -94,6 +94,10 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
                 self.server.proxy.respond(connection, 405, {"error": "method_not_allowed"})
                 return
             egress = self.server.proxy.egress_for(route)
+            if body.get("stream") is True:
+                status, payload = egress.forward_stream(path, headers, body)
+                self.server.proxy.respond_stream(connection, status, payload)
+                return
             status, payload = egress.forward(path, headers, body)
             self.server.proxy.respond(connection, status, payload)
         except EgressDenied as exc:
@@ -178,3 +182,19 @@ class ProxyInstance:
             f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
         )
+
+    @staticmethod
+    def respond_stream(connection, status: int, chunks):
+        reason = {200: "OK", 403: "Forbidden", 413: "Payload Too Large"}.get(status, "Proxy Error")
+        try:
+            connection.sendall(
+                f"HTTP/1.1 {status} {reason}\r\nContent-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\nConnection: close\r\n\r\n".encode()
+            )
+            for chunk in chunks:
+                connection.sendall(chunk)
+        except (EgressDenied, OSError):
+            # Headers may already be visible to the sandbox. At that point a
+            # failed/unmeterable stream is represented by connection close;
+            # the authoritative proxy record has already closed the budget.
+            return

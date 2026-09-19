@@ -8,8 +8,9 @@ credentials, routes, TLS policy, or budget authority.
 Design (locked decisions 1–2, invariants):
 
 - Only explicitly configured provider routes are forwardable. Anything else —
-  wrong path, wrong model, streaming, unbounded ``max_tokens`` — is denied
-  before any credential is resolved.
+  wrong path, wrong model, unapproved streaming, unbounded ``max_tokens`` — is
+  denied before any credential is resolved. Streaming is opt-in per route and
+  must settle usage from bounded SSE events before the run can continue.
 - The sandbox holds a dummy key; real credentials are substituted only inside
   the outbound leg via a trusted resolver, and never recorded.
 - Capture-time redaction: free-text request bodies and headers are never
@@ -26,9 +27,10 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..redaction import redact
+from ..streaming import SSEParser, StreamProtocolError
 
 # Adapter evidence is free text; a bounded PII sweep removes obvious email
 # addresses before persistence, in addition to the shared secret/token rules.
@@ -115,11 +117,14 @@ class ProviderRoute:
         usage_decoder: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         max_request_bytes: int = 262_144,
         input_token_bound: Callable[[Mapping[str, Any]], int] | None = None,
+        allow_streaming: bool = False,
     ):
         if not host or not path.startswith("/"):
             raise ValueError("route requires an explicit host and absolute path")
         if input_token_bound is not None and not callable(input_token_bound):
             raise ValueError("input_token_bound must be a trusted callable")
+        if type(allow_streaming) is not bool:
+            raise ValueError("allow_streaming must be a boolean")
         for value in (max_input_tokens, max_output_tokens, max_request_bytes):
             if type(value) is not int or value <= 0:
                 raise ValueError("route limits must be positive integers")
@@ -127,6 +132,7 @@ class ProviderRoute:
             if type(value) is not int or value < 0:
                 raise ValueError("token prices must be nonnegative integers")
         self.input_token_bound = input_token_bound
+        self.allow_streaming = allow_streaming
         self.host, self.path, self.model, self.origin = host, path, model, origin
         self.provider, self.usage_decoder = provider, usage_decoder
         self.secret_ref, self.dummy_key = secret_ref, dummy_key
@@ -156,7 +162,7 @@ class ProviderRoute:
             if len(output_fields) > 1:
                 raise EgressDenied("conflicting_max_tokens")
             declared = body.get(output_fields[0]) if output_fields else None
-        if body.get("stream") is True:
+        if body.get("stream") is True and not self.allow_streaming:
             raise EgressDenied("streaming_not_supported")
         if type(declared) is not int or declared <= 0:
             raise EgressDenied("unbounded_max_tokens")
@@ -219,6 +225,39 @@ class ProviderRoute:
         if not isinstance(usage, Mapping):
             raise EgressDenied("usage_unavailable")
         return usage
+
+    def decode_stream_usage(self, payload: Mapping[str, Any]) -> Mapping[str, int] | None:
+        """Read a complete or partial provider usage block from one SSE event."""
+        if self.usage_decoder is not None:
+            usage = payload.get("usage")
+        elif self.provider == "google":
+            usage = payload.get("usageMetadata")
+        elif self.provider == "anthropic":
+            usage = payload.get("usage")
+            if usage is None and isinstance(payload.get("message"), Mapping):
+                usage = payload["message"].get("usage")
+        else:
+            usage = payload.get("usage")
+        if usage is None:
+            return None
+        if not isinstance(usage, Mapping):
+            raise EgressDenied("usage_unavailable")
+        if self.provider == "openai":
+            fields = {"prompt_tokens": "prompt_tokens", "completion_tokens": "completion_tokens"}
+        elif self.provider == "anthropic":
+            fields = {"prompt_tokens": "input_tokens", "completion_tokens": "output_tokens"}
+        elif self.provider == "google":
+            fields = {"prompt_tokens": "promptTokenCount", "completion_tokens": "candidatesTokenCount"}
+        else:
+            fields = {"prompt_tokens": "prompt_tokens", "completion_tokens": "completion_tokens"}
+        result: dict[str, int] = {}
+        for normalized, raw in fields.items():
+            value = usage.get(raw)
+            if value is not None:
+                if type(value) is not int or value < 0:
+                    raise EgressDenied("usage_unavailable")
+                result[normalized] = value
+        return result
 
 
 class RecordingEgress:
@@ -325,6 +364,112 @@ class RecordingEgress:
         if bound_violated:
             raise EgressDenied("usage_exceeds_reserved_bound")
         return status, payload
+
+    def forward_stream(
+        self,
+        path: str,
+        headers: Mapping[str, str],
+        body: Mapping[str, Any],
+    ) -> tuple[int, Iterable[bytes]]:
+        """Forward a provider SSE stream and settle usage at stream end."""
+        limits = self.route.authorize(path, body)
+        auth_header = {
+            "openai": "authorization", "anthropic": "x-api-key", "google": "x-goog-api-key",
+        }.get(self.route.provider, "authorization")
+        supplied_auth = next(
+            (value for key, value in headers.items() if str(key).lower() == auth_header),
+            None,
+        )
+        expected_auth = (
+            self.route.dummy_key if auth_header != "authorization"
+            else f"Bearer {self.route.dummy_key}"
+        )
+        if not isinstance(supplied_auth, str) or supplied_auth != expected_auth:
+            raise EgressDenied("credential_not_recognized")
+        reservation = self.budget.reserve(self.route.worst_case(limits["input_tokens"]))
+        try:
+            real = self._resolve(self.route.secret_ref)
+        except Exception as exc:
+            self.budget.uncertain(reservation)
+            raise EgressDenied("secret_resolution_failed") from exc
+        if not real or not isinstance(real, str):
+            self.budget.uncertain(reservation)
+            raise EgressDenied("secret_resolution_failed")
+        outbound_headers = {
+            key: value for key, value in headers.items()
+            if str(key).lower() not in {"authorization", auth_header}
+        }
+        if auth_header == "authorization":
+            outbound_headers["Authorization"] = f"Bearer {real}"
+        else:
+            outbound_headers[auth_header] = real
+        try:
+            status, payload = self._send(
+                {"host": self.route.host, "path": path, "model": self.route.model,
+                 "origin": self.route.origin, "provider": self.route.provider},
+                body,
+                outbound_headers,
+            )
+        except Exception as exc:
+            self.budget.uncertain(reservation)
+            self._record(self._metadata(status=None, usage=None, model=self.route.model))
+            raise EgressDenied("upstream_unreachable") from exc
+        if isinstance(payload, (str, bytes, bytearray, Mapping)):
+            self.budget.uncertain(reservation)
+            self._record(self._metadata(status=status, usage=None, model=self.route.model))
+            raise EgressDenied("stream_protocol_error")
+        try:
+            iterator = iter(payload)
+        except TypeError as exc:
+            self.budget.uncertain(reservation)
+            self._record(self._metadata(status=status, usage=None, model=self.route.model))
+            raise EgressDenied("stream_protocol_error") from exc
+
+        def stream() -> Iterable[bytes]:
+            parser = SSEParser()
+            observed: dict[str, int] = {}
+            try:
+                for chunk in iterator:
+                    if not isinstance(chunk, bytes):
+                        raise StreamProtocolError("stream chunks must be bytes")
+                    for frame in parser.feed(chunk):
+                        if frame.data == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(frame.data)
+                        except (TypeError, ValueError) as exc:
+                            raise StreamProtocolError("stream event is not JSON") from exc
+                        if not isinstance(event, Mapping):
+                            raise StreamProtocolError("stream event must be an object")
+                        partial = self.route.decode_stream_usage(event)
+                        if partial:
+                            for key, value in partial.items():
+                                observed[key] = max(observed.get(key, 0), value)
+                    yield chunk
+                parser.finish()
+                micros, usage = self.route.observed(observed)
+            except (EgressDenied, StreamProtocolError, ValueError, OSError) as exc:
+                self.budget.uncertain(reservation)
+                self._record(self._metadata(status=status, usage=None, model=self.route.model))
+                if isinstance(exc, EgressDenied):
+                    raise
+                raise EgressDenied("usage_unavailable" if isinstance(exc, ValueError) else "stream_protocol_error") from exc
+            self.budget.commit(reservation, micros)
+            bound_violated = (
+                usage["prompt_tokens"] > limits["input_tokens"]
+                or usage["completion_tokens"] > limits["output_tokens"]
+            )
+            if bound_violated:
+                self.budget.uncertain()
+            self._record({
+                **self._metadata(status=status, usage=usage, model=self.route.model),
+                "cost_usd_micros": micros,
+                "price_version": self.route.price_version,
+            })
+            if bound_violated:
+                raise EgressDenied("usage_exceeds_reserved_bound")
+
+        return status, stream()
 
     def record_adapter(self, event: Mapping[str, Any]) -> None:
         """Persist an adapter-generated event as independent evidence.

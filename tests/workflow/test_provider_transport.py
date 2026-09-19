@@ -20,6 +20,23 @@ class _Router:
         return _Response()
 
 
+class _StreamChunk:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def model_dump(self):
+        return self.payload
+
+
+class _StreamRouter(_Router):
+    def completion(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter([
+            _StreamChunk({"choices": [{"delta": {"content": "ok"}}]}),
+            _StreamChunk({"usage": {"prompt_tokens": 2, "completion_tokens": 1}}),
+        ])
+
+
 def test_https_supported_provider_uses_embedded_litellm_router():
     router = _Router()
     seen = {}
@@ -58,3 +75,24 @@ def test_generic_http_route_remains_explicit_fallback():
     )
     assert (status, payload) == (200, {"ok": True})
     assert calls[0]["provider"] == "generic"
+
+
+def test_https_provider_stream_is_normalized_to_bounded_sse_bytes():
+    router = _StreamRouter()
+    transport = ProviderTransport(litellm_router_factory=lambda *_: router)
+    status, payload = transport(
+        {
+            "provider": "openai", "model": "gpt-4.1-mini",
+            "origin": "https://api.example.test", "path": "/v1/chat/completions",
+        },
+        {"model": "gpt-4.1-mini", "messages": [], "stream": True},
+        {"Authorization": "Bearer real-provider-key"},
+    )
+
+    assert status == 200
+    assert list(payload) == [
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+        b'data: {"usage":{"completion_tokens":1,"prompt_tokens":2}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    assert router.calls[0]["stream"] is True

@@ -110,7 +110,7 @@ class ProviderRouteRegistry:
             "host", "origin", "path", "provider", "model", "secret_ref",
             "dummy_key", "max_input_tokens", "max_output_tokens",
             "input_micros_per_token", "output_micros_per_token", "price_version",
-            "max_request_bytes", "input_token_counter",
+            "max_request_bytes", "input_token_counter", "allow_streaming",
         }
         unknown = set(raw) - allowed
         if unknown:
@@ -154,6 +154,7 @@ class ProviderRouteRegistry:
                 price_version=raw["price_version"],
                 max_request_bytes=raw.get("max_request_bytes", 262_144),
                 input_token_bound=bound,
+                allow_streaming=raw.get("allow_streaming", False),
             )
             holder["route"] = route
             return route

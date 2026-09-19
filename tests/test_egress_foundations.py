@@ -260,3 +260,107 @@ def test_provider_specific_request_shapes_broker_credentials_and_meter_usage(
     assert status == 200
     assert outbound[0][auth_key] == "real-provider-key"
     assert proxy.budget.spent == 5
+
+
+def test_streaming_provider_events_are_forwarded_and_metered_from_final_usage():
+    records = []
+    chunks = [
+        b'event: message\ndata: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+        b'event: message\ndata: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        b'event: usage\ndata: {"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+    proxy = RecordingEgress(
+        route(allow_streaming=True), Budget(500), lambda _ref: "fixture",
+        records.append, send=lambda *_args: (200, iter(chunks)),
+    )
+
+    status, stream = proxy.forward_stream(
+        route().path,
+        {"Authorization": "Bearer dummy-case-key"},
+        {"model": "fixture-model", "messages": [], "max_tokens": 20, "stream": True},
+    )
+
+    assert status == 200
+    assert list(stream) == chunks
+    assert records[-1]["usage"] == {"prompt_tokens": 3, "completion_tokens": 2}
+    assert records[-1]["cost_usd_micros"] == 12
+    assert proxy.budget.spent == 12
+
+
+def test_streaming_usage_missing_closes_budget_after_forwarded_chunks():
+    records = []
+    proxy = RecordingEgress(
+        route(allow_streaming=True), Budget(500), lambda _ref: "fixture",
+        records.append, send=lambda *_args: (200, iter([b'data: {"choices":[]}\n\n'])),
+    )
+
+    status, stream = proxy.forward_stream(
+        route().path,
+        {"Authorization": "Bearer dummy-case-key"},
+        {"model": "fixture-model", "messages": [], "max_tokens": 20, "stream": True},
+    )
+    assert status == 200
+    with pytest.raises(EgressDenied, match="usage"):
+        list(stream)
+    assert records[-1]["cost_usd_micros"] is None
+    with pytest.raises(EgressDenied, match="unavailable"):
+        proxy.budget.reserve(1)
+
+
+def test_anthropic_stream_usage_accumulates_message_start_and_delta_shapes():
+    records = []
+    proxy = RecordingEgress(
+        route(provider="anthropic", path="/v1/messages", allow_streaming=True),
+        Budget(500), lambda _ref: "fixture", records.append,
+        send=lambda *_args: (200, iter([
+            b'data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n',
+            b'data: {"type":"message_delta","usage":{"output_tokens":3}}\n\n',
+        ])),
+    )
+
+    _, stream = proxy.forward_stream(
+        "/v1/messages", {"x-api-key": "dummy-case-key"},
+        {"model": "fixture-model", "max_tokens": 20, "stream": True},
+    )
+    list(stream)
+
+    assert records[-1]["usage"] == {"prompt_tokens": 4, "completion_tokens": 3}
+    assert records[-1]["cost_usd_micros"] == 17
+
+
+def test_google_stream_usage_is_metered_from_usage_metadata():
+    records = []
+    proxy = RecordingEgress(
+        route(
+            provider="google",
+            path="/v1beta/models/fixture-model:streamGenerateContent",
+            allow_streaming=True,
+        ),
+        Budget(500), lambda _ref: "fixture", records.append,
+        send=lambda *_args: (200, iter([
+            b'data: {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}\n\n',
+            b'data: {"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}\n\n',
+        ])),
+    )
+
+    _, stream = proxy.forward_stream(
+        "/v1beta/models/fixture-model:streamGenerateContent",
+        {"x-goog-api-key": "dummy-case-key"},
+        {"generationConfig": {"maxOutputTokens": 20}, "stream": True},
+    )
+    list(stream)
+
+    assert records[-1]["usage"] == {"prompt_tokens": 5, "completion_tokens": 2}
+    assert records[-1]["cost_usd_micros"] == 16
+
+
+def test_streaming_remains_denied_for_routes_without_explicit_stream_support():
+    proxy = RecordingEgress(route(), Budget(500), lambda _ref: "fixture", lambda _row: None,
+                            send=lambda *_args: pytest.fail("stream must be denied"))
+    with pytest.raises(EgressDenied, match="streaming_not_supported"):
+        proxy.forward_stream(
+            route().path,
+            {"Authorization": "Bearer dummy-case-key"},
+            {"model": "fixture-model", "max_tokens": 20, "stream": True},
+        )

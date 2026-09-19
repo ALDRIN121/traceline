@@ -35,8 +35,26 @@ class ProviderTransport:
                 router = self.litellm_router_factory(route, headers)
                 request = dict(body)
                 request["model"] = route["model"]
-                request["stream"] = False
+                streaming = request.get("stream") is True
+                request["stream"] = streaming
                 response = router.completion(**request)
+                if streaming:
+                    def chunks():
+                        total = 0
+                        for item in response:
+                            payload = item.model_dump() if hasattr(item, "model_dump") else item
+                            if not isinstance(payload, Mapping):
+                                raise ValueError("invalid_litellm_stream_event")
+                            encoded = json.dumps(
+                                payload, allow_nan=False, ensure_ascii=True, sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                            total += len(encoded) + len(b"data: \n\n")
+                            if total > self.max_response_bytes:
+                                raise ValueError("response_too_large")
+                            yield b"data: " + encoded + b"\n\n"
+                        yield b"data: [DONE]\n\n"
+                    return 200, chunks()
                 payload = response.model_dump() if hasattr(response, "model_dump") else response
                 if not isinstance(payload, Mapping):
                     raise ValueError("invalid_litellm_response")
@@ -50,7 +68,29 @@ class ProviderTransport:
                 key: value for key, value in headers.items()
                 if key.lower() not in {"host", "proxy-authorization", "proxy-connection"}
             }
-            with httpx.Client(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+            client = httpx.Client(timeout=self.timeout, follow_redirects=False, trust_env=False)
+            if body.get("stream") is True:
+                try:
+                    request = client.build_request("POST", url, json=body, headers=outbound)
+                    response = client.send(request, stream=True)
+                except Exception:
+                    client.close()
+                    raise
+
+                def chunks():
+                    total = 0
+                    try:
+                        for chunk in response.iter_bytes():
+                            total += len(chunk)
+                            if total > self.max_response_bytes:
+                                raise ValueError("response_too_large")
+                            yield chunk
+                    finally:
+                        response.close()
+                        client.close()
+
+                return response.status_code, chunks()
+            try:
                 response = client.post(url, json=body, headers=outbound)
                 if len(response.content) > self.max_response_bytes:
                     raise ValueError("response_too_large")
@@ -58,6 +98,8 @@ class ProviderTransport:
                     payload = response.json()
                 except ValueError as exc:
                     raise ValueError("invalid_json_response") from exc
+            finally:
+                client.close()
             return response.status_code, payload
 
         if self.cassette is None:
@@ -65,6 +107,8 @@ class ProviderTransport:
         provider = str(route.get("provider") or "generic")
         path = str(route.get("path") or "")
         fingerprint = cassette_fingerprint(provider, path, body, self.cassette_version)
+        if body.get("stream") is True:
+            return self.cassette.exchange_stream(fingerprint, {"body": body}, send)
         return self.cassette.exchange(fingerprint, {"body": body}, send)
 
 

@@ -42,6 +42,15 @@ def test_route_registry_loads_provider_route_without_secret_values(tmp_path):
     assert routes[0].input_token_bound({"messages": []}) == 7
 
 
+def test_route_registry_persists_explicit_streaming_capability(tmp_path):
+    path = tmp_path / "proxy-routes.json"
+    path.write_text(json.dumps({"routes": [_route(allow_streaming=True)]}), encoding="utf-8")
+
+    routes = ProviderRouteRegistry(path, token_counter=lambda route, body: 7).load()
+
+    assert routes[0].allow_streaming is True
+
+
 def test_route_registry_rejects_duplicate_routes(tmp_path):
     path = tmp_path / "proxy-routes.json"
     path.write_text(json.dumps({"routes": [_route(), _route()]}), encoding="utf-8")

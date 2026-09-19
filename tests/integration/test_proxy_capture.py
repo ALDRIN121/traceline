@@ -79,3 +79,39 @@ def test_proxy_denies_unknown_route_without_outbound_call(tmp_path):
         assert response.status_code == 403
     finally:
         proxy.stop()
+
+
+def test_forward_proxy_streams_provider_sse_and_settles_usage():
+    records = []
+    route = ProviderRoute(
+        host="provider.example", origin="https://provider.example",
+        path="/v1/chat/completions", model="fixture-model", secret_ref="provider",
+        dummy_key="dummy-case-key", max_input_tokens=100, max_output_tokens=20,
+        input_micros_per_token=2, output_micros_per_token=3,
+        price_version="fixture-v1", input_token_bound=lambda body: 2,
+        allow_streaming=True,
+    )
+    transport = ProviderTransport(sender=lambda *_: (200, iter([
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+        b'data: {"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n',
+        b'data: [DONE]\n\n',
+    ])))
+    proxy = ProxyInstance(
+        [route], Budget(1000), lambda ref: "real-provider-key", records.append,
+        transport=transport,
+    )
+    endpoint = proxy.start()
+    try:
+        with httpx.Client(proxy=endpoint.url, trust_env=False) as client:
+            response = client.post(
+                "http://provider.example/v1/chat/completions",
+                headers={"Authorization": "Bearer dummy-case-key"},
+                json={"model": "fixture-model", "max_tokens": 20, "stream": True},
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert b"data: [DONE]" in response.content
+        assert records[-1]["usage"] == {"prompt_tokens": 2, "completion_tokens": 1}
+        assert proxy.budget.spent == 7
+    finally:
+        proxy.stop()

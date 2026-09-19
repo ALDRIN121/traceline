@@ -57,3 +57,35 @@ def test_cassette_version_mismatch_fails_closed(tmp_path):
     replay = CassetteWorld(tmp_path / "cassettes", mode="replay", version="v2")
     with pytest.raises(ValueError, match="version"):
         replay.exchange(fingerprint, {"q": "hi"}, lambda: (200, {}))
+
+
+def test_provider_transport_stream_cassettes_redact_and_replay_without_upstream(tmp_path):
+    world = CassetteWorld(tmp_path / "cassettes", mode="record", version="stream-v1")
+    calls = []
+    route = {"provider": "openai", "path": "/v1/chat/completions", "origin": "http://unused"}
+    body = {"model": "fixture", "max_tokens": 1, "messages": [], "stream": True}
+    chunks = [
+        b'data: {"choices":[{"delta":{"content":"sk-test-do-not-persist-0001"}}]}\n\n',
+        b'data: {"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+    ]
+
+    transport = ProviderTransport(
+        cassette=world, cassette_version="stream-v1",
+        sender=lambda *_: (calls.append("upstream") or (200, iter(chunks))),
+    )
+    status, stream = transport(route, body, {"Authorization": "Bearer dummy"})
+    assert status == 200
+    recorded = list(stream)
+    assert b"[REDACTED]" in b"".join(recorded)
+    assert calls == ["upstream"]
+    cassette = next((tmp_path / "cassettes").glob("*.json"))
+    assert "sk-test-do-not-persist-0001" not in cassette.read_text()
+
+    replay = ProviderTransport(
+        cassette=CassetteWorld(tmp_path / "cassettes", mode="replay", version="stream-v1"),
+        cassette_version="stream-v1",
+        sender=lambda *_: pytest.fail("stream replay called upstream"),
+    )
+    replay_status, replay_stream = replay(route, body, {})
+    assert replay_status == 200
+    assert b"[REDACTED]" in b"".join(replay_stream)
