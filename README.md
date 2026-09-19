@@ -148,6 +148,7 @@ explicitly when the local runtime and pinned images are available:
 LLM_AGENT_EVAL_RUN_PROXY_SANDBOX=1 PYTHONPATH=src python -m pytest -q tests/integration/test_proxy_sandbox_e2e.py -o addopts=''
 LLM_AGENT_EVAL_RUN_PROXY_HTTPS=1 PYTHONPATH=src python -m pytest -q tests/integration/test_proxy_https_case.py -o addopts=''
 LLM_AGENT_EVAL_RUN_CUSTOM_EVALUATOR=1 PYTHONPATH=src python -m pytest -q tests/integration/test_custom_evaluator_live.py -o addopts=''
+LLM_AGENT_EVAL_RUN_COMPOSE=1 PYTHONPATH=src python -m pytest -q tests/integration/test_compose_rehearsal.py -o addopts=''
 ```
 
 Provider-backed live tests, when present, require explicitly supplied credentials in `.env`
