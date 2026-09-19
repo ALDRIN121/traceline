@@ -151,7 +151,8 @@
   }
 
   async function request(path, options = {}) {
-    const headers = { Accept: "application/json", ...(options.headers || {}) };
+    const addAuth = window.__tracelineAuthHeaders || ((headers) => headers);
+    const headers = addAuth({ Accept: "application/json", ...(options.headers || {}) });
     let body = options.body;
     // Only plain records are JSON API payloads. File/Blob bodies must reach the
     // upload endpoint unchanged so the server can validate the archive bytes.

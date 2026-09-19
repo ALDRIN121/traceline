@@ -30,6 +30,15 @@ class _ProxyServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def _authority_hostname(authority: str) -> str:
+    """Extract a DNS or IP-literal host from an HTTP CONNECT authority."""
+    parsed = urlsplit(f"//{authority}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("invalid_connect_authority")
+    return hostname
+
+
 class _ProxyHandler(socketserver.StreamRequestHandler):
     server: "_ProxyServer"
 
@@ -57,7 +66,7 @@ class _ProxyHandler(socketserver.StreamRequestHandler):
             self.server.proxy.respond(self.connection, 501, {"error": "tls_interception_unavailable"})
             return
         self.connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        hostname = target.rsplit(":", 1)[0]
+        hostname = _authority_hostname(target)
         try:
             tls = self.server.proxy.ca.context_for(hostname).wrap_socket(
                 self.connection, server_side=True

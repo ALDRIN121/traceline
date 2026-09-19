@@ -182,6 +182,8 @@ class TestHealthAndEnvelope:
         app = create_app(storage=db, engine=Engine(db, work_root=tmp_path / "work"),
                          workspace_id=WORKSPACE, auth_resolver=resolver, release_mode=True)
         with TestClient(app) as client:
+            assert client.get("/").status_code == 200
+            assert client.get("/auth.js").status_code == 200
             assert client.get("/runs").status_code == 401
             token = token_path.read_text(encoding="utf-8").strip()
             assert client.get("/runs", headers={"Authorization": f"Bearer {token}"}).status_code == 200

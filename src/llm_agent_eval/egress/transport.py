@@ -37,6 +37,12 @@ class ProviderTransport:
                 request["model"] = route["model"]
                 streaming = request.get("stream") is True
                 request["stream"] = streaming
+                if streaming:
+                    # OpenAI-compatible providers expose authoritative usage
+                    # in a terminal usage-only frame only when requested.
+                    # Without this, the recording proxy cannot settle cost
+                    # and must close the run budget as unmeterable.
+                    request.setdefault("stream_options", {"include_usage": True})
                 response = router.completion(**request)
                 if streaming:
                     def chunks():

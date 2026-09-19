@@ -422,12 +422,23 @@ def create_app(
             or request.headers.get("x-correlation-id")
             or uuid.uuid4().hex
         )
+        path = request.url.path
         # Health is intentionally public so local orchestration can determine
-        # liveness before it has the install owner credential. It exposes no
-        # workspace data and accepts no mutation.
-        if request.url.path in {"/health", "/readiness"}:
+        # liveness before it has the install owner credential. The static
+        # browser shell is also public in release mode: it contains no
+        # workspace data, and the fragment-based install-token handoff must be
+        # readable by auth.js before protected API requests begin. Every API
+        # and data route remains behind the bearer boundary below.
+        public_static = release_mode and (
+            path == "/" or path.endswith((".html", ".js", ".css", ".json"))
+        )
+        if path in {"/health", "/readiness"} or public_static:
             response = await call_next(request)
             response.headers["x-correlation-id"] = request.state.correlation_id
+            if public_static:
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
             return response
         try:
             actor = auth_resolver(request) if auth_resolver else Actor("local-owner", ws, "owner")
@@ -441,7 +452,6 @@ def create_app(
             return response
         response = await call_next(request)
         response.headers["x-correlation-id"] = request.state.correlation_id
-        path = request.url.path
         if path == "/" or path.endswith((".html", ".js", ".css", ".json")):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"

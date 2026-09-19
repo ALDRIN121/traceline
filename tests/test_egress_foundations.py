@@ -2,10 +2,14 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import socket
+import ssl
+import threading
 
 import pytest
 
 from llm_agent_eval.egress.ca import InstallCA
+from llm_agent_eval.egress.listener import _authority_hostname
 from llm_agent_eval.egress.recording import Budget, EgressDenied, ProviderRoute, RecordingEgress
 
 
@@ -26,6 +30,37 @@ def test_ca_persists_identity_and_private_permissions(tmp_path):
     assert ca.certificate_pem == again.certificate_pem
     assert (tmp_path / "install" / "interception-ca.pem").stat().st_mode & 0o777 == 0o600
     assert ca.context_for("provider.example").minimum_version.name == "TLSv1_2"
+
+
+def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
+    assert _authority_hostname("[2001:db8::10]:443") == "2001:db8::10"
+    assert _authority_hostname("provider.example:443") == "provider.example"
+    ca = InstallCA.load_or_create(tmp_path / "install")
+    server_context = ca.context_for("2001:db8::10")._context
+    client_context = ssl.create_default_context(
+        cadata=ca.certificate_pem.decode("ascii"),
+    )
+    left, right = socket.socketpair()
+    errors = []
+
+    def accept_tls():
+        try:
+            with server_context.wrap_socket(right, server_side=True) as server:
+                server.recv(4)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=accept_tls)
+    thread.start()
+    try:
+        with client_context.wrap_socket(
+            left, server_hostname="2001:db8::10",
+        ) as client:
+            client.sendall(b"ping")
+    finally:
+        thread.join(timeout=5)
+    assert not errors
+    assert not thread.is_alive()
 
 
 def test_ca_rejects_repository_and_corruption(tmp_path):

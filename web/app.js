@@ -55,7 +55,8 @@ function escapeHtml(str) {
 }
 
 async function api(path, opts = {}) {
-  const headers = { Accept: "application/json", ...(opts.headers || {}) };
+  const addAuth = window.__tracelineAuthHeaders || ((headers) => headers);
+  const headers = addAuth({ Accept: "application/json", ...(opts.headers || {}) });
   let body = opts.body;
   if (body && typeof body === "object" && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";

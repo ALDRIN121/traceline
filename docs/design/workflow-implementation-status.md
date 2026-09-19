@@ -426,14 +426,23 @@ It is not an R1 release declaration.
   worker acceptance test covers upload → restricted build → authorization →
   per-case proxy run → output → scoring. The
   container proof uses a raw HTTP relay client because the pinned Alpine
-  BusyBox client does not implement the required HTTPS CONNECT flow; a real
-  provider-client HTTPS proof from inside the case remains open. The egress
+  BusyBox client does not implement the required HTTPS CONNECT flow; the
+  separate pinned curl case supplies provider-client HTTPS proof on the
+  observed host. The egress
   seam now also supports explicitly enabled provider SSE routes: bounded
   OpenAI/Anthropic/Google usage events are accumulated and settled at stream
   completion, unknown usage closes the budget, the listener forwards the
   stream without persisting body text, and stream cassettes record/replay
   canonical redacted frames. Live provider-client streaming and alternate-
-  platform proof remain open.
+  platform proof remain open. The opt-in local provider proof now exercises
+  the actual embedded LiteLLM Router over a per-install-CA HTTPS server for
+  both normal and streaming responses; streaming requests explicitly request
+  the provider's usage-only terminal frame so budget settlement remains
+  possible. External provider credentials and a full repaired CrewAI/Gemini
+  execution remain deployment evidence.
+  CONNECT authority parsing and CA leaf generation now also handle IPv4/IPv6
+  literals, with an in-memory hostname-verifying TLS handshake regression
+  test.
 - **Production proxy admission:** the default workflow worker now constructs
   a trusted `ProxyRunSession` factory from an installation-owned
   `proxy-routes.json`; route files reject unsafe permissions, duplicates,
@@ -584,7 +593,8 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **45 tests**. The evidence covers
+  dashboard browser suites pass **45 tests**, plus a separate release-auth
+  browser acceptance (**1 test**). The evidence covers
   live FastAPI-backed project create/list/detail/knowledge, ZIP upload →
   durable import worker → knowledge revision refresh, and hosted target
   configure → durable verification → observed verified-version flows in
@@ -618,14 +628,19 @@ It is not an R1 release declaration.
   responses; the legacy run modal explicitly states that its request is not
   backend authorization; the live flow uses temporary SQLite, an in-process
   worker, and a local allowlisted stub target rather than a separate release
-  worker process or external provider, and does not claim release bearer-token
-  authentication or the complete R1 accessibility matrix.
-- **Observed suite:** the default suite is **950 passed, 15 skipped, 9
+  worker process or external provider, and does not claim the complete R1
+  accessibility matrix. A separate release-mode browser acceptance now proves
+  anonymous API rejection, public static-shell loading, fragment token
+  consumption/removal, authenticated authoring/dashboard API calls, and no
+  token retention in localStorage.
+- **Observed suite:** the default suite is **951 passed, 15 skipped, 10
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The combined opt-in live
-  proxy/sandbox, HTTPS-client, and custom-evaluator selection passes **5 tests**
-  on the observed macOS Podman 6.1.1 host; alternate platforms and provider
-  credentials remain unverified.
+  proxy/sandbox, HTTPS-client, embedded-LiteLLM, and custom-evaluator selection passes **6 tests**
+  on the observed macOS Podman 6.1.1 host; alternate platforms and external
+  provider credentials remain unverified. The disposable real Compose
+  rehearsal additionally observed authenticated API access, project creation,
+  ZIP upload/import dispatch, and durable worker completion with PostgreSQL.
 
 **Still release-blocking:** the specialist-owned UI slice and the live
 authoring/results/compare happy path are verified, but the complete R1
@@ -636,7 +651,7 @@ release-proven;
 provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
 are not proven on Linux, macOS and WSL2; broader PostgreSQL retention/TTL
-deployment audits and link verification remain open; live LiteLLM
-provider-client fidelity, live repaired CrewAI execution, full deployment
+deployment audits and link verification remain open; external-provider
+credential fidelity, live repaired CrewAI execution, full deployment
 export/CI rehearsal, and the complete E01–E32 / UX acceptance matrix remain
 unfinished.

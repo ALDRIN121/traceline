@@ -7,6 +7,7 @@ owner-only permissions, and never inside the repository.
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import os
 from pathlib import Path
 
@@ -92,6 +93,10 @@ class InstallCA:
         leaf_key = ec.generate_private_key(ec.SECP256R1())
         now = datetime.datetime.now(datetime.timezone.utc)
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+        try:
+            san_name = x509.IPAddress(ipaddress.ip_address(hostname))
+        except ValueError:
+            san_name = x509.DNSName(hostname)
         leaf = (
             x509.CertificateBuilder()
             .subject_name(name)
@@ -100,9 +105,7 @@ class InstallCA:
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - datetime.timedelta(minutes=5))
             .not_valid_after(now + datetime.timedelta(minutes=30))
-            .add_extension(
-                x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False
-            )
+            .add_extension(x509.SubjectAlternativeName([san_name]), critical=False)
             .add_extension(
                 x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
             )

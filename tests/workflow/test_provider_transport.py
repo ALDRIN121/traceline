@@ -96,3 +96,4 @@ def test_https_provider_stream_is_normalized_to_bounded_sse_bytes():
         b"data: [DONE]\n\n",
     ]
     assert router.calls[0]["stream"] is True
+    assert router.calls[0]["stream_options"] == {"include_usage": True}
