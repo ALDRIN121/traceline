@@ -238,7 +238,7 @@ def _readiness_payload(readiness) -> dict[str, Any]:
     }
 
 
-def _default_proxy_session_factory(store, artifact_root):
+def default_proxy_session_factory(store, artifact_root):
     """Build trusted per-run proxy sessions from install-owned configuration.
 
     Route metadata is loaded only when a proxy run is dispatched. Missing or
@@ -251,6 +251,7 @@ def _default_proxy_session_factory(store, artifact_root):
     route_path = root / "proxy-routes.json"
     install_root = root / "install"
     secret_key = root / "install-secret.key"
+    store_provider = store if callable(store) else lambda: store
 
     def factory(actor, run_id, plan, _context):
         routes = ProviderRouteRegistry(route_path).load()
@@ -260,7 +261,7 @@ def _default_proxy_session_factory(store, artifact_root):
             raise WorkflowError(
                 "proxy run budget is invalid", code="proxy_budget_invalid", status=409,
             )
-        secrets = SecretStore(store(), actor, secret_key)
+        secrets = SecretStore(store_provider(), actor, secret_key)
         return ProxyRunSession(
             run_id=run_id,
             install_root=install_root,
@@ -273,6 +274,11 @@ def _default_proxy_session_factory(store, artifact_root):
     return factory
 
 
+# Keep the old private name for integrations that imported it while the
+# worker-facing factory became a shared production wiring point.
+_default_proxy_session_factory = default_proxy_session_factory
+
+
 def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> APIRouter:
     router = APIRouter(prefix="/api")
     from pathlib import Path
@@ -280,7 +286,7 @@ def workflow_router(store, artifact_root, max_artifact_bytes: int, gateway) -> A
     worker = WorkflowWorker(
         store(), artifact_root, gateway,
         fingerprint_key_source=lambda: load_fingerprint_key(Path(artifact_root) / "install-fingerprint.key"),
-        proxy_session_factory=_default_proxy_session_factory(store, artifact_root),
+        proxy_session_factory=default_proxy_session_factory(store, artifact_root),
     )
     importer = worker.importer
     knowledge = KnowledgeStore(store(), artifact_root)

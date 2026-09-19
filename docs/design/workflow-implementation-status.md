@@ -451,7 +451,10 @@ It is not an R1 release declaration.
   `proxy-routes.json`; route files reject unsafe permissions, duplicates,
   missing metadata, untrusted token counters, and embedded secret fields.
   The worker resolves encrypted secret references only at the outbound proxy
-  boundary. Actual provider route configuration and the full containerized
+  boundary. The standalone `eval-engine worker` command now uses the same
+  factory and explicitly adopts the trusted `proxy` service identity, so the
+  release worker cannot silently lose proxy-backed runs when launched outside
+  Compose. Actual provider route configuration and the full containerized
   runtime topology remain deployment evidence requirements.
 - **Durable judge calibration:** calibration rows and label lineage now persist
   by workspace and exact binding `(provider, model, schema, rubric)`, with

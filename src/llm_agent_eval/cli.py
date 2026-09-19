@@ -460,6 +460,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
     from .auth import Actor
     from .gateway import LiteLLMGateway
     from .install_state import load_fingerprint_key
+    from .workflow_api import default_proxy_session_factory
     from .worker import WorkflowWorker
 
     root = Path(args.artifact_root or settings.artifact_root)
@@ -468,9 +469,15 @@ def cmd_worker(args: argparse.Namespace) -> int:
     stop = threading.Event()
     previous = {}
     try:
+        # The standalone worker is the trusted outbound proxy boundary. Keep
+        # the service identity explicit here as Compose does, so encrypted
+        # provider references can resolve only inside this process.
+        import os
+        os.environ["LLM_AGENT_EVAL_SERVICE_IDENTITY"] = "proxy"
         worker = WorkflowWorker(
             store, root, gateway,
             fingerprint_key_source=lambda: load_fingerprint_key(root / "install-fingerprint.key"),
+            proxy_session_factory=default_proxy_session_factory(store, root),
         )
         actor = Actor("workflow-service", args.workspace, "owner")
         actors = [actor]
