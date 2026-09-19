@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 import uuid
 
@@ -35,6 +36,12 @@ _TARGET_CAPABILITY_BY_METRIC_TARGET = {
     "tool_arguments": "tool_execution",
     "tool_output": "tool_execution",
     "retrieval": "retrieval",
+}
+_UNKNOWN_CAPABILITIES = {
+    "final_output": "unknown",
+    "retrieval": "unknown",
+    "tool_execution": "unknown",
+    "provider_cost": "unknown",
 }
 
 
@@ -118,6 +125,7 @@ class RunPlanService:
             raise WorkflowError("Unknown run-plan version reference", details={"keys": unknown})
         normalized_refs: dict[str, str] = {}
         blockers: list[str] = []
+        target_capabilities = dict(_UNKNOWN_CAPABILITIES)
         for key, value in refs.items():
             if not isinstance(value, str) or not value or len(value) > 255:
                 raise WorkflowError(f"{key} must be a bounded non-empty version identifier")
@@ -144,6 +152,12 @@ class RunPlanService:
                 if version.kind != "target":
                     blockers.append("target_version_invalid")
                 verification = version.content.get("verification") or {}
+                declared_capabilities = verification.get("capabilities")
+                if isinstance(declared_capabilities, Mapping):
+                    target_capabilities.update({
+                        name: value for name, value in declared_capabilities.items()
+                        if isinstance(name, str) and isinstance(value, str)
+                    })
                 if verification.get("state") != "verified":
                     blockers.append("target_verification_required")
                 else:
@@ -248,10 +262,61 @@ class RunPlanService:
         if type(budget) is not int or budget < 0:
             blockers.append("budget_invalid")
 
+        dataset_case_count = 0
+        dataset_version_id = normalized_refs.get("dataset_version_id")
+        if dataset_version_id:
+            dataset_version = self.versions.get(dataset_version_id, actor)
+            raw_cases = dataset_version.content.get("cases")
+            if isinstance(raw_cases, list):
+                dataset_case_count = len(raw_cases)
+        spec = {}
+        if evaluation_version_id:
+            evaluation_content = evaluation_version.content
+            spec = evaluation_content.get("spec", evaluation_content)
+            if not isinstance(spec, Mapping):
+                spec = {}
+        tier_for_estimate = tier if tier in _TIERS else (
+            spec.get("run_tier") if spec.get("run_tier") in _TIERS else "quick"
+        )
+        repeats_for_estimate = repeats if type(repeats) is int and 1 <= repeats <= 5 else 1
+        attempt_count = dataset_case_count * repeats_for_estimate
+        if tier_for_estimate == "quick":
+            estimated_duration_seconds = 120
+        elif tier_for_estimate == "standard":
+            estimated_duration_seconds = max(600, math.ceil(attempt_count / 10 * 60))
+        else:
+            estimated_duration_seconds = max(28_800, math.ceil(attempt_count / 10 * 60))
+        execution_summary = {
+            "tier": tier_for_estimate,
+            "case_count": dataset_case_count,
+            "repeats": repeats_for_estimate,
+            "repeat_multiplier": repeats_for_estimate,
+            "attempt_count": attempt_count,
+            "estimated_duration_seconds": estimated_duration_seconds,
+            "estimated_cost_usd": {
+                "state": "unknown",
+                "min": None,
+                "max": None,
+                "reason": "price_table_not_bound_to_run_plan",
+            },
+            "budget_usd_micros": budget,
+            "quota": {
+                "state": "enforced_at_dispatch",
+                "budget_usd_micros": budget,
+                "attempt_count": attempt_count,
+            },
+            "capabilities": target_capabilities,
+            "readiness": "ready" if not blockers else "blocked",
+            "readiness_blockers": list(dict.fromkeys(blockers)),
+            "side_effect_policy": "target_requests_may_have_external_side_effects",
+            "retry_policy": "no_remote_retry_by_default",
+        }
+
         content = {
             "version_refs": normalized_refs,
             "limits": normalized_limits,
             "evaluator_versions": resolved_evaluator_versions,
+            "execution": execution_summary,
         }
         digest = _digest(content)
         record = self.storage.create_run_plan(

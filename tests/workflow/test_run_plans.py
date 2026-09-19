@@ -48,6 +48,16 @@ def test_plan_freezes_authorized_version_refs_and_digest(tmp_path):
         assert plan.content["version_refs"]["evaluation_version_id"] == evaluation.version_id
         assert plan.content["version_refs"]["dataset_version_id"] == dataset.version_id
         assert len(plan.content_digest) == 64
+        execution = plan.content["execution"]
+        assert execution["tier"] == "quick"
+        assert execution["case_count"] == 1
+        assert execution["repeats"] == 1
+        assert execution["attempt_count"] == 1
+        assert execution["estimated_duration_seconds"] == 120
+        assert execution["estimated_cost_usd"]["state"] == "unknown"
+        assert execution["readiness"] == "ready"
+        assert execution["side_effect_policy"] == "target_requests_may_have_external_side_effects"
+        assert execution["quota"]["budget_usd_micros"] == 1000
 
         authorization = service.authorize(actor, plan.plan_id, plan.content_digest)
         assert authorization.state == "authorized"
