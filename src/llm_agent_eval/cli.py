@@ -473,12 +473,21 @@ def cmd_worker(args: argparse.Namespace) -> int:
             fingerprint_key_source=lambda: load_fingerprint_key(root / "install-fingerprint.key"),
         )
         actor = Actor("workflow-service", args.workspace, "owner")
+        actors = [actor]
+        for workspace in getattr(args, "workspaces", None) or ():
+            actors.append(Actor("workflow-service", workspace, "owner"))
         if args.once:
-            worker.run_once(actor, stop_event=stop)
+            if len(actors) == 1:
+                worker.run_once(actor, stop_event=stop)
+            else:
+                worker.run_fair_once(actors, worker_id="workflow-service")
         else:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 previous[sig] = signal.signal(sig, lambda *_: stop.set())
-            worker.run_forever(actor, stop_event=stop)
+            if len(actors) == 1:
+                worker.run_forever(actor, stop_event=stop)
+            else:
+                worker.run_fair_forever(actors, stop_event=stop, worker_id="workflow-service")
         return EXIT_OK
     finally:
         for sig, handler in previous.items():
@@ -625,6 +634,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("worker", help="run the durable workflow worker service")
     p.add_argument("--once", action="store_true", help="drain one eligible job and exit")
+    p.add_argument("--workspaces", nargs="+", default=None,
+                   help="additional operator-approved workspace ids to service round-robin")
     p.add_argument("--artifact-root", default=None, help="install state/artifact root")
     add_common(p)
     p.set_defaults(handler=cmd_worker)

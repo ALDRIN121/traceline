@@ -62,3 +62,37 @@ def test_stream_adapter_stops_with_uncertain_cancel_before_final_frame(monkeypat
     )
     assert result.outcome == "cancelled"
     assert result.remote_uncertainty == "cancelled"
+
+
+def test_stream_adapter_does_not_call_terminal_frame_first_token(monkeypatch):
+    class FinalOnlyResponse(FakeResponse):
+        def iter_bytes(self):
+            yield b'event: final\ndata: {"answer": "ok"}\n\n'
+
+    class FinalOnlyClient(FakeClient):
+        def stream(self, *args, **kwargs):
+            return FinalOnlyResponse()
+
+    monkeypatch.setattr("llm_agent_eval.targets.http_stream.httpx.Client", FinalOnlyClient)
+    result = HttpStreamAdapter().invoke(
+        {"mode": "stream", "url": "https://provider/stream"}, {"q": "hi"}, {},
+    )
+    assert result.outcome == "ok"
+    assert result.connector_observations["first_token"] is None
+
+
+def test_stream_adapter_classifies_malformed_sse_as_uncertain(monkeypatch):
+    class MalformedResponse(FakeResponse):
+        def iter_bytes(self):
+            yield b"event token without colon\n\n"
+
+    class MalformedClient(FakeClient):
+        def stream(self, *args, **kwargs):
+            return MalformedResponse()
+
+    monkeypatch.setattr("llm_agent_eval.targets.http_stream.httpx.Client", MalformedClient)
+    result = HttpStreamAdapter().invoke(
+        {"mode": "stream", "url": "https://provider/stream"}, {"q": "hi"}, {},
+    )
+    assert result.outcome == "stream_protocol_error"
+    assert result.remote_uncertainty == "stream_uncertain"

@@ -26,6 +26,17 @@ class ExportService:
         run = self.storage.get_run(run_id, workspace_id)
         if run is None:
             raise KeyError(run_id)
+        try:
+            spec_payload = json.loads(run.spec_json)
+            provisional_metric_ids = {
+                metric.get("metric_id")
+                for metric in spec_payload.get("metrics", [])
+                if isinstance(metric, dict) and metric.get("provisional") is True
+            }
+        except (TypeError, ValueError, AttributeError):
+            # A run cannot normally be created with invalid spec JSON, but an
+            # export must remain safe and truthful if an older record is read.
+            provisional_metric_ids = set()
         case_filter = set(case_ids or ())
         metric_filter = set(metric_ids or ())
         if case_ids is not None and len(case_filter) != len(case_ids):
@@ -47,6 +58,7 @@ class ExportService:
                 "skipped_n": row.skipped_n,
                 "no_ci": row.no_ci,
                 "score_revision": row.score_revision,
+                "provisional": row.metric_id in provisional_metric_ids,
             }
             for row in self.storage.get_run_metric_results(run_id, workspace_id)
             if not metric_filter or row.metric_id in metric_filter
@@ -82,6 +94,13 @@ class ExportService:
             if (not case_filter or row.case_id in case_filter)
             and (not metric_filter or row.metric_id in metric_filter)
         ]
+        world_config = run.world_config if isinstance(run.world_config, dict) else {}
+        version_refs = world_config.get("version_refs")
+        if not isinstance(version_refs, dict):
+            version_refs = {}
+        evaluator_versions = world_config.get("evaluator_versions")
+        if not isinstance(evaluator_versions, dict):
+            evaluator_versions = {}
         payload = {
             "schema_version": 1,
             "run": {
@@ -98,6 +117,8 @@ class ExportService:
                 "spec_sha256": hashlib.sha256(run.spec_json.encode("utf-8")).hexdigest(),
                 "source_digest": run.agent_version.get("source_digest"),
                 "run_manifest_ref": run.run_manifest_ref,
+                "version_refs": version_refs,
+                "evaluator_versions": evaluator_versions,
             },
             "filters": {
                 "case_ids": sorted(case_filter) if case_ids is not None else None,
@@ -186,22 +207,56 @@ class ExportService:
 
     @staticmethod
     def _html_text(manifest: dict[str, Any]) -> str:
+        run = manifest.get("run") or {}
+        metrics = manifest.get("metrics") or []
+        partial = run.get("status") == "incomplete" or any(
+            metric.get("aggregation_state") not in {None, "COMPLETE"}
+            for metric in metrics
+        )
+        provisional = any(metric.get("provisional") is True for metric in metrics)
+        notices = []
+        if partial:
+            notices.append("<p role=\"alert\"><strong>Partial results</strong> — some cases or metric rows are incomplete.</p>")
+        if provisional:
+            provisional_ids = ", ".join(
+                html.escape(str(metric.get("metric_id", "unknown")))
+                for metric in metrics if metric.get("provisional") is True
+            )
+            notices.append(
+                "<p><strong>Provisional</strong> — one or more judge-derived metrics are not calibrated. "
+                f"Metrics: {provisional_ids}.</p>"
+            )
+        status = html.escape(str(run.get("status", "unknown")))
+        notices.insert(0, f"<p>Run status: {status}</p>")
         cases = "".join(
             f"<tr><td>{html.escape(str(case['case_id']))}</td>"
             f"<td>{html.escape(str(case['status']))}</td></tr>"
             for case in manifest["cases"]
         )
-        metrics = "".join(
+        case_metric_rows = "".join(
             f"<tr><td>{html.escape(str(metric['case_id']))}</td>"
             f"<td>{html.escape(str(metric['metric_id']))}</td>"
             f"<td>{html.escape(str(metric['status']))}</td>"
             f"<td>{html.escape(';'.join(metric['evidence_event_ids']))}</td></tr>"
             for metric in manifest.get("case_metrics", [])
         )
+        metric_summary = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(metric.get('metric_id', '')))}</td>"
+            f"<td>{html.escape(json.dumps(metric.get('value'), sort_keys=True, ensure_ascii=False))}</td>"
+            f"<td>{html.escape(str(metric.get('gate_status', 'UNKNOWN')))}</td>"
+            f"<td>{html.escape(str(metric.get('aggregation_state', 'UNKNOWN')))}</td>"
+            f"<td>{'yes' if metric.get('provisional') else 'no'}</td>"
+            "</tr>"
+            for metric in metrics
+        )
         return (
+            "".join(notices) +
             "<table><tr><th>Case</th><th>Status</th></tr>" + cases +
             "</table><table><tr><th>Case</th><th>Metric</th><th>Status</th>"
-            "<th>Evidence</th></tr>" + metrics + "</table>"
+            "<th>Evidence</th></tr>" + case_metric_rows +
+            "</table><table><tr><th>Metric</th><th>Value</th><th>Gate</th>"
+            "<th>Aggregation</th><th>Provisional</th></tr>" + metric_summary + "</table>"
         )
 
     def frozen_bytes(self, workspace_id: str, export_id: str, format_name: str) -> tuple[bytes, str]:

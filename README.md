@@ -18,8 +18,9 @@ what teams actually need to check can be stated exactly.
 This repository is actively implementing the v3 design. The installed package now contains
 verified slices of the durable worker, rootless sandbox/proxy, secure ingestion, hosted connector,
 and R2 adapter paths, but it is not yet the complete v3 platform. Cross-platform containment,
-production provider-route rehearsal, the full UI, PostgreSQL operations rehearsal, repaired
-reference fixture, and the complete release acceptance matrix remain open. Coordinated backup /
+production provider-route rehearsal, the full UI, PostgreSQL operations rehearsal, live execution
+of the repaired reference fixture, and the complete release acceptance matrix remain open.
+Coordinated backup /
 restore code, owner-managed encrypted secret references, retention cleanup, and operational CLI
 commands are available; the implementation status is the source of truth for what has actually
 been verified.
@@ -83,6 +84,12 @@ users. The file contains routing metadata only; provider keys stay in encrypted 
 and are resolved by the worker's trusted proxy identity. The Compose worker sets that identity to
 `proxy`; missing or unsafe route configuration fails a proxy run closed.
 
+The repository also includes a separate, syntactically repaired reference copy at
+[`fixtures/reference-agent-repaired/`](fixtures/reference-agent-repaired/). The original fixture
+above remains deliberately broken and is never modified. Rootless Podman acceptance checks for
+the proxy, an in-case HTTPS client, and a custom evaluator are opt-in and require the documented
+local image/runtime setup; they are not counted in the default suite.
+
 Authenticated API clients can freeze an export with `POST /api/exports` using a run ID and then
 download its immutable `json`, `csv`, or `html` representation from
 `/api/exports/{export_id}/{format}`. Later score revisions do not change a frozen export.
@@ -114,10 +121,18 @@ contract rather than claiming every v3 mechanism is complete.
 PYTHONPATH=src python -m pytest -q
 ```
 
-The default suite excludes the opt-in `live` marker. `live` tests exercise a real LLM provider
-through `DEEPSEEK_API_KEY` in `.env` (never committed) and should run last. `integration` and
-`browser` markers are registered for their future suites; their absence today does not mean those
-environments are verified.
+The default suite excludes the opt-in `live` marker. Podman-backed acceptance checks are run
+explicitly when the local runtime and pinned images are available:
+
+```bash
+LLM_AGENT_EVAL_RUN_PROXY_SANDBOX=1 PYTHONPATH=src python -m pytest -q tests/integration/test_proxy_sandbox_e2e.py -o addopts=''
+LLM_AGENT_EVAL_RUN_PROXY_HTTPS=1 PYTHONPATH=src python -m pytest -q tests/integration/test_proxy_https_case.py -o addopts=''
+LLM_AGENT_EVAL_RUN_CUSTOM_EVALUATOR=1 PYTHONPATH=src python -m pytest -q tests/integration/test_custom_evaluator_live.py -o addopts=''
+```
+
+Provider-backed live tests, when present, require explicitly supplied credentials in `.env`
+(never committed) and should run last. `integration` and `browser` markers are registered for
+their future suites; their absence today does not mean those environments are verified.
 
 ## License
 

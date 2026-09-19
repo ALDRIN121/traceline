@@ -149,6 +149,8 @@ def test_export_snapshot_is_frozen_before_later_score_changes(client):
     manifest = frozen_json.json()
     assert manifest["case_metrics"]
     assert manifest["case_metrics"][0]["evidence_event_ids"]
+    assert "version_refs" in manifest["versions"]
+    assert "evaluator_versions" in manifest["versions"]
 
     case = db.list_cases(run_id, WORKSPACE)[0]
     db.set_case_classification(run_id, case.case_id, WORKSPACE, "FAILING")

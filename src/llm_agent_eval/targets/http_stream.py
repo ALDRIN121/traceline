@@ -74,7 +74,7 @@ class HttpStreamAdapter:
                         if first_byte is None:
                             first_byte = time.time()
                         for frame in parser.feed(chunk):
-                            if first_token is None:
+                            if first_token is None and frame.event not in {"final", "done"}:
                                 first_token = time.time()
                                 event = adapter_event(
                                     execution_context, EventType.FIRST_TOKEN, len(trace_events),

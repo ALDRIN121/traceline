@@ -436,8 +436,14 @@ It is not an R1 release declaration.
   tested OpenAI, Anthropic, and Google request/usage shapes with provider-
   specific dummy-key substitution. Supported HTTPS routes now use the
   embedded LiteLLM Router outbound seam, while generic/local HTTP remains an
-  explicit fixture fallback. Full stream-aware provider interception, live
-  provider-route proof, and repaired CrewAI/provider fixtures remain open.
+  explicit fixture fallback. The opt-in HTTPS case now uses a pinned
+  `docker.io/curlimages/curl:8.11.1` client inside a fresh rootless case,
+  negotiates TLS through the install-owned CA, and reaches the fixture
+  provider only through the managed proxy. The observed proof passed on
+  macOS Podman 6.1.1; full stream-aware interception and alternate-platform
+  proof remain open. A separate repaired CrewAI/Gemini fixture is now checked
+  in under `fixtures/reference-agent-repaired/`; live execution of that
+  dependency-bearing fixture and provider route remains deployment evidence.
 - **Operations:** local readiness, workspace artifact usage/quota primitives,
   orphan recovery, and non-overwriting SQLite workspace backup/restore with
   manifest checksums are implemented. Coordinated PostgreSQL + artifact-store
@@ -466,7 +472,11 @@ It is not an R1 release declaration.
   Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
   worst-case spend for in-flight slots. Scheduled slots use distinct per-slot
-  run idempotency keys instead of collapsing into one plan-level run.
+  run idempotency keys instead of collapsing into one plan-level run. The
+  worker also exposes explicit operator-approved workspace actors with
+  round-robin claiming so one busy workspace cannot monopolize a multi-
+  workspace process; the multi-process PostgreSQL fairness rehearsal remains
+  open.
 - **Compose/runtime smoke:** a disposable `docker compose up -d --build`
   completed with PostgreSQL healthy, the API and worker running, `/health`
   returning 200, and `/readiness` returning 200 with database and mounted
@@ -502,27 +512,32 @@ It is not an R1 release declaration.
   capture-redacted evidence/reference objects; bounded typed output, evidence
   links, evaluator errors, evaluator-version persistence, frozen exports, and
   evidence-only re-score are covered by API, unit, workflow, and worker-path
-  tests. The remaining evidence item is a live Podman execution using a
-  reviewed evaluator image; the current worker-path acceptance uses a sandbox
-  test double so the suite remains portable.
+  tests. The observed live evidence now includes a Podman execution using a
+  reviewed evaluator image: the opt-in live acceptance executes a
+  reviewed shell evaluator in a fresh rootless Podman container and verifies
+  the bounded score contract. The portable worker-path acceptance continues
+  to use a sandbox test double so the suite remains portable; other supported
+  runtime platforms remain unverified.
 - **Owner-managed credentials:** authenticated `POST /api/secrets` and
   `/api/secrets/{secret_id}/rotate` routes create and rotate encrypted secret
   references without returning values. They are owner-only and accept only
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
-- **Observed suite:** the default suite is **915 passed, 11 skipped, 7
+- **Observed suite:** the default suite is **921 passed, 11 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
-  suite passes **4 tests** on the observed macOS Podman 6.1.1 host.
+  suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
+  opt-in live HTTPS-client and custom-evaluator checks each pass on that same
+  host.
 
 **Still release-blocking:** the specialist-owned authoring/results UI is not
 complete; the trusted proxy-route/session factory exists, but cross-platform
 configured-route setup and full containerized deployment topology are not yet
 release-proven;
-provider-client HTTPS interception from inside the case and
-direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests are not proven on
-Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention/TTL
+provider-client HTTPS interception is proven only on the observed macOS
+Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
+are not proven on Linux, macOS and WSL2; real PostgreSQL recovery, backup/restore, retention/TTL
 link verification, and fairness are not rehearsed; LiteLLM
-outbound/cassette fidelity, repaired CrewAI execution, live custom evaluator
-sandbox proof, full export-bundle/CI acceptance, and the complete
+  outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
+acceptance, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.

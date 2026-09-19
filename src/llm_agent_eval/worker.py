@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date
-from typing import Callable
+from typing import Callable, Sequence
 
 from .auth import Actor
 from .authoring import AuthoringService
@@ -65,6 +65,43 @@ class WorkflowWorker:
         return self.service(actor, worker_id=worker_id).run_forever(
             stop_event=stop_event, poll_seconds=poll_seconds,
         )
+
+    def run_fair_once(
+        self, actors: Sequence[Actor], *, cursor: int = 0, worker_id: str | None = None,
+    ):
+        """Claim at most one job using explicit round-robin workspace order.
+
+        Workspace discovery is intentionally outside this method: a worker
+        must receive an operator-approved tenant set instead of bypassing
+        PostgreSQL RLS to enumerate every tenant. The returned cursor is the
+        next starting position, so a busy workspace cannot monopolize a
+        multi-workspace worker.
+        """
+        if not isinstance(actors, Sequence) or not actors:
+            raise ValueError("at least one workspace actor is required")
+        if type(cursor) is not int or cursor < 0:
+            raise ValueError("cursor must be a nonnegative integer")
+        if any(not isinstance(actor, Actor) or not actor.workspace_id for actor in actors):
+            raise ValueError("actors must be valid workspace identities")
+        start = cursor % len(actors)
+        for offset in range(len(actors)):
+            actor = actors[(start + offset) % len(actors)]
+            result = self.run_once(actor, worker_id=worker_id)
+            if result is not None:
+                return result, (start + offset + 1) % len(actors)
+        return None, (start + 1) % len(actors)
+
+    def run_fair_forever(
+        self, actors: Sequence[Actor], *, stop_event, poll_seconds=0.5, worker_id=None,
+    ):
+        """Continuously service an operator-approved workspace set fairly."""
+        if not 0 < poll_seconds <= 60:
+            raise ValueError("poll_seconds must be positive and at most 60")
+        cursor = 0
+        while not stop_event.is_set():
+            result, cursor = self.run_fair_once(actors, cursor=cursor, worker_id=worker_id)
+            if result is None:
+                stop_event.wait(poll_seconds)
 
     def sweep_schedules(self, actor: Actor, schedule_id: str, start: date, end: date, *, owner: str):
         """Claim due slots and enqueue only already-authorized plans."""

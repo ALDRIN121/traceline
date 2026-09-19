@@ -8,6 +8,7 @@ import pytest
 from llm_agent_eval.auth import Actor
 from llm_agent_eval.jobs import JobQueue, StaleLease
 from llm_agent_eval.storage import Storage
+from llm_agent_eval.worker import WorkflowWorker
 from llm_agent_eval.worker_service import WorkerService, PreparedResult
 
 
@@ -194,3 +195,35 @@ def test_heartbeat_extends_lease_while_handler_is_busy(queue, monkeypatch):
 
     result = WorkerService(queue, handler).run_once()
     assert result.status == "completed"
+
+
+def test_multi_workspace_dispatcher_round_robins_queued_work(tmp_path):
+    storage = Storage(tmp_path / "fair-worker.db")
+    storage.create_schema()
+    try:
+        first = Actor("worker", "workspace-a", "owner")
+        second = Actor("worker", "workspace-b", "owner")
+        JobQueue(storage, first, fingerprint_key=b"t" * 32).enqueue({"kind": "fair"}, "a-1")
+        JobQueue(storage, second, fingerprint_key=b"t" * 32).enqueue({"kind": "fair"}, "b-1")
+        JobQueue(storage, first, fingerprint_key=b"t" * 32).enqueue({"kind": "fair"}, "a-2")
+
+        worker = WorkflowWorker(
+            storage,
+            tmp_path / "artifacts",
+            gateway=None,
+            fingerprint_key=b"t" * 32,
+            handlers={
+                "fair": lambda actor, _command, _context: {
+                    "workspace_id": actor.workspace_id,
+                },
+            },
+        )
+
+        actors = [first, second]
+        first_result, cursor = worker.run_fair_once(actors, cursor=0, worker_id="fair-worker")
+        second_result, _cursor = worker.run_fair_once(actors, cursor=cursor, worker_id="fair-worker")
+
+        assert first_result.status == second_result.status == "completed"
+        assert first_result.result["workspace_id"] != second_result.result["workspace_id"]
+    finally:
+        storage.close()
