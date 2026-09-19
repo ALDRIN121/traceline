@@ -664,7 +664,7 @@ It is not an R1 release declaration.
   anonymous API rejection, public static-shell loading, fragment token
   consumption/removal, authenticated authoring/dashboard API calls, and no
   token retention in localStorage.
-- **Observed suite:** the default suite is **959 passed, 16 skipped, 10
+- **Observed suite:** the default suite is **961 passed, 16 skipped, 10
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The combined opt-in live
   proxy/sandbox, HTTPS-client, embedded-LiteLLM, custom-evaluator, and local-runtime selection passes **8 tests**
