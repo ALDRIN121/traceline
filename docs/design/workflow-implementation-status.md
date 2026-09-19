@@ -521,13 +521,15 @@ It is not an R1 release declaration.
   completed with PostgreSQL healthy, the API and worker running, `/health`
   returning 200, and `/readiness` returning 200 with database and mounted
   artifact-root checks passing; the API and worker Compose healthchecks also
-  reached `healthy`. This validates prototype service startup only; it does
-  not prove the rootless Podman sandbox topology.
+  reached `healthy` on the final branch rehearsal, which was then removed with
+  its volumes and network. This validates prototype service startup only; it
+  does not prove the rootless Podman sandbox topology.
 - **Release-platform CI:** the checked-in workflow now declares a fail-closed
   offline-suite matrix for `ubuntu-latest`, `macos-latest`, and
   `windows-latest`, while keeping PostgreSQL, integration, and provider-live
-  checks in their dedicated jobs. GitHub-hosted execution is still deployment
-  evidence to be observed rather than claimed from YAML inspection.
+  checks in their dedicated jobs. The equivalent local command passed **948
+  tests** on the observed macOS host; GitHub-hosted execution is still
+  deployment evidence to be observed rather than claimed from YAML inspection.
 - **R2 adapters:** streaming, async-job, and scripted stateful HTTP adapters
   are opt-in behind `EVAL_ENGINE_ENABLE_R2=true`; streaming and async targets
   run through the frozen worker path in `tests/integration/test_r2_run_e2e.py`.
