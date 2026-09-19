@@ -80,6 +80,7 @@ class BuildService:
         source_digest = hashlib.sha256(
             json.dumps(source_tree, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        self._require_rootless_engine()
         tag = f"llm-agent-eval-build-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory(prefix="llm-agent-build-") as context_name:
             context = Path(context_name)
@@ -125,6 +126,25 @@ class BuildService:
             provenance={"build_policy_version": profile.policy_version,
                         "base_image": profile.base_image},
         )
+
+    def _require_rootless_engine(self) -> None:
+        try:
+            result = self.command_runner(
+                [*self.prefix, "info", "--format", "json"],
+                timeout=30,
+                env=self.environment,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BuildDenied("rootless Podman engine is unavailable") from exc
+        if result.returncode != 0 or getattr(result, "interrupted", None):
+            raise BuildDenied("rootless Podman engine is unavailable")
+        try:
+            observed = json.loads(result.stdout)
+            rootless = observed["host"]["security"]["rootless"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise BuildDenied("rootless Podman engine identity is unavailable") from exc
+        if rootless is not True:
+            raise BuildDenied("rootless Podman engine is required")
 
     @staticmethod
     def _parse_image_digest(output: str) -> str:
