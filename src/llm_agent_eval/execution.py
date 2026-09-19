@@ -125,6 +125,7 @@ class RunExecutionService:
             idempotency_key=idempotency_key,
             created_by=actor.actor_id,
             budget_usd_micros=limits.get("budget_usd_micros", 0),
+            estimated_cost_usd=(plan.content.get("execution") or {}).get("estimated_cost_usd"),
             concurrency=limits.get("concurrency", 1),
             timeout_seconds=limits.get("timeout_seconds", 120),
             invocation_manifest=manifest,

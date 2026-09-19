@@ -14,9 +14,15 @@
   let sourceVersionId = (params.get("source_version_id") || "").trim();
   let targetVersionId = (params.get("target_version_id") || "").trim();
   let dashboardVersionId = (params.get("dashboard_version_id") || "").trim();
+  let targetConnectionState = {
+    targetId: null, configuredVersionId: null, verificationJobId: null,
+  };
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
+  if (!targetVersionId) {
+    try { targetVersionId = sessionStorage.getItem(`traceline.target-version:${sessionId || projectId || "none"}`) || ""; } catch (_) { /* storage unavailable */ }
+  }
   let knowledgeReport = null;
   let knowledgeContextVersion = 0;
   let knowledgeRequestToken = 0;
@@ -351,6 +357,159 @@
   function setActivity(message) {
     const status = $("#authoring-activity-status");
     if (status) status.textContent = message;
+  }
+
+  function renderTargetErrors(errors) {
+    const summary = $("#target-connection-errors");
+    const list = $("#target-connection-error-list");
+    if (!summary || !list) return;
+    list.replaceChildren();
+    for (const error of errors || []) appendText(list, "li", error);
+    summary.hidden = !errors?.length;
+  }
+
+  function targetFormValues() {
+    const maxTokensText = $("#target-max-tokens")?.value.trim() || "";
+    return {
+      url: $("#target-url")?.value.trim() || "",
+      framework: $("#target-framework")?.value || "generic_http",
+      mode: $("#target-mode")?.value || "stateless_json",
+      model: $("#target-model")?.value.trim() || "",
+      max_tokens: maxTokensText ? Number(maxTokensText) : null,
+      authType: $("#target-auth-type")?.value || "none",
+      secretRef: $("#target-secret-ref")?.value.trim() || "",
+    };
+  }
+
+  function targetFormErrors(values) {
+    const errors = [];
+    try {
+      const parsed = new URL(values.url);
+      if (!["http:", "https:"].includes(parsed.protocol)) errors.push("URL must use HTTP or HTTPS.");
+    } catch (_) {
+      errors.push("Enter a valid HTTP or HTTPS target URL.");
+    }
+    if (values.authType !== "none" && !values.secretRef) {
+      errors.push("A secret_ref is required for bearer or API-key authentication; inline secrets are not accepted.");
+    }
+    if (["anthropic_messages", "google_generative"].includes(values.framework) && !values.model) {
+      errors.push("A model is required for this provider framework.");
+    }
+    if (["anthropic_messages", "google_generative"].includes(values.framework)
+      && (!Number.isInteger(values.max_tokens) || values.max_tokens < 1 || values.max_tokens > 1_000_000)) {
+      errors.push("max_tokens must be an integer between 1 and 1,000,000 for this provider framework.");
+    }
+    if (values.max_tokens != null && (!Number.isInteger(values.max_tokens) || values.max_tokens < 1 || values.max_tokens > 1_000_000)) {
+      errors.push("max_tokens must be an integer between 1 and 1,000,000 when provided.");
+    }
+    if (!projectId) errors.push("Connect a project before configuring a hosted target.");
+    return [...new Set(errors)];
+  }
+
+  function setTargetStatus(message, tone = "") {
+    const status = $("#target-connection-status");
+    if (status) {
+      status.textContent = message;
+      status.dataset.tone = tone;
+    }
+  }
+
+  async function configureHostedTarget() {
+    const values = targetFormValues();
+    const errors = targetFormErrors(values);
+    renderTargetErrors(errors);
+    if (errors.length) {
+      setTargetStatus("Target configuration is blocked. Resolve the listed fields.", "amber");
+      $("#target-url")?.focus();
+      return;
+    }
+    const button = $("#configure-target");
+    if (button) button.disabled = true;
+    setTargetStatus("Saving target configuration…");
+    try {
+      const body = {
+        url: values.url,
+        framework: values.framework,
+        mode: values.mode,
+        auth: values.authType === "none"
+          ? { type: "none" }
+          : { type: values.authType, secret_ref: values.secretRef },
+      };
+      if (values.model) body.model = values.model;
+      if (values.max_tokens != null) body.max_tokens = values.max_tokens;
+      const result = await request(`/api/projects/${encodeURIComponent(projectId)}/connections`, {
+        method: "POST",
+        headers: { "Idempotency-Key": operationKey() },
+        body,
+      });
+      if (!result.target_id || !result.version_id) throw new Error("The service did not return a target ID and configured version.");
+      targetConnectionState = { targetId: result.target_id, configuredVersionId: result.version_id, verificationJobId: null };
+      targetVersionId = "";
+      const verify = $("#verify-target");
+      if (verify) { verify.hidden = false; verify.disabled = false; }
+      setTargetStatus(`Target configured (${result.state || "configured"}). Verification is required before it can be used in a run manifest.`);
+      setActivity("Target configuration saved. No verification success is claimed yet.");
+    } catch (error) {
+      setTargetStatus(reportError("Target was not configured", error), "amber");
+      setActivity(reportError("Target configuration needs attention", error));
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function persistVerifiedTarget(targetVersion) {
+    targetVersionId = targetVersion;
+    if (window.__tracelineAuthoringSession) window.__tracelineAuthoringSession.target_version_id = targetVersion;
+    try { sessionStorage.setItem(`traceline.target-version:${sessionId || projectId || "none"}`, targetVersion); } catch (_) { /* storage unavailable */ }
+    const next = new URL(location.href);
+    next.searchParams.set("target_version_id", targetVersion);
+    history.replaceState({}, "", next);
+  }
+
+  async function verifyHostedTarget() {
+    const target = targetConnectionState;
+    if (!target.targetId || !target.configuredVersionId) {
+      setTargetStatus("Verify is blocked until the target configuration is saved.", "amber");
+      return;
+    }
+    const button = $("#verify-target");
+    if (button) button.disabled = true;
+    setTargetStatus("Verification queued. Waiting for the durable worker result…");
+    try {
+      const queued = await request(`/api/targets/${encodeURIComponent(target.targetId)}/verify`, {
+        method: "POST",
+        headers: { "Idempotency-Key": operationKey() },
+        body: {
+          target_version_id: target.configuredVersionId,
+          smoke_input: { message: "Traceline verification request" },
+        },
+      });
+      if (!queued.job_id) throw new Error("The service did not return a verification job ID.");
+      targetConnectionState.verificationJobId = queued.job_id;
+      watchJob(queued.job_id, () => true, async (job) => {
+        if (job.status === "completed") {
+          const result = job.result || {};
+          if (result.state === "verified" && result.target_version_id) {
+            persistVerifiedTarget(result.target_version_id);
+            setTargetStatus(`Target verified. Version ${result.target_version_id} is now available to Review run manifest.`, "green");
+            setActivity("Verification completed with an observed verified target version.");
+            if (button) button.disabled = true;
+          } else {
+            setTargetStatus("Verification completed without an observed verified target version.", "amber");
+            setActivity("Verification did not return a verified target; the run manifest remains unbound to this target.");
+            if (button) button.disabled = false;
+          }
+          return;
+        }
+        setTargetStatus(`Target verification ${job.status}: ${jobFailure(job)}`, "amber");
+        setActivity(`Target verification ${job.status}: ${jobFailure(job)}`);
+        if (button) button.disabled = false;
+      }, "target_verification");
+    } catch (error) {
+      setTargetStatus(reportError("Target verification was not queued", error), "amber");
+      setActivity(reportError("Target verification needs attention", error));
+      if (button) button.disabled = false;
+    }
   }
 
   function showConflict(kind, message, refresh) {
@@ -1479,6 +1638,8 @@
     all("input[name=source-kind]").forEach((input) => input.addEventListener("change", updateSourceFields));
     $("#queue-source-import")?.addEventListener("click", queueSourceImport);
     $("#send-authoring-note")?.addEventListener("click", sendAuthoringNote);
+    $("#configure-target")?.addEventListener("click", configureHostedTarget);
+    $("#verify-target")?.addEventListener("click", verifyHostedTarget);
     $("#reload-conflict")?.addEventListener("click", reloadConflict);
     $("#keep-conflict-draft")?.addEventListener("click", keepConflictDraft);
     updateSourceFields();

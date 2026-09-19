@@ -75,6 +75,9 @@ def test_evaluation_run_worker_executes_and_is_idempotent(tmp_path):
         terminal = worker.service(actor).run_once(job_id=job.job_id)
         assert terminal.status == "completed"
         assert terminal.result["state"] == "complete"
+        persisted = storage.get_run(terminal.result["run_id"], actor.workspace_id)
+        assert persisted is not None
+        assert persisted.estimated_cost_usd == plan.content["execution"]["estimated_cost_usd"]
         replay = worker.queue(actor).get(job.job_id)
         assert replay.status == "completed"
     finally:

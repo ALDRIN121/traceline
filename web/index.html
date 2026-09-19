@@ -124,6 +124,24 @@
               <div class="authoring-actions"><button id="connect-project" class="btn btn-primary" type="button">Connect project</button><button id="load-project-report" class="btn btn-secondary" type="button" disabled>Load project report</button></div>
               <p id="project-bootstrap-status" class="project-bootstrap-status" role="status" aria-live="polite">No project attached.</p>
             </section>
+            <section class="target-connection" aria-labelledby="target-connection-heading">
+              <div><h3 id="target-connection-heading">Hosted target</h3><p>Configure a synchronous HTTP target, then verify it through the worker before using it in a run.</p></div>
+              <div class="authoring-callout"><strong>No inline secrets:</strong> provide an existing encrypted <code>secret_ref</code> only. Secret values are never accepted or echoed here.</div>
+              <div id="target-connection-errors" class="target-connection-errors" role="alert" hidden><strong>Target configuration needs attention</strong><ul id="target-connection-error-list"></ul></div>
+              <div class="target-fields">
+                <label for="target-url">Target URL<input id="target-url" type="url" placeholder="https://agent.example.test/respond" autocomplete="url" aria-describedby="target-url-help"></label>
+                <span id="target-url-help" class="field-help">The backend pins and validates the endpoint.</span>
+                <label for="target-framework">Framework<select id="target-framework"><option value="generic_http">Generic JSON HTTP</option><option value="openai_compatible">OpenAI-compatible</option><option value="anthropic_messages">Anthropic Messages</option><option value="google_generative">Google Generative</option></select></label>
+                <label for="target-mode">Mode<select id="target-mode"><option value="stateless_json">Synchronous stateless JSON (R1)</option><option value="streaming" disabled>Streaming (R2)</option><option value="async" disabled>Async job (R2)</option><option value="session" disabled>Session (R2)</option></select></label>
+                <label for="target-model">Model <span class="field-optional">optional unless required by framework</span><input id="target-model" type="text" placeholder="e.g. claude-sonnet" autocomplete="off"></label>
+                <label for="target-max-tokens">Max tokens <span class="field-optional">bounded provider limit</span><input id="target-max-tokens" type="number" min="1" max="1000000" step="1" placeholder="e.g. 512" inputmode="numeric"></label>
+                <label for="target-auth-type">Authentication<select id="target-auth-type"><option value="none">None</option><option value="bearer">Bearer via secret_ref</option><option value="api_key">API key via secret_ref</option></select></label>
+                <label for="target-secret-ref">Secret reference <span class="field-optional">never a secret value</span><input id="target-secret-ref" type="text" placeholder="secret-ref-id" autocomplete="off" spellcheck="false" aria-describedby="target-secret-help"></label>
+                <span id="target-secret-help" class="field-help">Bearer and API-key modes require an encrypted reference created by the platform.</span>
+              </div>
+              <div class="authoring-actions"><button id="configure-target" class="btn btn-primary" type="button">Configure target</button><button id="verify-target" class="btn btn-secondary" type="button" hidden disabled>Verify target</button></div>
+              <p id="target-connection-status" class="source-import-status" role="status" aria-live="polite">No hosted target configured.</p>
+            </section>
             <section class="source-import" aria-labelledby="source-import-heading">
               <div><h3 id="source-import-heading">Import source</h3><p>Source import is queued. A worker must complete it before a knowledge report is available.</p></div>
               <fieldset class="source-kind"><legend>Source type</legend><label><input type="radio" name="source-kind" value="git" checked> Git repository</label><label><input type="radio" name="source-kind" value="zip"> ZIP archive</label></fieldset>
