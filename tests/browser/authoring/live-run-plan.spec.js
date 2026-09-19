@@ -137,6 +137,37 @@ test("live authoring plans, authorizes, enqueues, and discovers a completed host
     }),
   ]));
 
+  await page.getByRole("tab", { name: "Dashboards" }).click();
+  const seededEvaluation = page.getByRole("button", { name: "Live hosted acceptance" });
+  await expect(seededEvaluation).toBeVisible();
+  await seededEvaluation.click();
+
+  const persistedResults = page.getByRole("region", { name: "Persisted results" });
+  await expect(persistedResults).toBeVisible();
+  await expect(persistedResults).toContainText("authoritative");
+  await expect(page.locator("#kpi-gate-val")).toHaveText("GATE PASS");
+
+  const liveCase = page.locator(".case-card").filter({ hasText: "live-case" });
+  await expect(liveCase).toBeVisible();
+  await expect(liveCase).toContainText("PASS");
+  await expect(page.locator("#inspector-content")).toContainText("live-case");
+  await expect(page.locator("#inspector-content")).toContainText("PASS");
+
+  const browserExportResponse = page.waitForResponse((response) => {
+    return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/exports";
+  });
+  await page.getByRole("button", { name: "Create export snapshot" }).click();
+  const browserExport = await (await browserExportResponse).json();
+  expect(browserExport.state).toBe("ready");
+  expect(browserExport.export_id).toMatch(/^[0-9a-f]{32}$/);
+  const exportResult = page.locator("#export-result");
+  await expect(exportResult).toContainText("Export snapshot returned · authoritative");
+  await expect(exportResult.getByRole("link", { name: "Download JSON" }))
+    .toHaveAttribute("href", `/api/exports/${browserExport.export_id}/json`);
+
+  // A truthful comparison needs a second completed immutable run; mocked
+  // compare coverage remains in tests/browser/legacy/results-actions.spec.js.
+
   const exportResponse = await page.request.post("/api/exports", { data: { run_id: runId } });
   expect(exportResponse.status()).toBe(201);
   const createdExport = await exportResponse.json();

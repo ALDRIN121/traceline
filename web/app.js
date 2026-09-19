@@ -1520,12 +1520,15 @@ function renderKpiStrip(run, runDetail) {
   const gateVal = $("#kpi-gate-val");
   const gateSub = $("#kpi-gate-sub");
   if (gateVal) {
-    const failedGates = metrics.filter((m) => m.gate_result === "fail");
+    /* The persisted run-detail API names this field gate_status (PASS/FAIL);
+     * keep accepting gate_result for older dashboard payloads. */
+    const gateState = (metric) => String(metric.gate_result || metric.gate_status || "").toLowerCase();
+    const failedGates = metrics.filter((m) => gateState(m) === "fail");
     if (failedGates.length > 0) {
       gateVal.textContent = "GATE FAIL";
       gateVal.style.color = "var(--red)";
       if (gateSub) gateSub.textContent = `${failedGates.length} threshold rule(s) breached`;
-    } else if (metrics.some((m) => m.gate_result === "pass")) {
+    } else if (metrics.some((m) => gateState(m) === "pass")) {
       gateVal.textContent = "GATE PASS";
       gateVal.style.color = "var(--green)";
       if (gateSub) gateSub.textContent = "All gating thresholds satisfied";
