@@ -446,7 +446,8 @@ It is not an R1 release declaration.
   generation-based reset and `UNCALIBRATED → CALIBRATING → CALIBRATED`
   thresholds. Engine and re-score paths read the persisted readiness registry;
   API routes support label, status, and reset operations. Human dispute/review
-  UX and a complete calibrated run acceptance scenario remain open.
+  is covered by the reviewer browser flow; a complete calibrated run acceptance
+  scenario remains open.
 - **Provider protocol coverage:** the recording proxy now validates and meters
   tested OpenAI, Anthropic, and Google request/usage shapes with provider-
   specific dummy-key substitution. Supported HTTPS routes now use the
