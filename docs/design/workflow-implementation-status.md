@@ -582,8 +582,9 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **40 tests**. The evidence covers
-  a live FastAPI-backed project create/list/detail/knowledge flow in local-owner
+  dashboard browser suites pass **41 tests**. The evidence covers
+  a live FastAPI-backed project create/list/detail/knowledge flow and a real
+  ZIP upload → durable import worker → knowledge revision refresh in local-owner
   mode at a 390×844 viewport with keyboard activation, in addition to
   workspace project listing, project creation with the server-observed ID,
   project detail selection, automatic knowledge loading, stale selection
@@ -605,9 +606,9 @@ It is not an R1 release declaration.
   override submission with dispute lineage, and refreshed overridden state.
   The target-connection, schedule, dispute, and SSE coverage use mocked API
   responses; the legacy run modal explicitly states that its request is not
-  backend authorization; the live flow does not claim release bearer-token
-  authentication, source-import worker reconciliation, or the complete R1
-  accessibility matrix.
+  backend authorization; the live flow uses temporary SQLite and an in-process
+  worker rather than a separate release worker process, and does not claim
+  release bearer-token authentication or the complete R1 accessibility matrix.
 - **Observed suite:** the default suite is **949 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
