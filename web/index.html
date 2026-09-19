@@ -186,13 +186,21 @@
               <div><h3 id="preview-editor-heading">Presentation definition</h3><p>Only registered components and closed bindings are sent to the dashboard API.</p></div>
               <label for="preview-name">Dashboard name<input id="preview-name" type="text" value="Evaluation overview"></label>
               <div id="preview-block-editor" class="preview-block-editor"></div>
-              <div class="authoring-actions"><button id="save-preview-definition" class="btn btn-primary" type="button">Save dashboard revision</button><button id="undo-preview-definition" class="btn btn-secondary" type="button" disabled>Undo to previous revision</button><button id="inspect-preview-definition" class="btn btn-secondary" type="button" aria-expanded="false">Inspect JSON</button></div>
+              <div class="authoring-actions"><button id="save-preview-definition" class="btn btn-primary" type="button">Save dashboard revision</button><button id="undo-preview-definition" class="btn btn-secondary" type="button" disabled>Undo to previous revision</button><button id="inspect-preview-definition" class="btn btn-secondary" type="button" aria-expanded="false">Inspect JSON</button><button id="review-run-manifest" class="btn btn-secondary" type="button">Review run manifest</button></div>
               <pre id="preview-definition-inspector" class="definition-inspector" hidden aria-label="Dashboard definition inspection"></pre>
               <p id="preview-save-status" class="source-import-status" role="status" aria-live="polite">Connect an evaluation to save a dashboard revision.</p>
             </section>
             <section id="preview-result-card" class="preview-result" aria-live="polite" hidden>
               <div class="dataset-report-head"><div><h3>Generated preview data</h3><p id="preview-result-meta"></p></div><span class="preview-synthetic-badge">synthetic</span></div>
               <div id="preview-result-blocks" class="preview-result-blocks"></div>
+            </section>
+            <section id="run-plan-review-card" class="run-plan-review" aria-labelledby="run-plan-review-heading" aria-live="polite" hidden>
+              <div class="dataset-report-head"><div><h3 id="run-plan-review-heading">Run manifest review</h3><p>These are the exact durable references returned by the planning service.</p></div><span id="run-plan-state" class="authoring-revision">Not requested</span></div>
+              <dl id="run-plan-refs" class="run-plan-refs"></dl>
+              <div id="run-plan-blockers-section" class="run-plan-blockers" hidden><h4>Readiness blockers</h4><ul id="run-plan-blockers"></ul></div>
+              <details class="run-plan-details"><summary>Inspect returned plan</summary><pre id="run-plan-content" class="definition-inspector"></pre></details>
+              <div class="authoring-actions"><button id="authorize-run-plan" class="btn btn-primary" type="button" hidden>Authorize this manifest</button><button id="enqueue-run-plan" class="btn btn-secondary" type="button" hidden>Queue authorized run</button></div>
+              <p id="run-plan-status" class="source-import-status" role="status" aria-live="polite"></p>
             </section>
           </div>
         </section>
@@ -312,6 +320,32 @@
         <p id="dashboard-fill-hint" class="fill-hint" hidden>Run the agent to fill this dashboard</p>
 
         <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+        <section id="results-actions" class="results-actions" aria-labelledby="results-actions-heading" hidden>
+          <div class="results-actions-head">
+            <div><h2 id="results-actions-heading">Persisted results</h2><p id="results-truth-note">The service has not returned enough authoritative evidence to classify this result.</p></div>
+            <div id="results-truth-badges" class="chips" aria-label="Result truth state"></div>
+          </div>
+          <div class="results-action-grid">
+            <div class="results-action-card">
+              <h3>Compare runs</h3>
+              <p>Comparison uses only the persisted run IDs and metric definition returned by the service.</p>
+              <div class="results-select-row">
+                <label>Baseline<select id="comparison-baseline"></select></label>
+                <label>Candidate<select id="comparison-candidate"></select></label>
+                <label>Metric<select id="comparison-metric"></select></label>
+              </div>
+              <button type="button" id="compare-runs" class="btn btn-secondary">Compare persisted runs</button>
+              <p id="comparison-result" class="results-action-status" role="status" aria-live="polite" hidden></p>
+            </div>
+            <div class="results-action-card">
+              <h3>Export results</h3>
+              <p>Freeze the selected run before downloading its JSON, CSV, HTML, or complete bundle.</p>
+              <button type="button" id="create-result-export" class="btn btn-secondary">Create export snapshot</button>
+              <p id="export-result" class="results-action-status" role="status" aria-live="polite" hidden></p>
+            </div>
+          </div>
+        </section>
 
         <section id="kpi-strip" class="kpi-strip" aria-label="Run summary KPI metrics" hidden>
           <div class="kpi-card" id="kpi-pass-rate">

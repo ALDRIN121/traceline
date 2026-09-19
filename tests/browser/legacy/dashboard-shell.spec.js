@@ -79,8 +79,9 @@ test("legacy case rows activate by click, Enter, and Space", async ({ page }) =>
   await page.evaluate(() => {
     const dashboard = window.__dashboard;
     dashboard.state.definition = { blocks: [] };
-    dashboard.state.view = "builder";
+    dashboard.state.view = "dashboard";
     dashboard.state.selection.case = null;
+    document.querySelector("#view-dashboard").hidden = false;
     const grid = document.querySelector("#grid");
     grid.hidden = false;
     grid.replaceChildren(dashboard.renderers.case_table({

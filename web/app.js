@@ -261,6 +261,10 @@ const state = {
   authoredHitl: null,
   pipeline: [],
   artifactOpen: false,
+  comparisonPending: false,
+  comparisonResult: null,
+  exportPending: false,
+  exportResult: null,
 };
 
 /* ---------------------------------------------------------------------------
@@ -1092,6 +1096,179 @@ function renderBanner() {
       el("p", { class: "banner-text", text }),
     ]),
   );
+}
+
+function resultTruthSummary(defn, run, runDetail) {
+  const metrics = (runDetail && runDetail.metrics) || [];
+  const partial = !!run && (run.terminal !== true || defn.render_final !== true || defn.metrics_complete !== true);
+  const provisional = metrics.some((metric) => metric.provisional === true || (metric.badges || []).includes("provisional"));
+  const unknown = !run || !runDetail || !metrics.length || metrics.some((metric) => (
+    metric.is_authoritative === false || (metric.value == null && metric.aggregation_state === "COMPLETE")
+  ));
+  const authoritative = !!run && !partial && !provisional && !unknown;
+  const labels = [];
+  if (authoritative) labels.push({ label: "authoritative", tone: "green" });
+  if (partial) labels.push({ label: "partial", tone: "amber" });
+  if (provisional) labels.push({ label: "provisional", tone: "violet" });
+  if (unknown || !labels.length) labels.push({ label: "unknown", tone: "neutral" });
+  return { labels, partial, provisional, unknown, authoritative };
+}
+
+function comparisonReason(reason) {
+  return {
+    runs_must_be_complete: "Both runs must be complete before they can be compared.",
+    metric_missing: "The selected metric is not present in both runs.",
+    metric_definition_changed: "The metric definition changed between the two runs.",
+    dataset_version_changed: "The dataset version changed between the two runs.",
+    reference_version_changed: "Expected references changed between the two runs.",
+    world_version_changed: "The execution world changed between the two runs.",
+    no_common_scored_cases: "The runs have no common scored cases.",
+  }[reason] || `The service marked this comparison incomparable (${reason || "unknown reason"}).`;
+}
+
+function renderComparisonResult(result) {
+  const output = $("#comparison-result");
+  if (!output) return;
+  output.hidden = false;
+  if (result && result.state === "comparable") {
+    const interval = result.confidence_interval
+      ? ` · CI ${result.confidence_interval.lower} to ${result.confidence_interval.upper}`
+      : " · confidence interval unavailable";
+    output.dataset.tone = result.no_ci ? "amber" : "green";
+    output.textContent = `Comparison returned comparable · delta ${result.delta}${interval}.`;
+  } else {
+    output.dataset.tone = "amber";
+    output.textContent = `Comparison blocked: ${comparisonReason(result && result.reason)}`;
+  }
+}
+
+function renderExportResult(result) {
+  const output = $("#export-result");
+  if (!output) return;
+  output.replaceChildren();
+  output.hidden = false;
+  const manifest = result && result.manifest;
+  const runStatus = manifest && manifest.run && manifest.run.status;
+  const provisional = (manifest && manifest.metrics || []).some((metric) => metric.provisional === true);
+  const state = runStatus && runStatus !== "complete" && runStatus !== "completed" ? "partial" : provisional ? "provisional" : "authoritative";
+  output.dataset.tone = state === "authoritative" ? "green" : state === "provisional" ? "violet" : "amber";
+  output.append(el("span", { text: `Export snapshot returned · ${state}${runStatus ? ` · run ${runStatus}` : ""}.` }));
+  if (!result || !result.export_id) return;
+  const links = el("span", { class: "export-links" });
+  for (const format of ["bundle", "json", "csv", "html"]) {
+    links.append(el("a", {
+      href: `/api/exports/${encodeURIComponent(result.export_id)}/${format}`,
+      text: `Download ${format}`,
+    }));
+  }
+  output.append(links);
+}
+
+function populateResultRunSelect(select, runs, currentValue, fallback) {
+  if (!select) return;
+  const previous = select.value;
+  select.replaceChildren(...runs.map((run) => el("option", {
+    value: run.run_id,
+    text: `${run.run_id} · ${run.status || "unknown"}`,
+  })));
+  const next = runs.some((run) => run.run_id === previous) ? previous
+    : runs.some((run) => run.run_id === currentValue) ? currentValue
+      : (runs[0] && runs[0].run_id) || fallback;
+  if (next) select.value = next;
+}
+
+function renderResultsActions(defn, run, runDetail) {
+  const panel = $("#results-actions");
+  if (!panel) return;
+  const visible = state.view === "dashboard" && !!run;
+  panel.hidden = !visible;
+  if (!visible) return;
+
+  const truth = resultTruthSummary(defn, run, runDetail);
+  const badges = $("#results-truth-badges");
+  if (badges) badges.replaceChildren(...truth.labels.map((item) => chip(item.label, item.tone, { dot: false })));
+  const note = $("#results-truth-note");
+  if (note) note.textContent = truth.authoritative
+    ? "The resolver returned terminal, complete, non-provisional metric rows."
+    : truth.partial
+      ? "Some execution or aggregation is incomplete; this is not a final result."
+      : truth.provisional
+        ? "One or more metrics are usable but provisional and must not be treated as an authoritative gate."
+        : "The service has not returned enough authoritative evidence to classify this result.";
+
+  const runs = state.runs || [];
+  populateResultRunSelect($("#comparison-baseline"), runs, null, run.run_id);
+  populateResultRunSelect($("#comparison-candidate"), runs, run.run_id, run.run_id);
+  const metricSelect = $("#comparison-metric");
+  const metrics = (runDetail && runDetail.metrics) || [];
+  const previousMetric = metricSelect && metricSelect.value;
+  if (metricSelect) {
+    metricSelect.replaceChildren(...metrics.map((metric) => el("option", {
+      value: metric.metric_id,
+      text: metric.metric_id,
+    })));
+    if (metrics.length) metricSelect.value = metrics.some((metric) => metric.metric_id === previousMetric)
+      ? previousMetric : metrics[0].metric_id;
+  }
+  const compare = $("#compare-runs");
+  if (compare) compare.disabled = state.comparisonPending || !runs.length || !metrics.length;
+  const exportButton = $("#create-result-export");
+  if (exportButton) exportButton.disabled = state.exportPending || !run.run_id;
+}
+
+async function comparePersistedRuns() {
+  const baseline = $("#comparison-baseline")?.value;
+  const candidate = $("#comparison-candidate")?.value;
+  const metricId = $("#comparison-metric")?.value;
+  const output = $("#comparison-result");
+  if (!baseline || !candidate || !metricId) {
+    if (output) { output.hidden = false; output.dataset.tone = "amber"; output.textContent = "Comparison blocked: choose two persisted runs and a metric."; }
+    return;
+  }
+  if (baseline === candidate) {
+    if (output) { output.hidden = false; output.dataset.tone = "amber"; output.textContent = "Comparison blocked: baseline and candidate must be different runs."; }
+    return;
+  }
+  state.comparisonPending = true;
+  const button = $("#compare-runs");
+  if (button) button.disabled = true;
+  if (output) { output.hidden = false; output.dataset.tone = "neutral"; output.textContent = "Comparing persisted runs…"; }
+  try {
+    const result = await api("/api/comparisons", {
+      method: "POST",
+      body: { baseline_run_id: baseline, candidate_run_id: candidate, metric_id: metricId },
+    });
+    state.comparisonResult = result;
+    renderComparisonResult(result);
+  } catch (err) {
+    if (output) { output.hidden = false; output.dataset.tone = "amber"; output.textContent = `Comparison unavailable: ${err.message}`; }
+  } finally {
+    state.comparisonPending = false;
+    if (button) button.disabled = false;
+  }
+}
+
+async function createPersistedExport() {
+  const run = state.definition && state.definition.run;
+  const output = $("#export-result");
+  if (!run || !run.run_id) {
+    if (output) { output.hidden = false; output.dataset.tone = "neutral"; output.textContent = "Export unavailable: no persisted run is selected."; }
+    return;
+  }
+  state.exportPending = true;
+  const button = $("#create-result-export");
+  if (button) button.disabled = true;
+  if (output) { output.hidden = false; output.dataset.tone = "neutral"; output.textContent = "Freezing an export snapshot…"; }
+  try {
+    const result = await api("/api/exports", { method: "POST", body: { run_id: run.run_id } });
+    state.exportResult = result;
+    renderExportResult(result);
+  } catch (err) {
+    if (output) { output.hidden = false; output.dataset.tone = "amber"; output.textContent = `Export unavailable: ${err.message}`; }
+  } finally {
+    state.exportPending = false;
+    if (button) button.disabled = false;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1973,6 +2150,7 @@ function render() {
       masterDetail.hidden = false;
       renderMasterDetail();
     }
+    renderResultsActions(defn, run, state.runDetail);
     if (!run.terminal) connectSSE(run.run_id);
     else closeSSE();
     const meta = $("#footer-meta");
@@ -1986,6 +2164,7 @@ function render() {
   if (kpiStrip) kpiStrip.hidden = true;
   if (masterDetail) masterDetail.hidden = true;
   if (grid) grid.hidden = true;
+  renderResultsActions(defn, null, null);
   const banner = $("#banner");
   if (banner) banner.hidden = true;
 
@@ -2717,6 +2896,8 @@ async function init() {
   wireModalsAndDrawers();
   wireTabs();
   wireArchitectChat();
+  $("#compare-runs")?.addEventListener("click", comparePersistedRuns);
+  $("#create-result-export")?.addEventListener("click", createPersistedExport);
   $("#boot").hidden = true;
 
   loadHealth();

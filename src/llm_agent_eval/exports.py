@@ -8,6 +8,7 @@ import html
 import io
 import json
 import uuid
+import zipfile
 from typing import Any
 
 
@@ -94,6 +95,19 @@ class ExportService:
             if (not case_filter or row.case_id in case_filter)
             and (not metric_filter or row.metric_id in metric_filter)
         ]
+        evidence_ids = sorted({
+            event_id
+            for row in case_metrics
+            for event_id in row["evidence_event_ids"]
+        })
+        retained_events = {
+            event.event_id: event.model_dump(mode="json")
+            for event in self.storage.get_trace_events(
+                run_id=run_id,
+                workspace_id=workspace_id,
+            )
+            if event.event_id in evidence_ids
+        }
         world_config = run.world_config if isinstance(run.world_config, dict) else {}
         version_refs = world_config.get("version_refs")
         if not isinstance(version_refs, dict):
@@ -127,6 +141,10 @@ class ExportService:
             "metrics": metrics,
             "cases": cases,
             "case_metrics": case_metrics,
+            "evidence": {
+                "events": [retained_events[event_id] for event_id in evidence_ids if event_id in retained_events],
+                "missing_event_ids": [event_id for event_id in evidence_ids if event_id not in retained_events],
+            },
             "provenance": {
                 "score_source": "engine",
                 "trace_redaction": "capture_time",
@@ -172,7 +190,12 @@ class ExportService:
             "json": hashlib.sha256(ExportService._json_bytes(manifest)).hexdigest(),
             "csv": hashlib.sha256(ExportService._csv_bytes(manifest)).hexdigest(),
             "html": hashlib.sha256(ExportService._html_text(manifest).encode("utf-8")).hexdigest(),
+            "bundle": hashlib.sha256(ExportService._bundle_bytes(manifest)).hexdigest(),
         }
+
+    @staticmethod
+    def _manifest_sha256(manifest: dict[str, Any]) -> str:
+        return hashlib.sha256(ExportService._json_bytes(manifest)).hexdigest()
 
     @staticmethod
     def _json_bytes(manifest: dict[str, Any]) -> bytes:
@@ -226,6 +249,16 @@ class ExportService:
                 "<p><strong>Provisional</strong> — one or more judge-derived metrics are not calibrated. "
                 f"Metrics: {provisional_ids}.</p>"
             )
+        missing_evidence = [
+            event_id
+            for event_id in (manifest.get("evidence") or {}).get("missing_event_ids", [])
+            if isinstance(event_id, str)
+        ]
+        if missing_evidence:
+            notices.append(
+                "<p role=\"alert\"><strong>Evidence unavailable</strong> — "
+                f"{len(missing_evidence)} retained evidence reference(s) could not be included.</p>"
+            )
         status = html.escape(str(run.get("status", "unknown")))
         notices.insert(0, f"<p>Run status: {status}</p>")
         cases = "".join(
@@ -259,6 +292,66 @@ class ExportService:
             "<th>Aggregation</th><th>Provisional</th></tr>" + metric_summary + "</table>"
         )
 
+    @staticmethod
+    def _evidence_filename(event_id: str) -> str:
+        """Return a path-safe, stable filename without trusting event IDs."""
+        digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()
+        return f"evidence/{digest}.json"
+
+    @staticmethod
+    def _bundle_bytes(manifest: dict[str, Any]) -> bytes:
+        """Build a deterministic, self-contained result/evidence bundle."""
+        files: dict[str, bytes] = {
+            "manifest.json": ExportService._json_bytes(manifest),
+            "results.csv": ExportService._csv_bytes(manifest),
+            "report.html": ExportService._html_text(manifest).encode("utf-8"),
+        }
+        evidence = manifest.get("evidence") or {}
+        for event in evidence.get("events") or []:
+            event_id = event.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                files[ExportService._evidence_filename(event_id)] = json.dumps(
+                    event, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+        bundle_manifest = {
+            "schema_version": 1,
+            "manifest_sha256": ExportService._manifest_sha256(manifest),
+            "files": {
+                name: hashlib.sha256(content).hexdigest()
+                for name, content in sorted(files.items())
+            },
+            "evidence": {
+                "retained_event_ids": sorted(
+                    event.get("event_id")
+                    for event in evidence.get("events") or []
+                    if isinstance(event, dict) and isinstance(event.get("event_id"), str)
+                ),
+                "missing_event_ids": sorted(
+                    event_id
+                    for event_id in evidence.get("missing_event_ids") or []
+                    if isinstance(event_id, str)
+                ),
+            },
+            "provenance": manifest.get("provenance") or {},
+        }
+        bundle_manifest_bytes = json.dumps(
+            bundle_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            ordered_names = ["manifest.json", "results.csv", "report.html"] + sorted(
+                name for name in files if name.startswith("evidence/")
+            )
+            entries = [("bundle-manifest.json", bundle_manifest_bytes)]
+            entries.extend((name, files[name]) for name in ordered_names)
+            for name, content in entries:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o600 << 16
+                archive.writestr(info, content)
+        return output.getvalue()
+
     def frozen_bytes(self, workspace_id: str, export_id: str, format_name: str) -> tuple[bytes, str]:
         manifest = self.frozen(workspace_id, export_id)["manifest"]
         if format_name == "json":
@@ -267,6 +360,8 @@ class ExportService:
             return self._csv_bytes(manifest), "text/csv"
         if format_name == "html":
             return self._html_text(manifest).encode("utf-8"), "text/html"
+        if format_name == "bundle":
+            return self._bundle_bytes(manifest), "application/zip"
         raise ValueError("unsupported export format")
 
     def csv(self, workspace_id: str, run_id: str) -> bytes:

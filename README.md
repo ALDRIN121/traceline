@@ -91,8 +91,10 @@ the proxy, an in-case HTTPS client, and a custom evaluator are opt-in and requir
 local image/runtime setup; they are not counted in the default suite.
 
 Authenticated API clients can freeze an export with `POST /api/exports` using a run ID and then
-download its immutable `json`, `csv`, or `html` representation from
-`/api/exports/{export_id}/{format}`. Later score revisions do not change a frozen export.
+download its immutable `json`, `csv`, `html`, or evidence `bundle` representation from
+`/api/exports/{export_id}/{format}`. The bundle is a deterministic ZIP containing the manifest,
+CSV, HTML report, retained redacted evidence, missing-evidence references, provenance, and file
+hashes. Later score revisions do not change a frozen export.
 
 For PostgreSQL backup, provide a separate maintenance connection for `pg_dump`; the application
 connection is RLS-scoped and is never used as an implicit backup authority. For example:

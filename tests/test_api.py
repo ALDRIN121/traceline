@@ -10,9 +10,11 @@ the fake agent fixture — the same fixture the engine tests use.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -146,6 +148,14 @@ def test_export_snapshot_is_frozen_before_later_score_changes(client):
     assert before.status_code == 200
     frozen_json = http.get(f"/api/exports/{export_id}/json")
     assert frozen_json.status_code == 200
+    before_bundle = http.get(f"/api/exports/{export_id}/bundle")
+    assert before_bundle.status_code == 200
+    assert before_bundle.headers["content-type"].startswith("application/zip")
+    with zipfile.ZipFile(io.BytesIO(before_bundle.content)) as archive:
+        assert "bundle-manifest.json" in archive.namelist()
+        assert "manifest.json" in archive.namelist()
+        assert "results.csv" in archive.namelist()
+        assert "report.html" in archive.namelist()
     manifest = frozen_json.json()
     assert manifest["case_metrics"]
     assert manifest["case_metrics"][0]["evidence_event_ids"]
@@ -158,6 +168,9 @@ def test_export_snapshot_is_frozen_before_later_score_changes(client):
     after = http.get(f"/api/exports/{export_id}/html")
     assert after.status_code == 200
     assert after.content == before.content
+    after_bundle = http.get(f"/api/exports/{export_id}/bundle")
+    assert after_bundle.status_code == 200
+    assert after_bundle.content == before_bundle.content
 
 
 class TestHealthAndEnvelope:

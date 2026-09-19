@@ -11,6 +11,9 @@
   let evaluationId = (params.get("eval_id") || "").trim();
   let evaluationVersionId = (params.get("evaluation_version_id") || "").trim();
   let datasetVersionId = (params.get("dataset_version_id") || "").trim();
+  let sourceVersionId = (params.get("source_version_id") || "").trim();
+  let targetVersionId = (params.get("target_version_id") || "").trim();
+  let dashboardVersionId = (params.get("dashboard_version_id") || "").trim();
   const tabs = ["reference", "metrics", "dataset", "preview"];
   let active = "reference";
   let projectId = (params.get("project_id") || "").trim();
@@ -31,6 +34,10 @@
   let previewState = {
     definition: null, revision: 0, activeVersionId: null,
     previousDefinition: null, components: [], preview: null,
+  };
+  let runPlanState = {
+    plan: null, planHash: null, authorization: null,
+    requestedRefs: {}, idempotencyKey: null, pending: false,
   };
 
   const emptyDraft = () => ({ selected: [], customIntent: "", onMissing: "", onError: "", correctionDrafts: {} });
@@ -154,6 +161,186 @@
 
   function operationKey() {
     return `authoring-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function runVersionRefs() {
+    const session = window.__tracelineAuthoringSession || {};
+    const refs = {
+      project_id: projectId || session.project_id || "",
+      evaluation_version_id: evaluationVersionId || session.evaluation_version_id || "",
+      dataset_version_id: datasetVersionId || session.dataset_version_id || "",
+      source_version_id: sourceVersionId || session.source_version_id || "",
+      target_version_id: targetVersionId || session.target_version_id || "",
+      dashboard_version_id: dashboardVersionId || session.dashboard_version_id || "",
+    };
+    return Object.fromEntries(Object.entries(refs).filter(([, value]) => value));
+  }
+
+  const requiredRunPlanRefs = [
+    ["project_id", "project_required", "Connect a project or provide project_id in the URL."],
+    ["evaluation_version_id", "evaluation_version_required", "Provide a persisted evaluation version."],
+    ["dataset_version_id", "dataset_version_required", "Commit a dataset version before planning a run."],
+  ];
+
+  function missingRunPlanBlockers(refs) {
+    return requiredRunPlanRefs
+      .filter(([key]) => !refs[key])
+      .map(([, code, message]) => ({ code, message }));
+  }
+
+  function renderRunPlanRefs(refs) {
+    const list = $("#run-plan-refs");
+    if (!list) return;
+    list.replaceChildren();
+    const labels = {
+      project_id: "Project",
+      evaluation_version_id: "Evaluation version",
+      dataset_version_id: "Dataset version",
+      source_version_id: "Source version",
+      target_version_id: "Target version",
+      dashboard_version_id: "Dashboard version",
+    };
+    for (const [key, value] of Object.entries(refs || {})) {
+      const row = document.createElement("div");
+      appendText(row, "dt", labels[key] || key);
+      appendText(row, "dd", value || "—", "mono");
+      list.append(row);
+    }
+  }
+
+  function renderRunPlanBlockers(blockers) {
+    const list = $("#run-plan-blockers");
+    if (!list) return;
+    list.replaceChildren();
+    for (const blocker of blockers || []) {
+      const item = document.createElement("li");
+      const code = typeof blocker === "string" ? blocker : blocker.code;
+      const message = typeof blocker === "string" ? "The service returned this readiness blocker." : blocker.message;
+      appendText(item, "code", code || "unknown_blocker");
+      if (message) appendText(item, "span", ` — ${message}`);
+      list.append(item);
+    }
+    const section = $("#run-plan-blockers-section");
+    if (section) section.hidden = !blockers?.length;
+  }
+
+  function renderRunPlanResult(result, requestedRefs) {
+    const plan = result?.plan || {};
+    const refs = plan.content?.version_refs || plan.version_refs || requestedRefs || {};
+    const blockers = plan.blockers || result?.blockers || [];
+    const state = plan.state || result?.state || "unknown";
+    const hash = plan.content_digest || plan.plan_hash || null;
+    runPlanState.plan = plan;
+    runPlanState.planHash = hash;
+    runPlanState.authorization = null;
+    runPlanState.requestedRefs = refs;
+    const card = $("#run-plan-review-card");
+    if (card) card.hidden = false;
+    renderRunPlanRefs(refs);
+    renderRunPlanBlockers(blockers);
+    const stateLabel = $("#run-plan-state");
+    if (stateLabel) stateLabel.textContent = state;
+    const content = $("#run-plan-content");
+    if (content) content.textContent = JSON.stringify(plan.content || plan, null, 2);
+    const authorize = $("#authorize-run-plan");
+    const enqueue = $("#enqueue-run-plan");
+    if (authorize) authorize.hidden = state !== "validated" || !plan.plan_id || !hash || blockers.length > 0;
+    if (enqueue) enqueue.hidden = true;
+    const status = $("#run-plan-status");
+    if (status) status.textContent = blockers.length
+      ? "This manifest is blocked. Resolve every listed blocker before authorization."
+      : state === "validated" ? "Manifest returned validated. Authorization is a separate explicit step." : `Observed plan state: ${state}.`;
+  }
+
+  async function reviewRunManifest() {
+    const status = $("#run-plan-status");
+    const button = $("#review-run-manifest");
+    const refs = runVersionRefs();
+    const missing = missingRunPlanBlockers(refs);
+    runPlanState = { plan: null, planHash: null, authorization: null, requestedRefs: refs, idempotencyKey: null, pending: false };
+    const card = $("#run-plan-review-card");
+    if (card) card.hidden = false;
+    renderRunPlanRefs(refs);
+    if (missing.length) {
+      renderRunPlanResult({ state: "blocked", plan: { state: "blocked", blockers: missing, content: { version_refs: refs } } }, refs);
+      if (status) status.textContent = "Run planning is blocked before a request is sent.";
+      return;
+    }
+    if (button) button.disabled = true;
+    if (status) status.textContent = "Building the durable run manifest…";
+    try {
+      const result = await request("/api/run-plans", {
+        method: "POST",
+        body: { version_refs: refs, limits: {} },
+      });
+      renderRunPlanResult(result, refs);
+      setActivity("The service returned a durable run manifest. Review blockers and authorize explicitly if it is ready.");
+    } catch (error) {
+      if (status) status.textContent = reportError("Run manifest was not created", error);
+      setActivity(reportError("Run planning needs attention", error));
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function authorizeRunPlan() {
+    const plan = runPlanState.plan;
+    if (!plan?.plan_id || !runPlanState.planHash || runPlanState.pending) return;
+    const button = $("#authorize-run-plan");
+    const status = $("#run-plan-status");
+    runPlanState.pending = true;
+    if (button) button.disabled = true;
+    if (status) status.textContent = "Requesting explicit authorization for this exact manifest…";
+    try {
+      const result = await request(`/api/run-plans/${encodeURIComponent(plan.plan_id)}/authorize`, {
+        method: "POST",
+        body: { plan_hash: runPlanState.planHash },
+      });
+      const authorization = result.authorization;
+      if (!authorization?.authorization_id) throw new Error("The service did not return an authorization ID.");
+      runPlanState.authorization = authorization;
+      const enqueue = $("#enqueue-run-plan");
+      if (enqueue) enqueue.hidden = false;
+      if (status) status.textContent = `Authorization ${authorization.state || result.state || "returned"}. Queueing remains a separate action.`;
+      setActivity("The service returned authorization for the reviewed manifest. Queue only after the explicit next step.");
+    } catch (error) {
+      if (status) status.textContent = reportError("Run manifest was not authorized", error);
+      setActivity(reportError("Authorization needs attention", error));
+      if (button) button.disabled = false;
+    } finally {
+      runPlanState.pending = false;
+    }
+  }
+
+  async function enqueueRunPlan() {
+    const plan = runPlanState.plan;
+    const authorization = runPlanState.authorization;
+    if (!plan?.plan_id || !runPlanState.planHash || !authorization?.authorization_id || runPlanState.pending) return;
+    const button = $("#enqueue-run-plan");
+    const status = $("#run-plan-status");
+    runPlanState.pending = true;
+    runPlanState.idempotencyKey ||= operationKey();
+    if (button) button.disabled = true;
+    if (status) status.textContent = "Queueing the authorized run…";
+    try {
+      const result = await request("/api/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": runPlanState.idempotencyKey },
+        body: {
+          plan_id: plan.plan_id,
+          plan_hash: runPlanState.planHash,
+          authorization_id: authorization.authorization_id,
+        },
+      });
+      if (status) status.textContent = `Run ${result.state || "submitted"}. Worker job ${result.job_id || "returned by the service"}.`;
+      setActivity(`The service returned run state ${result.state || "submitted"}; no measured result is claimed.`);
+    } catch (error) {
+      if (status) status.textContent = reportError("Authorized run was not queued", error);
+      setActivity(reportError("Run queueing needs attention", error));
+      if (button) button.disabled = false;
+    } finally {
+      runPlanState.pending = false;
+    }
   }
 
   function reportError(prefix, error) {
@@ -401,6 +588,7 @@
 
   function renderKnowledgeReport(report) {
     knowledgeReport = report;
+    sourceVersionId = report.source_version_id || sourceVersionId;
     const card = $("#knowledge-report-card");
     const state = $("#knowledge-state");
     const meta = $("#knowledge-report-meta");
@@ -911,6 +1099,7 @@
       const activeVersion = listing.versions?.find((item) => item.version_id === listing.active_version_id);
       previewState.revision = Number(listing.active_revision || 0);
       previewState.activeVersionId = listing.active_version_id || null;
+      dashboardVersionId = previewState.activeVersionId || dashboardVersionId;
       if (activeVersion) {
         previewState.definition = activeVersion.content?.definition || activeVersion.content;
         previewState.previousDefinition = listing.versions?.[listing.versions.length - 2]?.content?.definition || null;
@@ -1013,6 +1202,9 @@
       event.currentTarget.setAttribute("aria-expanded", String(!inspector.hidden));
       event.currentTarget.textContent = inspector.hidden ? "Inspect JSON" : "Hide JSON";
     });
+    $("#review-run-manifest")?.addEventListener("click", reviewRunManifest);
+    $("#authorize-run-plan")?.addEventListener("click", authorizeRunPlan);
+    $("#enqueue-run-plan")?.addEventListener("click", enqueueRunPlan);
     all(".metric-option input:not(:disabled)").forEach((input) => input.addEventListener("change", renderPreviewEditor));
     renderPreviewEditor();
   }
@@ -1135,6 +1327,10 @@
       window.__tracelineAuthoringSession = session;
       evaluationId = session.evaluation_id || evaluationId;
       evaluationVersionId = session.evaluation_version_id || evaluationVersionId;
+      datasetVersionId = session.dataset_version_id || datasetVersionId;
+      sourceVersionId = session.source_version_id || sourceVersionId;
+      targetVersionId = session.target_version_id || targetVersionId;
+      dashboardVersionId = session.dashboard_version_id || dashboardVersionId;
       setProjectContext(session.project_id || projectId);
       if (projectId) {
         loadKnowledgeReport();

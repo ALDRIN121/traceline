@@ -484,7 +484,10 @@ It is not an R1 release declaration.
   evidence rows. Export/preview TTL code now has retention tests; the hosted
   run acceptance now freezes and downloads JSON/CSV/HTML exports and checks
   the explicit CI `2` result for a complete one-repeat run without confidence
-  evidence. Full evidence-bundle packaging and deployment rehearsal remain
+  evidence. Frozen `bundle` downloads now package the manifest, CSV, HTML
+  report, per-event retained evidence, missing-retention refs, provenance, and
+  a SHA-256 file manifest in a deterministic ZIP; API coverage proves later
+  score changes do not alter bundle bytes. Full deployment rehearsal remains
   open.
   Schedule USD limits now
   reconcile completed slots from authoritative run cost ledgers and reserve
@@ -549,15 +552,18 @@ It is not an R1 release declaration.
   the currently supported trusted `proxy` service identity. API and
   encryption tests pass.
 - **Browser UI slice:** on the observed host, the authoring and legacy
-  dashboard browser suites pass **21 tests**. The evidence covers
+  dashboard browser suites pass **25 tests**. The evidence covers
   project/session context, source import job reconciliation, knowledge
   confirmation/correction, dataset mapping and explicit exclusions, canonical
   preview revisions, cross-tab conflict recovery, keyboard activation,
-  case-row selection, and a review confirmation before the legacy run request.
-  The run modal explicitly states that the legacy request is not backend
+  case-row selection, a review confirmation before the legacy run request, the
+  modern Preview plan → explicit authorization → idempotent enqueue flow with
+  a precise missing-target blocker path, and persisted results compare/export
+  actions with bundle links and partial/provisional/incomparable states. The
+  legacy run modal explicitly states that its request is not backend
   authorization; no visual API-backed full-flow screenshot or complete R1
-  results/compare/export UX acceptance is claimed.
-- **Observed suite:** the default suite is **927 passed, 15 skipped, 9
+  accessibility matrix is claimed.
+- **Observed suite:** the default suite is **929 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
   they are not credited as release evidence. The opt-in live proxy/sandbox
   suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
@@ -573,6 +579,6 @@ provider-client HTTPS interception is proven only on the observed macOS
 Podman host, while direct/alternate IPv4/IPv6/DNS/UDP/redirect bypass tests
 are not proven on Linux, macOS and WSL2; broader PostgreSQL retention/TTL
 deployment audits and link verification remain open; LiteLLM
-outbound/cassette fidelity, live repaired CrewAI execution, full export-bundle/CI
-acceptance, and the complete
+outbound/cassette fidelity, live repaired CrewAI execution, full deployment
+export/CI rehearsal, and the complete
 E01–E32 / UX acceptance matrix remain unfinished.
