@@ -619,10 +619,10 @@ It is not an R1 release declaration.
   authentication or the complete R1 accessibility matrix.
 - **Observed suite:** the default suite is **950 passed, 15 skipped, 9
   deselected, 4 warnings**. Skips remain PostgreSQL/live-environment checks;
-  they are not credited as release evidence. The opt-in live proxy/sandbox
-  suite passes **4 tests** on the observed macOS Podman 6.1.1 host; separate
-  opt-in live HTTPS-client and custom-evaluator checks each pass on that same
-  host.
+  they are not credited as release evidence. The combined opt-in live
+  proxy/sandbox, HTTPS-client, and custom-evaluator selection passes **5 tests**
+  on the observed macOS Podman 6.1.1 host; alternate platforms and provider
+  credentials remain unverified.
 
 **Still release-blocking:** the specialist-owned UI slice is verified, but the
 full R1 authoring/results/compare flow is not complete; the trusted
