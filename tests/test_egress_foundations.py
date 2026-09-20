@@ -49,12 +49,13 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     errors = []
+    connected = []
 
     def accept_tls():
         try:
             connection, _ = listener.accept()
             with server_context.wrap_socket(connection, server_side=True) as server:
-                server.recv(4)
+                connected.append(True)
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
 
@@ -68,6 +69,7 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
         listener.close()
         thread.join(timeout=5)
     assert not errors
+    assert connected
     assert not thread.is_alive()
 
 

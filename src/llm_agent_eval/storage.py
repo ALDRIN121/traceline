@@ -70,7 +70,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -493,9 +493,18 @@ CREATE INDEX IF NOT EXISTS custom_evals_workspace_idx ON custom_evals (workspace
 #: gate_status values (§18 DDL).
 GATE_STATUSES = ("PASS", "FAIL", "NOT_APPLICABLE")
 
+_NOW_LOCK = threading.Lock()
+_LAST_NOW: datetime | None = None
+
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    global _LAST_NOW
+    current = datetime.now(timezone.utc)
+    with _NOW_LOCK:
+        if _LAST_NOW is not None and current <= _LAST_NOW:
+            current = _LAST_NOW + timedelta(microseconds=1)
+        _LAST_NOW = current
+    return current.isoformat()
 
 
 def case_key(case_input: Mapping[str, Any]) -> str:

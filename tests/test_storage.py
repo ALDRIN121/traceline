@@ -13,9 +13,11 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 
 import pytest
 
+import llm_agent_eval.storage as storage_module
 from llm_agent_eval.evaluators import CaseScore, CaseStatus, RunAggregate, AggregationState
 from llm_agent_eval.events import CostBlock, TokenUsage, make_event
 from llm_agent_eval.lifecycle import (
@@ -74,6 +76,23 @@ def _spec() -> object:
 
 def _metric(spec) -> Metric:
     return spec.metrics[0]
+
+
+def test_storage_timestamps_advance_when_system_clock_ties(monkeypatch):
+    fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz):
+            return fixed
+
+    monkeypatch.setattr(storage_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(storage_module, "_LAST_NOW", None)
+
+    first = storage_module._now()
+    second = storage_module._now()
+
+    assert second > first
 
 
 def _score(metric_id="refund_amount", case_id="c1", *, status=CaseStatus.PASS, attempt=0,
