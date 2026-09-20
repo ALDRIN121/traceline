@@ -57,7 +57,10 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
             with server_context.wrap_socket(connection, server_side=True) as server:
                 connected.append(True)
         except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
+            # Windows may abort the peer while the test tears down an otherwise
+            # successful TLS-only connection.  Keep all handshake failures visible.
+            if not (os.name == "nt" and isinstance(exc, ConnectionAbortedError) and exc.errno == 10053):
+                errors.append(exc)
 
     thread = threading.Thread(target=accept_tls)
     thread.start()
