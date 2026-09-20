@@ -50,12 +50,14 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     listener.listen(1)
     errors = []
     connected = []
+    handshake_complete = threading.Event()
 
     def accept_tls():
         try:
             connection, _ = listener.accept()
             with server_context.wrap_socket(connection, server_side=True) as server:
                 connected.append(True)
+                handshake_complete.set()
         except BaseException as exc:  # pragma: no cover - asserted below
             # Windows may abort the peer while the test tears down an otherwise
             # successful TLS-only connection.  Keep all handshake failures visible.
@@ -65,9 +67,10 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     thread = threading.Thread(target=accept_tls)
     thread.start()
     try:
-        with socket.create_connection(listener.getsockname()) as raw_client:
-            with client_context.wrap_socket(raw_client, server_hostname="2001:db8::10") as client:
-                assert client.version() in {"TLSv1.2", "TLSv1.3"}
+            with socket.create_connection(listener.getsockname()) as raw_client:
+                with client_context.wrap_socket(raw_client, server_hostname="2001:db8::10") as client:
+                    assert client.version() in {"TLSv1.2", "TLSv1.3"}
+                    assert handshake_complete.wait(timeout=5)
     finally:
         listener.close()
         thread.join(timeout=5)
