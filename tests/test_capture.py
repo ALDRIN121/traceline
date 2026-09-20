@@ -11,11 +11,13 @@ sink without ``LLM_AGENT_EVAL_TRACE``, and JSONL round-trips via
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from llm_agent_eval.capture import TraceCapture
+import llm_agent_eval.capture as capture_module
 from llm_agent_eval.events import CostBlock, EventType, Source, TokenUsage, TraceEvent
 
 IDENTITY = {
@@ -234,4 +236,22 @@ def test_context_can_be_reentered(trace_env: Path) -> None:
     events = read_events(trace_env)
     assert len(events) == 2
     assert events[0].sequence == 0 and events[1].sequence == 0
+    assert events[1].timestamp > events[0].timestamp
+
+
+def test_context_reentry_advances_when_wall_clock_ties(trace_env: Path, monkeypatch) -> None:
+    fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz):
+            return fixed
+
+    monkeypatch.setattr(capture_module, "datetime", FixedDateTime)
+    with TraceCapture() as cap:
+        cap.delegation("a", "b")
+    with TraceCapture() as cap:
+        cap.delegation("c", "d")
+
+    events = read_events(trace_env)
     assert events[1].timestamp > events[0].timestamp

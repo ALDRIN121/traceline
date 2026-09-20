@@ -10,6 +10,7 @@ metering authority.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -20,6 +21,10 @@ __all__ = ["ProviderRouteRegistry"]
 
 _MAX_CONFIG_BYTES = 1 * 1024 * 1024
 _SUPPORTED_COUNTERS = frozenset({"trusted_chat_messages"})
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 class ProviderRouteRegistry:
@@ -89,7 +94,7 @@ class ProviderRouteRegistry:
                 "provider route configuration is unavailable",
                 code="proxy_routes_unavailable", status=409,
             ) from exc
-        if mode & 0o022:
+        if not _is_windows() and mode & 0o022:
             raise WorkflowError(
                 "provider route configuration is writable by another user",
                 code="proxy_routes_unsafe", status=409,

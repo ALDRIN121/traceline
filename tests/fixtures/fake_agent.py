@@ -166,7 +166,7 @@ def _write_result(payload: dict) -> None:
     tmp = OUTPUT_DIR / "result.json.tmp"
     final = OUTPUT_DIR / "result.json"
     tmp.write_text(json.dumps(payload, sort_keys=True))
-    with tmp.open("rb") as handle:
+    with tmp.open("r+b") as handle:
         os.fsync(handle.fileno())
     tmp.rename(final)
 

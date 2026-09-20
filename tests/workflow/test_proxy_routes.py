@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import llm_agent_eval.egress.routes as routes_module
 from llm_agent_eval.contracts import WorkflowError
 from llm_agent_eval.egress.routes import ProviderRouteRegistry
 
@@ -40,6 +41,17 @@ def test_route_registry_loads_provider_route_without_secret_values(tmp_path):
     assert len(routes) == 1
     assert routes[0].secret_ref == "provider-secret"
     assert routes[0].input_token_bound({"messages": []}) == 7
+
+
+def test_route_registry_uses_acl_checks_on_windows(tmp_path, monkeypatch):
+    path = tmp_path / "proxy-routes.json"
+    path.write_text(json.dumps({"routes": [_route()]}), encoding="utf-8")
+    path.chmod(0o666)
+    monkeypatch.setattr(routes_module, "_is_windows", lambda: True)
+
+    routes = ProviderRouteRegistry(path, token_counter=lambda route, body: 7).load()
+
+    assert len(routes) == 1
 
 
 def test_route_registry_persists_explicit_streaming_capability(tmp_path):

@@ -1,6 +1,7 @@
 """Recording egress uses synthetic traffic, never real provider credentials."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import socket
 import ssl
@@ -28,7 +29,11 @@ def test_ca_persists_identity_and_private_permissions(tmp_path):
     ca = InstallCA.load_or_create(tmp_path / "install")
     again = InstallCA.load_or_create(tmp_path / "install")
     assert ca.certificate_pem == again.certificate_pem
-    assert (tmp_path / "install" / "interception-ca.pem").stat().st_mode & 0o777 == 0o600
+    certificate = tmp_path / "install" / "interception-ca.pem"
+    if os.name == "nt":
+        assert certificate.is_file() and not certificate.is_symlink()
+    else:
+        assert certificate.stat().st_mode & 0o777 == 0o600
     assert ca.context_for("provider.example").minimum_version.name == "TLSv1_2"
 
 
@@ -40,12 +45,15 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     client_context = ssl.create_default_context(
         cadata=ca.certificate_pem.decode("ascii"),
     )
-    left, right = socket.socketpair()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
     errors = []
 
     def accept_tls():
         try:
-            with server_context.wrap_socket(right, server_side=True) as server:
+            connection, _ = listener.accept()
+            with server_context.wrap_socket(connection, server_side=True) as server:
                 server.recv(4)
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
@@ -53,11 +61,11 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     thread = threading.Thread(target=accept_tls)
     thread.start()
     try:
-        with client_context.wrap_socket(
-            left, server_hostname="2001:db8::10",
-        ) as client:
-            client.sendall(b"ping")
+        with socket.create_connection(listener.getsockname()) as raw_client:
+            with client_context.wrap_socket(raw_client, server_hostname="2001:db8::10") as client:
+                client.sendall(b"ping")
     finally:
+        listener.close()
         thread.join(timeout=5)
     assert not errors
     assert not thread.is_alive()

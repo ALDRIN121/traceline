@@ -3,6 +3,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hmac as hmac_mod
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,13 @@ from llm_agent_eval.secrets import KEY_ID, SecretStore
 from llm_agent_eval.storage import Storage
 
 SENTINEL = "sk-test-do-not-persist-0001"
+
+
+def _assert_private_install_file(path: Path) -> None:
+    if os.name == "nt":
+        assert path.is_file() and not path.is_symlink()
+    else:
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.fixture
@@ -185,12 +193,21 @@ def test_install_key_survives_restart_and_a_foreign_key_cannot_decrypt(durable_s
 
     restarted = SecretStore(durable_store, owner, key_path)
     assert restarted.resolve(ref.secret_id) == SENTINEL
-    assert Path(key_path).stat().st_mode & 0o777 == 0o600
+    _assert_private_install_file(Path(key_path))
 
     stranger = SecretStore(durable_store, owner, tmp_path / "other-install.key")
     with pytest.raises(WorkflowError) as foreign:
         stranger.resolve(ref.secret_id)
     assert foreign.value.code == "secret_corrupt"
+
+
+def test_install_key_accepts_windows_acl_mode_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "install.key"
+    path.write_bytes(b"k" * 32)
+    path.chmod(0o666)
+    monkeypatch.setattr(install_state, "_is_windows", lambda: True)
+
+    assert load_install_key(path) == b"k" * 32
 
 
 def test_install_key_rejects_invalid_material_and_races_safely(tmp_path, monkeypatch):
@@ -229,7 +246,7 @@ def test_fingerprint_key_is_persistent_random_material(tmp_path):
     first = load_fingerprint_key(path)
     assert len(first) == 32 and first != b"\x00" * 32
     assert load_fingerprint_key(path) == first
-    assert path.stat().st_mode & 0o777 == 0o600
+    _assert_private_install_file(path)
 
     short = tmp_path / "short-fp.key"
     short.write_bytes(b"n" * 16)
@@ -245,6 +262,8 @@ def test_install_key_rejects_symlinks_and_publicly_readable_files(tmp_path):
     linked.symlink_to(target)
     with pytest.raises(RuntimeError):
         load_install_key(linked)
+    if os.name == "nt":
+        pytest.skip("chmod does not change Windows ACLs")
     target.chmod(0o644)
     with pytest.raises(RuntimeError):
         load_install_key(target)
@@ -273,4 +292,4 @@ def test_install_key_creation_is_race_safe_across_threads(tmp_path):
 
     assert keys[0] == keys[1]
     assert len(keys[0]) == 32
-    assert path.stat().st_mode & 0o777 == 0o600
+    _assert_private_install_file(path)

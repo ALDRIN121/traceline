@@ -16,6 +16,25 @@ from llm_agent_eval.storage import Storage
 from llm_agent_eval.contracts import WorkflowError
 
 
+def test_sqlite_backup_closes_destination_connection(tmp_path, monkeypatch):
+    class Target:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class Source:
+        def backup(self, target):
+            assert not target.closed
+
+    target = Target()
+    monkeypatch.setattr(operations_module.sqlite3, "connect", lambda path: target)
+
+    operations_module._backup_sqlite_database(Source(), tmp_path / "database.sqlite")
+
+    assert target.closed
+
+
 def test_sqlite_backup_restore_verifies_manifest_and_artifacts(tmp_path):
     db = tmp_path / "source.db"
     artifacts = tmp_path / "artifacts"

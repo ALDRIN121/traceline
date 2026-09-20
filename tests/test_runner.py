@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,7 @@ from llm_agent_eval.runner import (
     TIMED_OUT,
     invoke_agent,
 )
+import llm_agent_eval.runner as runner_module
 from llm_agent_eval.spec import EvaluationSpec, validate_spec
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -67,6 +70,38 @@ def invoke(tmp_path, *, mode="ok", timeout=30.0, env_extra=None, **kwargs):
         env_extra=env,
         **kwargs,
     )
+
+
+def test_timeout_termination_uses_process_methods_on_windows(monkeypatch):
+    monkeypatch.setattr(runner_module, "_is_windows", lambda: True)
+
+    class FakeProcess:
+        pid = 123
+
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.waits = 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+            return -signal.SIGTERM
+
+    process = FakeProcess()
+
+    result = runner_module._terminate_process(process)
+
+    assert process.terminated
+    assert process.killed
+    assert result == -signal.SIGTERM
 
 
 class TestHappyPath:

@@ -28,6 +28,20 @@ from .artifacts import ArtifactStore
 from .contracts import WorkflowError
 
 
+def _backup_sqlite_database(source, destination: Path) -> None:
+    """Back up SQLite and explicitly close the destination connection.
+
+    A context manager around ``sqlite3.connect`` commits but does not close
+    the connection. Windows keeps the database file locked until that close,
+    which prevents the temporary backup tree from being archived.
+    """
+    target = sqlite3.connect(destination)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+
+
 class OperationsService:
     def __init__(self, storage, artifact_root: Path, *, maintenance_database_url: str | None = None):
         self.storage = storage
@@ -366,8 +380,7 @@ class OperationsService:
             root = Path(temporary)
             db_path = root / "database.sqlite"
             source = self.storage._conn
-            with sqlite3.connect(db_path) as target:
-                source.backup(target)
+            _backup_sqlite_database(source, db_path)
             artifact_dir = root / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifacts = ArtifactStore(self.storage, self.artifact_root, actor).list(actor.workspace_id)

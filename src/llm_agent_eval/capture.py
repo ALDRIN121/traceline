@@ -83,6 +83,28 @@ def _manifest_repeat_attempt(input_dir: str | None) -> tuple[int, int]:
         return 0, 0
 
 
+def _last_trace_timestamp(path: Path) -> datetime | None:
+    """Return the last parseable event timestamp from an existing trace."""
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            end = handle.tell()
+            handle.seek(max(0, end - 8192))
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if not line:
+            continue
+        try:
+            return TraceEvent.from_jsonl(line.decode("utf-8")).timestamp
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return None
+
+
 class TraceCapture:
     """Context manager emitting §12B TraceEvents to the ``LLM_AGENT_EVAL_TRACE``
     JSONL file (append, flushed per event).
@@ -146,7 +168,11 @@ class TraceCapture:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "TraceCapture":
-        self._entry_dt = datetime.now(timezone.utc)
+        entry_dt = datetime.now(timezone.utc)
+        previous = _last_trace_timestamp(self._trace_path) if self._enabled else None
+        if previous is not None and entry_dt <= previous:
+            entry_dt = previous + timedelta(microseconds=1)
+        self._entry_dt = entry_dt
         self._entry_monotonic = time.monotonic()
         self._last_elapsed_ms = -1
         self._sequence = 0

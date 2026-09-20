@@ -85,6 +85,10 @@ PROVIDER_UNREACHABLE = "provider_unreachable"
 NO_TRACE = "no_trace"
 CANCELLED = "cancelled"
 
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
 #: Grace period between SIGTERM and SIGKILL (§11A).
 KILL_GRACE_SECONDS = 10.0
 #: Per-stream output cap (§11A: 1 MiB each).
@@ -324,17 +328,23 @@ def _write_input_files(
 
 
 def _terminate_process(proc: subprocess.Popen) -> int | None:
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    if _is_windows():
         proc.terminate()
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (AttributeError, ProcessLookupError, PermissionError):
+            proc.terminate()
     try:
         return proc.wait(timeout=KILL_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+        if _is_windows():
             proc.kill()
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (AttributeError, ProcessLookupError, PermissionError):
+                proc.kill()
         return proc.wait(timeout=KILL_GRACE_SECONDS)
 
 

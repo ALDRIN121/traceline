@@ -38,6 +38,10 @@ class SandboxDenied(ValueError):
     """A request or runtime cannot meet the containment contract."""
 
 
+def _snapshot_open_flags() -> int:
+    return os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+
+
 @dataclass(frozen=True)
 class SandboxLimits:
     memory_mb: int = 512
@@ -77,7 +81,7 @@ def snapshot_digest(root: Path) -> dict:
         total += info.st_size
         if total > MAX_TREE_BYTES:
             raise SandboxDenied("snapshot byte limit")
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, _snapshot_open_flags())
         with os.fdopen(fd, "rb") as handle:
             data = handle.read(MAX_TREE_BYTES + 1)
         if len(data) != info.st_size:

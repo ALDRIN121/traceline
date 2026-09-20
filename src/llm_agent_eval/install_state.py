@@ -30,6 +30,10 @@ __all__ = ["load_install_key", "load_fingerprint_key"]
 _KEY_BYTES = 32
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _read_key(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     if path.is_symlink():
@@ -42,7 +46,9 @@ def _read_key(path: Path) -> bytes:
         raise RuntimeError("Install key cannot be opened safely") from exc
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode) or (
+            not _is_windows() and info.st_mode & 0o077
+        ):
             raise RuntimeError("Install key must be a private regular file")
         key = handle.read(_KEY_BYTES + 1)
     if len(key) != _KEY_BYTES:

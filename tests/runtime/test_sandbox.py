@@ -7,6 +7,7 @@ import tarfile
 
 import pytest
 
+import llm_agent_eval.runtime.sandbox as sandbox_module
 from llm_agent_eval.runtime.sandbox import (
     SandboxDenied, SandboxLimits, SandboxRequest, PodmanSandbox,
     snapshot_digest, read_output_archive,
@@ -94,6 +95,17 @@ def test_changed_source_and_symlinks_rejected(tmp_path):
     (req.source_dir / "link").symlink_to(req.input_dir / "case.json")
     with pytest.raises(SandboxDenied):
         snapshot_digest(req.source_dir)
+
+
+def test_snapshot_digest_does_not_require_posix_no_follow_flag(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.sh").write_text("printf ok")
+    monkeypatch.setattr(sandbox_module, "_snapshot_open_flags", lambda: sandbox_module.os.O_RDONLY)
+
+    digest = snapshot_digest(source)
+
+    assert digest["files"] == {"agent.sh": digest["files"]["agent.sh"]}
 
 
 def test_output_tar_never_extracts_paths(tmp_path):
