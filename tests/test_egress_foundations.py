@@ -64,7 +64,7 @@ def test_connect_authority_and_interception_ca_support_ipv6_literal(tmp_path):
     try:
         with socket.create_connection(listener.getsockname()) as raw_client:
             with client_context.wrap_socket(raw_client, server_hostname="2001:db8::10") as client:
-                client.sendall(b"ping")
+                assert client.version() in {"TLSv1.2", "TLSv1.3"}
     finally:
         listener.close()
         thread.join(timeout=5)
